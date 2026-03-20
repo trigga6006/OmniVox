@@ -1,0 +1,138 @@
+@theme {
+  /* ═══════════════════════════════════════════════════════════
+     OmniVox — "Studio Monitor" Design System
+     Warm charcoal surfaces, amber/gold accents, crimson recording.
+     Inspired by high-end audio equipment and vintage VU meters.
+     ═══════════════════════════════════════════════════════════ */
+
+  /* Amber / Gold — primary accent (hue ~55, warm gold) */
+  --color-amber-50: oklch(0.98 0.02 75);
+  --color-amber-100: oklch(0.94 0.04 72);
+  --color-amber-200: oklch(0.88 0.08 68);
+  --color-amber-300: oklch(0.80 0.12 62);
+  --color-amber-400: oklch(0.72 0.15 58);
+  --color-amber-500: oklch(0.65 0.16 55);
+  --color-amber-600: oklch(0.55 0.14 50);
+  --color-amber-700: oklch(0.45 0.11 48);
+  --color-amber-800: oklch(0.35 0.08 45);
+  --color-amber-900: oklch(0.25 0.05 45);
+
+  /* Recording — deep crimson with warm undertone */
+  --color-recording-300: oklch(0.72 0.16 22);
+  --color-recording-400: oklch(0.62 0.2 20);
+  --color-recording-500: oklch(0.52 0.22 18);
+  --color-recording-600: oklch(0.42 0.18 16);
+
+  /* Surfaces — warm charcoal, not cold gray */
+  --color-surface-0: oklch(0.11 0.006 60);
+  --color-surface-1: oklch(0.14 0.006 55);
+  --color-surface-2: oklch(0.17 0.008 52);
+  --color-surface-3: oklch(0.21 0.01 50);
+  --color-surface-4: oklch(0.25 0.012 50);
+
+  /* Text — warm whites and muted tones */
+  --color-text-primary: oklch(0.93 0.008 70);
+  --color-text-secondary: oklch(0.68 0.01 60);
+  --color-text-muted: oklch(0.42 0.008 55);
+
+  /* Borders */
+  --color-border: oklch(0.20 0.008 55);
+  --color-border-hover: oklch(0.28 0.015 55);
+  --color-border-active: oklch(0.45 0.08 55);
+
+  /* Semantic */
+  --color-success: oklch(0.65 0.15 145);
+  --color-error: oklch(0.55 0.2 20);
+
+  /* Spacing */
+  --spacing-sidebar: 4.5rem;
+
+  /* Typography */
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+
+  /* Animations */
+  --animate-recording-pulse: recording-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-recording-ring: recording-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-breathe: breathe 3s ease-in-out infinite;
+  --animate-fade-in: fade-in 0.4s ease-out forwards;
+  --animate-slide-up: slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-scale-in: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ── Keyframes ────────────────────────────────────────────── */
+
+@keyframes recording-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes recording-ring {
+  0% {
+    box-shadow: 0 0 0 0 oklch(0.52 0.22 18 / 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 20px oklch(0.52 0.22 18 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 oklch(0.52 0.22 18 / 0);
+  }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes bar-bounce {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes grain {
+  0%, 100% { transform: translate(0, 0); }
+  10% { transform: translate(-5%, -10%); }
+  30% { transform: translate(3%, -15%); }
+  50% { transform: translate(12%, 9%); }
+  70% { transform: translate(9%, 4%); }
+  90% { transform: translate(-1%, 7%); }
+}
