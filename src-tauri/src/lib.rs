@@ -37,6 +37,46 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Create the floating overlay pill window — transparent, borderless,
+/// always-on-top, positioned just above the Windows taskbar at screen center.
+fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::WebviewWindowBuilder;
+
+    // Get screen dimensions to position the pill
+    let pill_width = 360.0_f64;
+    let pill_height = 52.0_f64;
+    let taskbar_height = 52.0_f64;
+    let margin = 14.0_f64;
+
+    let (x, y) = if let Some(monitor) = app.primary_monitor()? {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let screen_w = size.width as f64 / scale;
+        let screen_h = size.height as f64 / scale;
+        (
+            (screen_w - pill_width) / 2.0,
+            screen_h - taskbar_height - pill_height - margin,
+        )
+    } else {
+        (400.0, 800.0) // fallback
+    };
+
+    let _overlay = WebviewWindowBuilder::new(app, "overlay", tauri::WebviewUrl::App("/".into()))
+        .title("")
+        .inner_size(pill_width, pill_height)
+        .position(x, y)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .visible(true)
+        .build()?;
+
+    Ok(())
+}
+
 /// On first launch, copy the bundled whisper-base.en model from app resources
 /// into the user's models directory and auto-activate it.
 ///
@@ -105,6 +145,10 @@ pub fn run() {
             // First-launch: copy bundled model from app resources to models dir
             // and auto-activate it so the user can dictate immediately.
             setup_bundled_model(app, &state);
+
+            // Create the floating overlay pill — always-on-top, transparent,
+            // positioned just above the Windows taskbar.
+            setup_overlay_window(app)?;
 
             Ok(())
         })

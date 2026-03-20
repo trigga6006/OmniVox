@@ -6,9 +6,23 @@ export function useTauriEvent<T>(
   callback: (payload: T) => void
 ) {
   useEffect(() => {
-    const unlisten = listenFn(callback);
+    let unlistenFn: UnlistenFn | null = null;
+    let cancelled = false;
+
+    listenFn(callback).then((fn) => {
+      if (cancelled) {
+        // Component unmounted before listener was set up — clean up immediately
+        fn();
+      } else {
+        unlistenFn = fn;
+      }
+    });
+
     return () => {
-      unlisten.then((fn) => fn());
+      cancelled = true;
+      if (unlistenFn) {
+        unlistenFn();
+      }
     };
   }, [listenFn, callback]);
 }

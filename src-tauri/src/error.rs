@@ -25,3 +25,9 @@ impl Serialize for AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+impl From<rusqlite::Error> for AppError {
+    fn from(e: rusqlite::Error) -> Self {
+        AppError::Storage(e.to_string())
+    }
+}

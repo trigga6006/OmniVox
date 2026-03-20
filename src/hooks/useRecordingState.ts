@@ -1,15 +1,24 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useTauriEvent } from "./useTauriEvent";
 import { onRecordingStateChange, onAudioLevel, onTranscriptionResult } from "@/lib/tauri";
 import type { RecordingStatus } from "@/stores/recordingStore";
 
 export function useRecordingState() {
-  const { setStatus, setAudioLevel, setLastTranscription } = useRecordingStore();
+  const { setStatus, setDuration, setAudioLevel, setLastTranscription, reset } =
+    useRecordingStore();
+
+  // --- Tauri event handlers ---
 
   const handleStateChange = useCallback(
-    (status: string) => setStatus(status as RecordingStatus),
-    [setStatus]
+    (status: string) => {
+      setStatus(status as RecordingStatus);
+      // Reset duration when entering recording or idle state
+      if (status === "recording" || status === "idle") {
+        setDuration(0);
+      }
+    },
+    [setStatus, setDuration]
   );
 
   const handleAudioLevel = useCallback(
@@ -25,4 +34,29 @@ export function useRecordingState() {
   useTauriEvent(onRecordingStateChange, handleStateChange);
   useTauriEvent(onAudioLevel, handleAudioLevel);
   useTauriEvent(onTranscriptionResult, handleTranscription);
+
+  // --- Duration timer: increments every 100ms while recording ---
+
+  const status = useRecordingStore((s) => s.status);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (status === "recording") {
+      intervalRef.current = setInterval(() => {
+        setDuration(useRecordingStore.getState().duration + 100);
+      }, 100);
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [status, setDuration]);
 }

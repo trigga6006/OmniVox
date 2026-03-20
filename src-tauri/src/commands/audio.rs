@@ -19,8 +19,6 @@ pub async fn stop_recording(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     crate::pipeline::stop_and_transcribe(&app_handle, &state).await;
-    // The actual transcription result is emitted as a Tauri event;
-    // we return a confirmation string here.
     Ok("ok".into())
 }
 
@@ -43,12 +41,21 @@ pub async fn set_audio_device(
     device_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut audio = state.audio.lock().unwrap();
-    // If recording, stop first
+    // Validate device exists before accepting it
+    let devices = AudioCapture::enumerate_devices().map_err(|e| e.to_string())?;
+    if !devices.iter().any(|d| d.id == device_id) {
+        return Err(format!("Audio device '{}' not found", device_id));
+    }
+
+    let mut audio = match state.audio.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
     if audio.is_recording() {
         let _ = audio.stop();
     }
-    // Reconfigure with the new device
+
     let config = crate::audio::types::AudioConfig {
         device_id: Some(device_id),
         ..Default::default()

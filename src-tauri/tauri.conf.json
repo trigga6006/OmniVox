@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://huggingface.co https://*.huggingface.co; img-src 'self' asset: https://asset.localhost; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co; img-src 'self' asset: https://asset.localhost; style-src 'self' 'unsafe-inline'"
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",

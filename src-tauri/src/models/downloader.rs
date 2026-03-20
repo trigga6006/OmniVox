@@ -72,6 +72,14 @@ impl ModelDownloader {
 
         let total_bytes = response.content_length().unwrap_or(0);
 
+        // Reject suspiciously large downloads (max 3 GB — largest whisper model is ~3.1 GB)
+        const MAX_DOWNLOAD_BYTES: u64 = 3_500_000_000;
+        if total_bytes > MAX_DOWNLOAD_BYTES {
+            return Err(AppError::Model(format!(
+                "File size ({total_bytes} bytes) exceeds maximum allowed ({MAX_DOWNLOAD_BYTES} bytes)"
+            )));
+        }
+
         let mut file = fs::File::create(&part_path)
             .await
             .map_err(|e| AppError::Model(format!("Failed to create file: {e}")))?;

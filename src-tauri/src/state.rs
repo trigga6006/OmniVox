@@ -9,6 +9,7 @@ use crate::output::router::OutputRouter;
 use crate::output::types::OutputConfig;
 use crate::postprocess::processor::ProcessorChain;
 use crate::postprocess::types::ProcessorConfig;
+use crate::storage::database::Database;
 
 /// Central application state, managed by Tauri.
 ///
@@ -31,6 +32,8 @@ pub struct AppState {
     pub downloader: ModelDownloader,
     /// ID of the currently active model
     pub active_model_id: Mutex<Option<String>>,
+    /// Local SQLite database for persistent storage
+    pub db: Database,
     /// Application data directory (~/.local/share/omnivox or AppData/omnivox)
     pub data_dir: PathBuf,
     /// Directory where downloaded model files are stored
@@ -43,6 +46,11 @@ impl AppState {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("omnivox");
         let models_dir = data_dir.join("models");
+        let db_path = data_dir.join("omnivox.db");
+
+        // Initialize database — create tables on first run
+        let db = Database::init(&db_path)
+            .expect("Failed to initialize database");
 
         Self {
             audio: Mutex::new(AudioCapture::new(AudioConfig::default())),
@@ -53,6 +61,7 @@ impl AppState {
             model_manager: ModelManager::new(models_dir.clone()),
             downloader: ModelDownloader::new(models_dir.clone()),
             active_model_id: Mutex::new(None),
+            db,
             data_dir,
             models_dir,
         }

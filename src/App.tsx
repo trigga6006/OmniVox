@@ -6,6 +6,10 @@ import { HistoryPage } from "@/features/history/HistoryPage";
 import { DictionaryPage } from "@/features/dictionary/DictionaryPage";
 import { ModelsPage } from "@/features/models/ModelsPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { FloatingPill } from "@/features/overlay/FloatingPill";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+const isOverlay = getCurrentWindow().label === "overlay";
 
 function PageRouter() {
   const currentPage = useAppStore((s) => s.currentPage);
@@ -27,6 +31,14 @@ function PageRouter() {
 }
 
 export default function App() {
+  if (isOverlay) {
+    return (
+      <Providers>
+        <FloatingPill />
+      </Providers>
+    );
+  }
+
   return (
     <Providers>
       <div className="flex h-screen w-screen bg-surface-0">
