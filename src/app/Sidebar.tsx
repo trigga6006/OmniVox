@@ -1,6 +1,7 @@
 import { Mic, Clock, BookOpen, Download, Settings } from "lucide-react";
 import { useAppStore, type Page } from "@/stores/appStore";
 import { useRecordingStore } from "@/stores/recordingStore";
+import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 
 const navItems: { page: Page; icon: typeof Mic; label: string }[] = [
@@ -18,10 +19,8 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-full w-[72px] shrink-0 flex-col items-center border-r border-border bg-surface-0 py-5">
-      {/* Brand monogram */}
-      <span className="select-none font-display text-lg leading-none text-amber-500">
-        OV
-      </span>
+      {/* Logo */}
+      <Logo size={32} />
 
       {/* Separator */}
       <div className="my-4 h-px w-8 bg-surface-3" />

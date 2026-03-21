@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { RecordButton } from "./RecordButton";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
+import { getSettings } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 export function DictationPanel() {
@@ -10,6 +12,18 @@ export function DictationPanel() {
 
   const status = useRecordingStore((s) => s.status);
   const lastTranscription = useRecordingStore((s) => s.lastTranscription);
+
+  const [hotkeyLabel, setHotkeyLabel] = useState("Ctrl + Alt");
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        if (s.hotkey?.labels?.length) {
+          setHotkeyLabel(s.hotkey.labels.join(" + "));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const isIdle = status === "idle";
   const isRecording = status === "recording";
@@ -37,7 +51,7 @@ export function DictationPanel() {
         className="mt-3 text-sm text-text-muted opacity-0 animate-fade-in"
         style={{ animationDelay: "80ms" }}
       >
-        {isIdle && "Ctrl + Win to begin"}
+        {isIdle && `${hotkeyLabel} to begin`}
         {isRecording && "Speak now \u2014 press again to stop"}
         {isProcessing && "Hang tight, processing your audio\u2026"}
         {status === "error" && "Try recording again"}

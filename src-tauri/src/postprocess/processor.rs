@@ -1,6 +1,6 @@
 use crate::error::AppResult;
 use crate::postprocess::types::{Correction, ProcessedText, ProcessorConfig};
-use crate::storage::types::DictionaryEntry;
+use crate::storage::types::{DictionaryEntry, Snippet};
 
 /// Trait for text post-processing steps.
 pub trait TextProcessor: Send + Sync {
@@ -9,11 +9,13 @@ pub trait TextProcessor: Send + Sync {
 
 /// Pipeline that applies multiple post-processing steps to transcribed text.
 ///
-/// Steps run in order: dictionary replacement → capitalization → whitespace cleanup.
+/// Steps run in order: dictionary replacement → snippet expansion →
+/// capitalization → whitespace cleanup.
 /// Each step records the corrections it makes for transparency in the UI.
 pub struct ProcessorChain {
     config: ProcessorConfig,
     dictionary: Vec<DictionaryEntry>,
+    snippets: Vec<Snippet>,
 }
 
 impl ProcessorChain {
@@ -21,6 +23,7 @@ impl ProcessorChain {
         Self {
             config,
             dictionary: Vec::new(),
+            snippets: Vec::new(),
         }
     }
 
@@ -28,6 +31,12 @@ impl ProcessorChain {
     /// Call this when the user adds/removes dictionary entries.
     pub fn set_dictionary(&mut self, entries: Vec<DictionaryEntry>) {
         self.dictionary = entries;
+    }
+
+    /// Update the snippets used for trigger-word expansion.
+    /// Call this when the user adds/removes snippets.
+    pub fn set_snippets(&mut self, snippets: Vec<Snippet>) {
+        self.snippets = snippets;
     }
 }
 
@@ -56,7 +65,26 @@ impl TextProcessor for ProcessorChain {
             }
         }
 
-        // Step 2: Capitalize first letter of sentences
+        // Step 2: Snippet expansion (trigger word → expanded content)
+        if self.config.apply_dictionary {
+            for snippet in &self.snippets {
+                if !snippet.is_enabled {
+                    continue;
+                }
+                if let Some(replaced) =
+                    replace_case_insensitive(&result, &snippet.trigger, &snippet.content)
+                {
+                    corrections.push(Correction {
+                        original: snippet.trigger.clone(),
+                        replacement: snippet.content.clone(),
+                        reason: "snippet".to_string(),
+                    });
+                    result = replaced;
+                }
+            }
+        }
+
+        // Step 3: Capitalize first letter of sentences
         if self.config.auto_capitalize {
             let before = result.clone();
             result = capitalize_sentences(&result);
@@ -69,7 +97,7 @@ impl TextProcessor for ProcessorChain {
             }
         }
 
-        // Step 3: Clean up whitespace (collapse multiple spaces, trim)
+        // Step 4: Clean up whitespace (collapse multiple spaces, trim)
         let before = result.clone();
         result = normalize_whitespace(&result);
         if result != before {

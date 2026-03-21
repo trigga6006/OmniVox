@@ -25,6 +25,12 @@ pub struct AudioCapture {
     stream: Option<cpal::Stream>,
 }
 
+// SAFETY: AudioCapture is always accessed behind a Mutex in AppState, ensuring
+// exclusive access. cpal::Stream is !Send as a conservative blanket across all
+// platforms, but on Windows (WASAPI) the underlying handles are thread-safe.
+unsafe impl Send for AudioCapture {}
+unsafe impl Sync for AudioCapture {}
+
 impl AudioCapture {
     pub fn new(config: AudioConfig) -> Self {
         Self {
@@ -127,8 +133,9 @@ impl AudioCapture {
                     // --- RMS for VU meter ---
                     let rms =
                         (mono.iter().map(|s| s * s).sum::<f32>() / mono.len() as f32).sqrt();
-                    // Scale up for UI sensitivity — typical speech RMS ≈ 0.02–0.15
-                    let level = (rms * 5.0).min(1.0);
+                    // Scale up aggressively for UI sensitivity — desktop mic
+                    // speech RMS is typically 0.005–0.05 depending on gain.
+                    let level = (rms * 35.0).min(1.0);
                     rms_level.store(level.to_bits(), Ordering::Relaxed);
 
                     // --- Resample to 16 kHz ---
@@ -200,6 +207,16 @@ impl AudioCapture {
 
     pub fn is_recording(&self) -> bool {
         self.is_recording.load(Ordering::SeqCst)
+    }
+
+    /// Arc handle to the is_recording flag — used by the audio level emitter.
+    pub fn is_recording_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_recording)
+    }
+
+    /// Arc handle to the RMS level — used by the audio level emitter.
+    pub fn rms_level_ref(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.rms_level)
     }
 
     /// Duration of the currently buffered audio in seconds.

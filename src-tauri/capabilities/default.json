@@ -9,6 +9,10 @@
     "core:event:default",
     "core:event:allow-emit",
     "core:event:allow-listen",
-    "global-shortcut:default"
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-current-monitor",
+    "core:window:allow-inner-size",
+    "core:window:allow-outer-position"
   ]
 }

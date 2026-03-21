@@ -64,6 +64,11 @@ export interface Snippet {
   created_at: string;
 }
 
+export interface HotkeyConfig {
+  keys: number[];
+  labels: string[];
+}
+
 export interface AppSettings {
   theme: string;
   language: string;
@@ -72,6 +77,7 @@ export interface AppSettings {
   output_mode: string;
   sample_rate: number;
   active_model_id: string | null;
+  hotkey: HotkeyConfig | null;
 }
 
 // Audio commands
@@ -123,6 +129,16 @@ export const exportHistory = (format: string) =>
 export const getSettings = () => invoke<AppSettings>("get_settings");
 export const updateSettings = (settings: AppSettings) =>
   invoke<void>("update_settings", { settings });
+
+// Hotkey commands
+export const suspendHotkey = (suspended: boolean) =>
+  invoke<void>("suspend_hotkey", { suspended });
+export const updateHotkey = (config: HotkeyConfig) =>
+  invoke<void>("update_hotkey", { config });
+
+// Overlay commands
+export const resizeOverlay = (width: number, height: number) =>
+  invoke<void>("resize_overlay", { width, height });
 
 // Event listeners
 export const onRecordingStateChange = (

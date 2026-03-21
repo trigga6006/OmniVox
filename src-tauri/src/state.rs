@@ -38,6 +38,9 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Directory where downloaded model files are stored
     pub models_dir: PathBuf,
+    /// HWND of the window that was focused before recording started.
+    /// Used to restore focus before pasting transcription text.
+    pub prev_foreground: Mutex<Option<isize>>,
 }
 
 impl AppState {
@@ -64,6 +67,7 @@ impl AppState {
             db,
             data_dir,
             models_dir,
+            prev_foreground: Mutex::new(None),
         }
     }
 }

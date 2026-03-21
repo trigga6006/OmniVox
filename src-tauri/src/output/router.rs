@@ -11,9 +11,10 @@ use crate::output::types::{OutputConfig, OutputMode};
 ///
 /// Supports three output modes:
 /// - **Clipboard**: Copies text to the system clipboard. User pastes manually.
-/// - **TypeSimulation**: Pastes text into the focused app via clipboard + Ctrl+V.
-///   Preserves previous clipboard contents.
-/// - **Both**: Sets clipboard (user keeps it) and pastes into the focused app.
+/// - **TypeSimulation**: Types text directly into the focused app via simulated
+///   Unicode keystrokes.  Inserts at the cursor without touching the clipboard,
+///   so existing text in the input field is never erased.
+/// - **Both**: Sets clipboard (user keeps it) and types into the focused app.
 pub struct OutputRouter;
 
 impl OutputRouter {
@@ -31,14 +32,16 @@ impl OutputRouter {
                 self.set_clipboard(text)?;
             }
             OutputMode::TypeSimulation => {
-                // Preserve the user's clipboard, paste our text, then restore
-                self.paste_with_restore(text, config)?;
+                // Type directly via Unicode keystrokes — inserts at cursor
+                // without triggering app-specific paste handlers that can
+                // replace entire input content.  Leaves clipboard untouched.
+                self.type_text(text)?;
             }
             OutputMode::Both => {
-                // Clipboard gets our text permanently; also paste into focused app
+                // Clipboard gets our text permanently; also type into focused app
                 self.set_clipboard(text)?;
-                thread::sleep(Duration::from_millis(config.typing_delay_ms as u64));
-                self.send_paste_keystroke()?;
+                thread::sleep(Duration::from_millis(30));
+                self.type_text(text)?;
             }
         }
 
@@ -54,13 +57,23 @@ impl OutputRouter {
         Ok(())
     }
 
-    /// Paste into the focused app while preserving the user's clipboard.
+    /// Type text into the focused application using simulated Unicode keystrokes.
     ///
-    /// 1. Snapshot current clipboard
-    /// 2. Write transcription text to clipboard
-    /// 3. Simulate Ctrl+V
-    /// 4. Wait for the target app to process the paste
-    /// 5. Restore the original clipboard contents
+    /// Unlike clipboard + Ctrl+V, this inserts at the cursor position and never
+    /// triggers app-specific paste handlers that might replace existing content.
+    /// All characters are batched into a single `SendInput` call for speed.
+    fn type_text(&self, text: &str) -> AppResult<()> {
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+        enigo
+            .text(text)
+            .map_err(|e| AppError::Output(format!("Text input failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Paste into the focused app while preserving the user's clipboard.
+    /// (Legacy — kept as fallback; prefer `type_text` for insertion.)
+    #[allow(dead_code)]
     fn paste_with_restore(&self, text: &str, config: &OutputConfig) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
@@ -90,6 +103,8 @@ impl OutputRouter {
     }
 
     /// Simulates Ctrl+V on Windows.
+    /// (Legacy — kept as fallback; prefer `type_text` for insertion.)
+    #[allow(dead_code)]
     fn send_paste_keystroke(&self) -> AppResult<()> {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;

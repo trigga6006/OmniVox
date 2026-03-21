@@ -1,4 +1,5 @@
 use crate::error::AppResult;
+use crate::hotkey::HotkeyConfig;
 use crate::storage::database::Database;
 use crate::storage::types::AppSettings;
 use rusqlite::params;
@@ -51,6 +52,10 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .get("active_model_id")
         .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
         .or(defaults.active_model_id);
+    let hotkey = map
+        .get("hotkey")
+        .and_then(|v| serde_json::from_str::<HotkeyConfig>(v).ok())
+        .or(defaults.hotkey);
 
     Ok(AppSettings {
         theme,
@@ -60,6 +65,7 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         output_mode,
         sample_rate,
         active_model_id,
+        hotkey,
     })
 }
 
@@ -97,6 +103,13 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         params![
             "active_model_id",
             settings.active_model_id.as_deref().unwrap_or("")
+        ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params![
+            "hotkey",
+            serde_json::to_string(&settings.hotkey).unwrap_or_default()
         ],
     )?;
 

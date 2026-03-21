@@ -1,29 +1,21 @@
 import { useRecordingStore } from "@/stores/recordingStore";
 
-/**
- * 16-bar audio waveform visualizer — the heartbeat of the floating pill.
- *
- * Bell-curve weighted: center bars peak higher, edges taper off.
- * Idle: flat 3px bars in muted color. Recording: amber bars that dance
- * with your voice via audio level from the recording store.
- */
-
-const BAR_COUNT = 16;
-const BAR_WIDTH = 3;
-const BAR_GAP = 3;
-const MIN_HEIGHT = 3;
-const MAX_HEIGHT = 28;
+const BAR_COUNT = 12;
+const BAR_WIDTH = 2;
+const BAR_GAP = 2;
+const MIN_HEIGHT = 2;
+const MAX_HEIGHT = 18;
 
 // Bell-curve weights — center bars respond more, edges stay lower
 const WEIGHTS = [
-  0.25, 0.35, 0.48, 0.6, 0.72, 0.84, 0.92, 1.0,
-  1.0, 0.92, 0.84, 0.72, 0.6, 0.48, 0.35, 0.25,
+  0.3, 0.4, 0.55, 0.7, 0.85, 1.0,
+  1.0, 0.85, 0.7, 0.55, 0.4, 0.3,
 ];
 
-// Per-bar phase offsets for organic, non-uniform motion
+// Per-bar phase offsets for organic motion
 const PHASE_OFFSETS = [
-  0, 0.15, 0.05, 0.22, 0.1, 0.28, 0.08, 0.18,
-  0.12, 0.25, 0.06, 0.2, 0.14, 0.03, 0.24, 0.09,
+  0, 0.15, 0.05, 0.22, 0.1, 0.18,
+  0.12, 0.25, 0.06, 0.2, 0.03, 0.09,
 ];
 
 interface PillWaveformProps {
@@ -44,12 +36,9 @@ export function PillWaveform({ active }: PillWaveformProps) {
       {Array.from({ length: BAR_COUNT }, (_, i) => {
         const weight = WEIGHTS[i];
         const phase = PHASE_OFFSETS[i];
-
-        // Combine audio level with per-bar weight and phase for organic motion
         const level = active
           ? Math.min(1, audioLevel * weight + phase * audioLevel * 0.5)
           : 0;
-
         const height = MIN_HEIGHT + level * (MAX_HEIGHT - MIN_HEIGHT);
 
         return (
@@ -64,8 +53,8 @@ export function PillWaveform({ active }: PillWaveformProps) {
             }}
             className={
               active
-                ? "rounded-full bg-amber-400"
-                : "rounded-full bg-surface-4"
+                ? "rounded-full bg-amber-400/80"
+                : "rounded-full bg-[rgba(255,255,255,0.12)]"
             }
           />
         );

@@ -1,26 +1,18 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
-import { startRecording, stopRecording } from "@/lib/tauri";
+import { startRecording, stopRecording, resizeOverlay } from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
 import { PillWaveform } from "./PillWaveform";
 
-/**
- * Floating Pill — always-on-top status capsule that sits above the taskbar.
- *
- * Glass morphism surface, 16-bar waveform, contextual state indicators.
- * This is the primary interface users see while dictating into other apps.
- *
- * States:
- *   idle       → muted, flat waveform, "OV" brand, barely visible
- *   recording  → waveform alive, crimson record dot, duration timer
- *   processing → amber shimmer, "Transcribing..." text, spinner
- *   success    → brief green flash with transcription preview (2s)
- *   error      → brief red flash (2s), then back to idle
- */
-
 type PillState = RecordingStatus | "success";
+
+// Window sizes — button always fills the window 100%
+const ACTIVE_W = 210;
+const ACTIVE_H = 34;
+const IDLE_W = 56;
+const IDLE_H = 26;
 
 export function FloatingPill() {
   useRecordingState();
@@ -29,47 +21,68 @@ export function FloatingPill() {
   const duration = useRecordingStore((s) => s.duration);
   const lastTranscription = useRecordingStore((s) => s.lastTranscription);
 
-  // Extended state: adds "success" flash after transcription completes
   const [pillState, setPillState] = useState<PillState>("idle");
   const [flashText, setFlashText] = useState<string | null>(null);
+  const prevExpandedRef = useRef(false);
+  const [showContent, setShowContent] = useState(false);
 
-  // Track transcription result for success flash
   useEffect(() => {
     if (status === "idle" && lastTranscription && pillState === "processing") {
-      // Transcription just completed — show success flash
       setFlashText(
-        lastTranscription.length > 40
-          ? lastTranscription.slice(0, 40) + "…"
+        lastTranscription.length > 30
+          ? lastTranscription.slice(0, 30) + "…"
           : lastTranscription
       );
       setPillState("success");
-
       const timer = setTimeout(() => {
         setPillState("idle");
         setFlashText(null);
       }, 2500);
-
       return () => clearTimeout(timer);
     }
-
     if (status !== "idle" || pillState !== "success") {
       setPillState(status);
     }
   }, [status, lastTranscription]);
 
-  // Make the overlay window background transparent
+  // Resize window on idle ↔ active transitions with content fade
+  useEffect(() => {
+    const expanded = pillState !== "idle";
+    if (expanded !== prevExpandedRef.current) {
+      prevExpandedRef.current = expanded;
+
+      if (expanded) {
+        // idle → active: expand window, then fade content in
+        resizeOverlay(ACTIVE_W, ACTIVE_H);
+        const t = setTimeout(() => setShowContent(true), 80);
+        return () => clearTimeout(t);
+      } else {
+        // active → idle: fade content out, then shrink window
+        setShowContent(false);
+        const t = setTimeout(() => resizeOverlay(IDLE_W, IDLE_H), 200);
+        return () => clearTimeout(t);
+      }
+    }
+  }, [pillState]);
+
+  // Mount: transparent bg, shrink to idle
   useEffect(() => {
     document.documentElement.style.background = "transparent";
+    document.documentElement.style.margin = "0";
+    document.documentElement.style.padding = "0";
+    document.documentElement.style.overflow = "hidden";
     document.body.style.background = "transparent";
+    document.body.style.margin = "0";
+    document.body.style.padding = "0";
+    document.body.style.overflow = "hidden";
+    document.body.classList.add("overlay-window");
+    resizeOverlay(IDLE_W, IDLE_H);
   }, []);
 
   const handleClick = useCallback(async () => {
     try {
-      if (status === "idle") {
-        await startRecording();
-      } else if (status === "recording") {
-        await stopRecording();
-      }
+      if (status === "idle") await startRecording();
+      else if (status === "recording") await stopRecording();
     } catch (err) {
       console.error("Pill recording toggle failed:", err);
     }
@@ -82,183 +95,159 @@ export function FloatingPill() {
   const isError = pillState === "error";
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center">
-      <button
-        onClick={handleClick}
-        disabled={isProcessing}
-        className={cn(
-          // Base pill shape
-          "relative flex items-center gap-3 rounded-full",
-          "h-[48px] min-w-[340px] px-5",
-          // Glass morphism
-          "backdrop-blur-2xl backdrop-saturate-150",
-          "shadow-[0_4px_30px_rgba(0,0,0,0.35)]",
-          // Transitions
-          "transition-all duration-300 ease-out",
-          // Cursor
-          isProcessing ? "cursor-default" : "cursor-pointer",
+    <button
+      onClick={handleClick}
+      disabled={isProcessing}
+      className={cn(
+        // Fill the entire window — the window IS the pill
+        "w-screen h-screen",
+        "relative flex items-center overflow-hidden",
+        isProcessing ? "cursor-default" : "cursor-pointer",
 
-          // ── State-specific styles ──
+        // Idle
+        isIdle && "bg-[#1a1a1a] rounded-full",
 
-          // Idle: muted, barely-there
-          isIdle && [
-            "bg-[rgba(18,16,14,0.7)]",
-            "border border-[rgba(255,255,255,0.05)]",
-            "hover:bg-[rgba(22,20,18,0.8)]",
-            "hover:border-[rgba(255,255,255,0.08)]",
-            "opacity-60 hover:opacity-90",
-          ],
+        // Recording
+        isRecording && "bg-[#1a1a1a] border border-recording-500/30 rounded-full gap-2.5 px-3.5",
 
-          // Recording: alive, crimson accent
-          isRecording && [
-            "bg-[rgba(18,16,14,0.82)]",
-            "border border-recording-500/30",
-            "shadow-[0_4px_30px_rgba(0,0,0,0.35),0_0_20px_rgba(180,50,40,0.15)]",
-            "opacity-100",
-          ],
+        // Processing
+        isProcessing && "bg-[#1a1a1a] border border-amber-500/25 rounded-full gap-2.5 px-3.5",
 
-          // Processing: amber accent, shimmer
-          isProcessing && [
-            "bg-[rgba(18,16,14,0.82)]",
-            "border border-amber-500/25",
-            "opacity-100",
-          ],
+        // Success
+        isSuccess && "bg-[#1a1a1a] border border-success/30 rounded-full gap-2.5 px-3.5",
 
-          // Success: brief green flash
-          isSuccess && [
-            "bg-[rgba(18,16,14,0.82)]",
-            "border border-success/30",
-            "opacity-100",
-          ],
+        // Error
+        isError && "bg-[#1a1a1a] border border-recording-500/35 rounded-full gap-2.5 px-3.5",
+      )}
+    >
+      {/* ── Idle: sleek ambient waveform ── */}
+      {isIdle && <IdleWaveform />}
 
-          // Error: brief red flash
-          isError && [
-            "bg-[rgba(18,16,14,0.82)]",
-            "border border-recording-500/40",
-            "opacity-100",
-          ]
-        )}
-      >
-        {/* ── Processing shimmer overlay ── */}
-        {isProcessing && (
-          <div
-            className="absolute inset-0 rounded-full overflow-hidden pointer-events-none"
-            aria-hidden="true"
-          >
+      {/* ── Active states: full pill content with fade ── */}
+      {!isIdle && (
+        <div
+          className="flex items-center w-full h-full gap-2.5"
+          style={{
+            opacity: showContent ? 1 : 0,
+            transition: "opacity 0.2s ease",
+          }}
+        >
+          {isProcessing && (
             <div
-              className="absolute inset-0 -translate-x-full"
-              style={{
-                background:
-                  "linear-gradient(90deg, transparent 0%, oklch(0.65 0.16 55 / 0.08) 50%, transparent 100%)",
-                animation: "shimmer 2s ease-in-out infinite",
-              }}
-            />
-          </div>
-        )}
-
-        {/* ── Left section: Brand / Timer ── */}
-        <div className="shrink-0 w-[52px] flex items-center justify-start">
-          {isIdle && (
-            <span className="font-display text-base text-text-muted/60 select-none">
-              OV
-            </span>
-          )}
-
-          {isRecording && (
-            <span className="font-mono text-sm tabular-nums text-recording-300 tracking-wide">
-              {formatDuration(duration)}
-            </span>
-          )}
-
-          {isProcessing && (
-            <Loader2
-              size={16}
-              className="text-amber-400 animate-spin"
-              strokeWidth={2}
-            />
-          )}
-
-          {isSuccess && (
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              className="text-success"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+              className="absolute inset-0 overflow-hidden pointer-events-none"
+              aria-hidden="true"
             >
-              <polyline points="3 8.5 6.5 12 13 4" />
-            </svg>
-          )}
-
-          {isError && (
-            <span className="text-recording-400 text-sm font-medium">!</span>
-          )}
-        </div>
-
-        {/* ── Center section: Waveform / Status text ── */}
-        <div className="flex-1 flex items-center justify-center overflow-hidden">
-          {(isIdle || isRecording) && (
-            <PillWaveform active={isRecording} />
-          )}
-
-          {isProcessing && (
-            <span className="text-xs font-medium text-amber-400/80 tracking-wide truncate">
-              Transcribing…
-            </span>
-          )}
-
-          {isSuccess && flashText && (
-            <span className="text-xs text-text-secondary truncate select-text">
-              {flashText}
-            </span>
-          )}
-
-          {isError && (
-            <span className="text-xs text-recording-300 truncate">
-              Something went wrong
-            </span>
-          )}
-        </div>
-
-        {/* ── Right section: Record indicator ── */}
-        <div className="shrink-0 w-[36px] flex items-center justify-end">
-          {isIdle && (
-            <div className="flex items-center gap-1.5 opacity-50">
-              <div className="h-2 w-2 rounded-full border border-text-muted/40" />
-            </div>
-          )}
-
-          {isRecording && (
-            <div className="relative flex items-center justify-center">
-              {/* Pulsing glow ring */}
-              <span
-                className="absolute h-5 w-5 rounded-full bg-recording-500/20"
-                style={{ animation: "recording-pulse 2s ease-in-out infinite" }}
+              <div
+                className="absolute inset-0 -translate-x-full"
+                style={{
+                  background:
+                    "linear-gradient(90deg, transparent 0%, oklch(0.65 0.16 55 / 0.06) 50%, transparent 100%)",
+                  animation: "shimmer 2s ease-in-out infinite",
+                }}
               />
-              {/* Solid dot */}
-              <span className="relative h-2.5 w-2.5 rounded-full bg-recording-500 shadow-[0_0_8px_rgba(180,50,40,0.5)]" />
             </div>
           )}
 
-          {isProcessing && (
-            <div className="h-2 w-2 rounded-full bg-amber-500/60" />
-          )}
+          {/* Left: timer / spinner / icon */}
+          <div className="shrink-0 flex items-center justify-center min-w-[34px]">
+            {isRecording && (
+              <span className="font-mono text-[11px] tabular-nums text-recording-300/80 tracking-wide">
+                {formatDuration(duration)}
+              </span>
+            )}
+            {isProcessing && (
+              <Loader2
+                size={12}
+                className="text-amber-400/70 animate-spin"
+                strokeWidth={2.5}
+              />
+            )}
+            {isSuccess && (
+              <svg
+                width="12" height="12" viewBox="0 0 16 16"
+                className="text-success/80" fill="none" stroke="currentColor"
+                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="3 8.5 6.5 12 13 4" />
+              </svg>
+            )}
+            {isError && (
+              <span className="text-recording-400/80 text-[11px] font-semibold">!</span>
+            )}
+          </div>
 
-          {isSuccess && (
-            <div className="h-2 w-2 rounded-full bg-success/60" />
-          )}
+          {/* Center: waveform / status text */}
+          <div className="flex-1 flex items-center justify-center overflow-hidden">
+            {isRecording && <PillWaveform active />}
+            {isProcessing && (
+              <span className="text-[10px] font-medium text-amber-400/60 tracking-wide truncate">
+                Transcribing…
+              </span>
+            )}
+            {isSuccess && flashText && (
+              <span className="text-[10px] text-text-secondary/70 truncate">
+                {flashText}
+              </span>
+            )}
+            {isError && (
+              <span className="text-[10px] text-recording-300/70 truncate">
+                Error
+              </span>
+            )}
+          </div>
+
+          {/* Right: record dot */}
+          <div className="shrink-0 w-[20px] flex items-center justify-end">
+            {isRecording && (
+              <div className="relative flex items-center justify-center">
+                <span
+                  className="absolute h-3.5 w-3.5 rounded-full bg-recording-500/15"
+                  style={{ animation: "recording-pulse 2s ease-in-out infinite" }}
+                />
+                <span className="relative h-1.5 w-1.5 rounded-full bg-recording-500 shadow-[0_0_6px_rgba(180,50,40,0.4)]" />
+              </div>
+            )}
+            {isProcessing && (
+              <div className="h-1.5 w-1.5 rounded-full bg-amber-500/40" />
+            )}
+            {isSuccess && (
+              <div className="h-1.5 w-1.5 rounded-full bg-success/40" />
+            )}
+          </div>
         </div>
-      </button>
+      )}
 
-      {/* Shimmer keyframe — injected once */}
       <style>{`
         @keyframes shimmer {
           0% { transform: translateX(-100%); }
           100% { transform: translateX(200%); }
+        }
+      `}</style>
+    </button>
+  );
+}
+
+/* ── Idle waveform: subtle ambient bars ── */
+function IdleWaveform() {
+  const BAR_COUNT = 5;
+
+  return (
+    <div className="flex items-center justify-center gap-[3px] w-full h-full">
+      {Array.from({ length: BAR_COUNT }).map((_, i) => (
+        <div
+          key={i}
+          className="bg-amber-400/25 rounded-full"
+          style={{
+            width: 2,
+            height: 6,
+            animation: `idle-wave 2s ease-in-out ${i * 0.2}s infinite`,
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes idle-wave {
+          0%, 100% { height: 4px; opacity: 0.15; }
+          50% { height: 10px; opacity: 0.35; }
         }
       `}</style>
     </div>

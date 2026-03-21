@@ -2,6 +2,7 @@ pub mod audio;
 pub mod asr;
 pub mod commands;
 pub mod error;
+pub mod hotkey;
 pub mod models;
 pub mod output;
 pub mod pipeline;
@@ -10,11 +11,10 @@ pub mod state;
 pub mod storage;
 
 use tauri::Manager;
-use tauri_plugin_global_shortcut::ShortcutState;
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox")?;
-    let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit")?;
+    let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox", true, None::<&str>)?;
+    let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = tauri::menu::Menu::with_items(app, &[&show_item, &quit_item])?;
 
     tauri::tray::TrayIconBuilder::new()
@@ -42,11 +42,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::WebviewWindowBuilder;
 
-    // Get screen dimensions to position the pill
-    let pill_width = 360.0_f64;
-    let pill_height = 52.0_f64;
-    let taskbar_height = 52.0_f64;
-    let margin = 14.0_f64;
+    // Start at active size — the frontend shrinks it to idle once mounted.
+    let pill_width = 210.0_f64;
+    let pill_height = 34.0_f64;
+    let taskbar_height = 48.0_f64;
+    let margin = 12.0_f64;
 
     let (x, y) = if let Some(monitor) = app.primary_monitor()? {
         let size = monitor.size();
@@ -64,12 +64,14 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let _overlay = WebviewWindowBuilder::new(app, "overlay", tauri::WebviewUrl::App("/".into()))
         .title("")
         .inner_size(pill_width, pill_height)
+        .min_inner_size(1.0, 1.0)
         .position(x, y)
         .decorations(false)
         .transparent(true)
+        .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .resizable(false)
+        .resizable(true)
         .focused(false)
         .visible(true)
         .build()?;
@@ -112,35 +114,51 @@ fn setup_bundled_model(app: &tauri::App, state: &state::AppState) {
     }
 }
 
+/// Load persisted settings from SQLite and apply them to in-memory state.
+fn apply_persisted_settings(state: &state::AppState) {
+    if let Ok(settings) = crate::storage::settings::get_settings(&state.db) {
+        let mode = match settings.output_mode.as_str() {
+            "type_simulation" => crate::output::types::OutputMode::TypeSimulation,
+            "both" => crate::output::types::OutputMode::Both,
+            _ => crate::output::types::OutputMode::Clipboard,
+        };
+        if let Ok(mut cfg) = state.output_config.lock() {
+            cfg.mode = mode;
+        }
+
+        // Load hotkey config into the hook (before hook thread starts).
+        if let Some(ref hk) = settings.hotkey {
+            let key1 = hk.keys.first().copied().unwrap_or(0);
+            let key2 = hk.keys.get(1).copied().unwrap_or(0);
+            hotkey::update_hotkey_keys(key1, key2);
+        }
+    }
+
+    // Load dictionary entries and snippets into the in-memory ProcessorChain
+    if let Ok(mut processor) = state.processor.lock() {
+        if let Ok(entries) = crate::storage::dictionary::list_entries(&state.db) {
+            processor.set_dictionary(entries);
+        }
+        if let Ok(snippets) = crate::storage::snippets::list_snippets(&state.db) {
+            processor.set_snippets(snippets);
+        }
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        let handle = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            pipeline::toggle_recording(&handle).await;
-                        });
-                    }
-                })
-                .build(),
-        )
         .manage(state::AppState::new())
         .setup(|app| {
             setup_tray(app)?;
-
-            // Register default hotkey: Ctrl+Win to toggle recording
-            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifier, Shortcut};
-            let shortcut =
-                Shortcut::new(Some(Modifier::CONTROL), Code::MetaLeft);
-            app.global_shortcut().register(shortcut)?;
 
             // Ensure data directories exist
             let state = app.state::<state::AppState>();
             let _ = std::fs::create_dir_all(&state.models_dir);
             let _ = std::fs::create_dir_all(&state.data_dir);
+
+            // Load persisted settings (output mode, etc.) into in-memory state
+            apply_persisted_settings(&state);
 
             // First-launch: copy bundled model from app resources to models dir
             // and auto-activate it so the user can dictate immediately.
@@ -149,6 +167,9 @@ pub fn run() {
             // Create the floating overlay pill — always-on-top, transparent,
             // positioned just above the Windows taskbar.
             setup_overlay_window(app)?;
+
+            // Install the hotkey via a low-level keyboard hook.
+            hotkey::install(app.handle().clone());
 
             Ok(())
         })
@@ -180,9 +201,12 @@ pub fn run() {
             commands::recent_history,
             commands::delete_history_record,
             commands::export_history,
-            // Settings commands (2)
+            // Settings & hotkey commands (5)
             commands::get_settings,
             commands::update_settings,
+            commands::suspend_hotkey,
+            commands::update_hotkey,
+            commands::resize_overlay,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

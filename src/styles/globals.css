@@ -45,19 +45,36 @@ body {
   user-select: none;
 }
 
-/* ── Film grain overlay — adds texture/depth to dark surfaces ── */
+/* ── Overlay window ──────────────────────────────────────── */
+/* Applied to <html> very early (before CSS loads) and to <body>
+   via JS in FloatingPill.  Must nuke every possible background
+   source so WebView2 transparency works on Windows.            */
 
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  pointer-events: none;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 256px 256px;
-  animation: grain 8s steps(10) infinite;
+html.overlay-window,
+html.overlay-window body,
+.overlay-window,
+.overlay-window #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+html.overlay-window *,
+.overlay-window * {
+  border-color: transparent !important;
+}
+
+html.overlay-window::before,
+html.overlay-window::after,
+html.overlay-window body::before,
+html.overlay-window body::after,
+.overlay-window::before,
+.overlay-window::after {
+  display: none !important;
 }
 
 /* ── Custom Scrollbar ─────────────────────────────────────── */
