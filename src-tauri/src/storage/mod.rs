@@ -4,3 +4,4 @@ pub mod history;
 pub mod dictionary;
 pub mod snippets;
 pub mod settings;
+pub mod notes;

@@ -100,7 +100,7 @@ export function HistoryPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-2xl text-text-primary">History</h1>
+          <h1 className="font-display font-semibold text-2xl text-text-primary">History</h1>
           <p className="text-sm text-text-muted mt-1">Transcription archive</p>
         </div>
         <button

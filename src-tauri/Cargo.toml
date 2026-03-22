@@ -44,6 +44,17 @@ windows = { version = "0.61", features = [
 
 [features]
 default = []
+llm = []
 cuda = ["whisper-rs/cuda"]
+# Vulkan provides GPU acceleration for both AMD and NVIDIA GPUs.
+# Install the Vulkan SDK, then build with: cargo build --features vulkan
+# The Settings UI toggle controls runtime GPU use once compiled with this feature.
 vulkan = ["whisper-rs/vulkan"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# Optimize heavy C/C++ deps even in debug builds — whisper.cpp and llama.cpp
+# allocate huge stack frames in debug mode that cause STATUS_STACK_BUFFER_OVERRUN
+# on Windows. Compiling them with opt-level 2 shrinks stack frames dramatically.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 2
+

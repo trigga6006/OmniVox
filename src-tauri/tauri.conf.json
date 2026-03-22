@@ -7,14 +7,15 @@
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist",
+    "features": ["llm", "vulkan"]
   },
   "app": {
     "withGlobalTauri": false,
     "windows": [
       {
         "title": "OmniVox",
-        "width": 960,
+        "width": 1120,
         "height": 680,
         "resizable": true,
         "fullscreen": false,

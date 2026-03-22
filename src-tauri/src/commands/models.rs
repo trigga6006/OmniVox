@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tauri::State;
 
 use crate::asr::engine::WhisperEngine;
@@ -63,6 +65,15 @@ pub async fn set_active_model(
     load_and_activate_model(&model_id, &state)
 }
 
+/// Returns whether the binary was compiled with GPU (Vulkan/CUDA) support.
+/// The frontend uses this to show or hide the GPU toggle in Settings.
+#[tauri::command]
+pub async fn get_gpu_support() -> Result<bool, String> {
+    // whisper-rs sets the internal `_gpu` feature when `cuda` or `vulkan` is enabled.
+    // We mirror that with our own feature flags.
+    Ok(cfg!(any(feature = "vulkan", feature = "cuda")))
+}
+
 #[tauri::command]
 pub async fn get_hardware_info() -> Result<HardwareInfo, String> {
     let cpu_cores = std::thread::available_parallelism()
@@ -97,17 +108,35 @@ pub fn load_and_activate_model(
         .unwrap_or(4)
         .min(8);
 
+    // Read the GPU acceleration preference from persisted settings.
+    let use_gpu = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.gpu_acceleration)
+        .unwrap_or(false);
+
     let config = AsrConfig {
         model_path: model_path.to_string_lossy().into_owned(),
         language: Some("en".into()),
         translate: false,
         n_threads,
+        use_gpu,
     };
 
-    let engine =
-        WhisperEngine::load(config).map_err(|e| format!("Failed to load model: {e}"))?;
+    // Load on a thread with a larger stack — whisper.cpp + GGML backends
+    // need extra stack space, especially in debug builds on Windows.
+    let engine = std::thread::Builder::new()
+        .stack_size(128 * 1024 * 1024) // 128 MB — debug builds have much larger stack frames
+        .spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                WhisperEngine::load(config)
+            }))
+        })
+        .map_err(|e| format!("Failed to spawn model loader: {e}"))?
+        .join()
+        .map_err(|_| "Model loader thread panicked".to_string())?
+        .map_err(|_| "Model loader panicked during initialization".to_string())?
+        .map_err(|e| format!("Failed to load model: {e}"))?;
 
-    *state.engine.lock().unwrap() = Some(engine);
+    *state.engine.lock().unwrap() = Some(Arc::new(engine));
     *state.active_model_id.lock().unwrap() = Some(model_id.to_string());
 
     Ok(())

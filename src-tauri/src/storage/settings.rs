@@ -56,6 +56,10 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .get("hotkey")
         .and_then(|v| serde_json::from_str::<HotkeyConfig>(v).ok())
         .or(defaults.hotkey);
+    let gpu_acceleration = map
+        .get("gpu_acceleration")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.gpu_acceleration);
 
     Ok(AppSettings {
         theme,
@@ -66,6 +70,7 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         sample_rate,
         active_model_id,
         hotkey,
+        gpu_acceleration,
     })
 }
 
@@ -111,6 +116,10 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
             "hotkey",
             serde_json::to_string(&settings.hotkey).unwrap_or_default()
         ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["gpu_acceleration", settings.gpu_acceleration.to_string()],
     )?;
 
     tx.commit()?;

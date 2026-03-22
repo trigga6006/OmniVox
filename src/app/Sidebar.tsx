@@ -1,4 +1,4 @@
-import { Mic, Clock, BookOpen, Download, Settings } from "lucide-react";
+import { Mic, Clock, BookOpen, StickyNote, Download, Settings } from "lucide-react";
 import { useAppStore, type Page } from "@/stores/appStore";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { Logo } from "@/components/Logo";
@@ -8,6 +8,7 @@ const navItems: { page: Page; icon: typeof Mic; label: string }[] = [
   { page: "dictation", icon: Mic, label: "Dictation" },
   { page: "history", icon: Clock, label: "History" },
   { page: "dictionary", icon: BookOpen, label: "Dictionary" },
+  { page: "notes", icon: StickyNote, label: "Notes" },
   { page: "models", icon: Download, label: "Models" },
   { page: "settings", icon: Settings, label: "Settings" },
 ];

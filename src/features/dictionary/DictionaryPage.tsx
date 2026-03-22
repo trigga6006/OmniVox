@@ -523,7 +523,7 @@ export function DictionaryPage() {
     <div className="flex h-full flex-col p-6">
       {/* Header */}
       <div>
-        <h1 className="font-display text-2xl text-text-primary">Dictionary</h1>
+        <h1 className="font-display font-semibold text-2xl text-text-primary">Dictionary</h1>
         <p className="text-sm text-text-muted mt-1">
           Custom vocabulary & text snippets
         </p>

@@ -48,7 +48,7 @@
   --spacing-sidebar: 4.5rem;
 
   /* Typography */
-  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-display: 'Archivo', system-ui, sans-serif;
   --font-sans: 'Outfit', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
 

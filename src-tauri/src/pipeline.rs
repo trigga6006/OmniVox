@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tauri::{Emitter, Manager};
 
 use crate::asr::engine::AsrEngine;
@@ -44,7 +46,8 @@ fn restore_foreground_window(hwnd: isize) {
         SetForegroundWindow(hwnd as *mut std::ffi::c_void);
     }
     // Give the OS time to process the focus switch and any WM_SETFOCUS handlers.
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // 50 ms is sufficient — Windows processes SetForegroundWindow in under 20 ms.
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     // Collapse any accidental text selection caused by the focus change.
     deselect_after_focus_restore(hwnd);
@@ -84,9 +87,8 @@ fn deselect_after_focus_restore(hwnd: isize) {
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
     if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
         let _ = enigo.key(Key::RightArrow, Direction::Click);
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(2));
         let _ = enigo.key(Key::LeftArrow, Direction::Click);
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 
@@ -208,26 +210,34 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         return;
     }
 
-    // 2. Transcribe — CPU-bound
-    let engine_guard = match state.engine.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+    // 2. Transcribe — CPU-bound, runs on a blocking thread to keep the async
+    //    runtime free for UI events during inference.
+    let engine: Arc<crate::asr::engine::WhisperEngine> = {
+        let guard = match state.engine.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match guard.as_ref().map(Arc::clone) {
+            Some(e) => e,
+            None => {
+                drop(guard);
+                eprintln!("No model loaded — cannot transcribe");
+                let _ = app_handle.emit("recording-state-change", "error");
+                return;
+            }
+        }
     };
-    let transcription = match engine_guard.as_ref() {
-        Some(engine) => engine.transcribe(&samples),
-        None => {
-            drop(engine_guard);
-            eprintln!("No model loaded — cannot transcribe");
+
+    let transcription = match tokio::task::spawn_blocking(move || engine.transcribe(&samples)).await
+    {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
+            eprintln!("Transcription failed: {e}");
             let _ = app_handle.emit("recording-state-change", "error");
             return;
         }
-    };
-    drop(engine_guard);
-
-    let transcription = match transcription {
-        Ok(t) => t,
         Err(e) => {
-            eprintln!("Transcription failed: {e}");
+            eprintln!("Transcription task panicked: {e}");
             let _ = app_handle.emit("recording-state-change", "error");
             return;
         }
@@ -239,7 +249,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     }
 
     // 3. Post-process (dictionary replacements, capitalization, etc.)
-    let final_text = {
+    let processed_text = {
         let processor = match state.processor.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -250,13 +260,40 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
-    // 4. Restore focus to the previously active window before pasting
+    // 4. Kick off focus restoration in parallel with LLM cleanup.
+    //    Focus restore involves OS sleeps (~52 ms) that can overlap with the
+    //    much slower LLM inference, saving wall-clock time.
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
-    if let Some(hwnd) = prev_hwnd {
-        restore_foreground_window(hwnd);
+    let focus_task = prev_hwnd.map(|hwnd| {
+        tokio::task::spawn_blocking(move || restore_foreground_window(hwnd))
+    });
+
+    // 5. AI cleanup via local LLM (if enabled and model loaded) — runs
+    //    concurrently with focus restoration above.
+    let final_text = {
+        let mut llm_guard = match state.llm_engine.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(ref mut engine) = *llm_guard {
+            match engine.cleanup_text(&processed_text) {
+                Ok(cleaned) => cleaned,
+                Err(e) => {
+                    eprintln!("LLM cleanup error, using raw text: {e}");
+                    processed_text
+                }
+            }
+        } else {
+            processed_text
+        }
+    };
+
+    // Wait for focus restoration to complete before outputting text.
+    if let Some(task) = focus_task {
+        let _ = task.await;
     }
 
-    // 5. Output to the focused application
+    // 6. Output to the focused application
     let output_config = match state.output_config.lock() {
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
@@ -265,7 +302,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         eprintln!("Output failed: {e}");
     }
 
-    // 6. Save to history
+    // 7. Save to history
     let record = crate::storage::types::TranscriptionRecord {
         id: uuid::Uuid::new_v4(),
         text: final_text.clone(),
@@ -277,7 +314,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         eprintln!("Failed to save transcription to history: {e}");
     }
 
-    // 7. Notify frontend
+    // 8. Notify frontend
     let _ = app_handle.emit("transcription-result", &final_text);
     let _ = app_handle.emit("recording-state-change", "idle");
 }

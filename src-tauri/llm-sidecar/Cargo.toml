@@ -1,0 +1,19 @@
+[package]
+name = "omnivox-llm"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omnivox-llm"
+path = "src/main.rs"
+
+[dependencies]
+llama-cpp-2 = { version = "0.1", default-features = false, features = ["dynamic-link"] }
+encoding_rs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Same optimisation trick as the main crate — prevents STATUS_STACK_BUFFER_OVERRUN
+# in debug builds on Windows.
+[profile.dev.package.llama-cpp-sys-2]
+opt-level = 2

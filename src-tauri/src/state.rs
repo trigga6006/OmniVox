@@ -1,8 +1,9 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioConfig;
+use crate::llm::engine::LlmEngine;
 use crate::models::downloader::ModelDownloader;
 use crate::models::manager::ModelManager;
 use crate::output::router::OutputRouter;
@@ -18,8 +19,10 @@ use crate::storage::database::Database;
 pub struct AppState {
     /// Microphone capture engine
     pub audio: Mutex<AudioCapture>,
-    /// Whisper engine — None until a model is loaded
-    pub engine: Mutex<Option<crate::asr::engine::WhisperEngine>>,
+    /// Whisper engine — None until a model is loaded.
+    /// Wrapped in Arc so transcription can run on a blocking thread without
+    /// holding the Mutex for the duration of CPU-bound inference.
+    pub engine: Mutex<Option<Arc<crate::asr::engine::WhisperEngine>>>,
     /// Text post-processing chain (capitalization, dictionary, etc.)
     pub processor: Mutex<ProcessorChain>,
     /// Output router (clipboard / keystroke simulation)
@@ -38,6 +41,10 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Directory where downloaded model files are stored
     pub models_dir: PathBuf,
+    /// LLM engine for AI text cleanup — None until user enables and model is loaded
+    pub llm_engine: Mutex<Option<LlmEngine>>,
+    /// Directory where LLM model files are stored (separate from Whisper models)
+    pub llm_models_dir: PathBuf,
     /// HWND of the window that was focused before recording started.
     /// Used to restore focus before pasting transcription text.
     pub prev_foreground: Mutex<Option<isize>>,
@@ -49,6 +56,7 @@ impl AppState {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("omnivox");
         let models_dir = data_dir.join("models");
+        let llm_models_dir = data_dir.join("llm_models");
         let db_path = data_dir.join("omnivox.db");
 
         // Initialize database — create tables on first run
@@ -64,6 +72,8 @@ impl AppState {
             model_manager: ModelManager::new(models_dir.clone()),
             downloader: ModelDownloader::new(models_dir.clone()),
             active_model_id: Mutex::new(None),
+            llm_engine: Mutex::new(None),
+            llm_models_dir,
             db,
             data_dir,
             models_dir,

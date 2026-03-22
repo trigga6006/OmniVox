@@ -40,7 +40,13 @@ impl WhisperEngine {
             return Err(AppError::Asr(format!("Model file not found: {path}")));
         }
 
-        let ctx_params = WhisperContextParameters::default();
+        let mut ctx_params = WhisperContextParameters::default();
+        // Flash attention reduces memory bandwidth and speeds up inference
+        // (5–15% on CPU, more with GPU). Safe to enable since we don't use DTW.
+        ctx_params.flash_attn(true);
+        // GPU offload via Vulkan/CUDA when the user enables it in settings.
+        // Only effective when the binary is compiled with the `vulkan` or `cuda` feature.
+        ctx_params.use_gpu(config.use_gpu);
         let ctx = WhisperContext::new_with_params(path, ctx_params)
             .map_err(|e| AppError::Asr(format!("Failed to load model '{path}': {e}")))?;
 

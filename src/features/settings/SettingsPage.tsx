@@ -1,12 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Sparkles, Download, Loader2, Zap } from "lucide-react";
 import {
   getSettings,
   updateSettings,
   suspendHotkey,
   updateHotkey,
+  getAiCleanupStatus,
+  enableAiCleanup,
+  disableAiCleanup,
+  downloadLlmModel,
+  onDownloadProgress,
+  setActiveModel,
+  getActiveModel,
   type AppSettings,
   type HotkeyConfig,
+  type DownloadProgress,
 } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
@@ -270,6 +278,257 @@ function HotkeySection({
   );
 }
 
+/* ─────────────────── GPU Acceleration Section ─────────────── */
+
+function GpuAccelerationSection({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+}) {
+  const [reloading, setReloading] = useState(false);
+
+  const handleToggle = useCallback(async () => {
+    const next = !enabled;
+    setReloading(true);
+    onToggle(next);
+
+    // Reload the active Whisper model so it picks up the new GPU setting.
+    try {
+      const active = await getActiveModel();
+      if (active) {
+        await setActiveModel(active.id);
+      }
+    } catch (e) {
+      console.error("Failed to reload model after GPU toggle:", e);
+    } finally {
+      setReloading(false);
+    }
+  }, [enabled, onToggle]);
+
+  return (
+    <section
+      className={cn(
+        "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+        enabled
+          ? "border-amber-500/20"
+          : "border-border hover:border-border-hover"
+      )}
+      style={{ opacity: 0, animationDelay: "0.19s", animationFillMode: "forwards" }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Zap size={14} strokeWidth={2} className="text-text-muted" />
+        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+          GPU Acceleration
+        </span>
+      </div>
+
+      <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+        Offload Whisper inference to your GPU via Vulkan for significantly faster
+        transcription. Works with both AMD and NVIDIA GPUs.
+      </p>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleToggle}
+          disabled={reloading}
+          className={cn(
+            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+            enabled ? "bg-amber-500" : "bg-surface-3",
+            reloading && "opacity-60"
+          )}
+        >
+          <span
+            className={cn(
+              "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+              enabled ? "translate-x-6" : "translate-x-1"
+            )}
+          />
+        </button>
+        <span className="text-sm text-text-secondary">
+          {reloading ? (
+            <span className="flex items-center gap-1.5">
+              <Loader2 size={13} strokeWidth={2} className="animate-spin text-amber-400" />
+              Reloading model...
+            </span>
+          ) : enabled ? (
+            "Enabled"
+          ) : (
+            "Disabled"
+          )}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+/* ─────────────────── AI Cleanup Section ────────────────────── */
+
+type AiState = "idle" | "downloading" | "loading" | "ready";
+
+function AiCleanupSection() {
+  const [modelDownloaded, setModelDownloaded] = useState(false);
+  const [aiState, setAiState] = useState<AiState>("idle");
+  const [downloadPercent, setDownloadPercent] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  // Check initial status
+  useEffect(() => {
+    getAiCleanupStatus()
+      .then((s) => {
+        setModelDownloaded(s.model_downloaded);
+        if (s.model_loaded) setAiState("ready");
+      })
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  // Listen for LLM download progress events
+  useEffect(() => {
+    const unlisten = onDownloadProgress((progress: DownloadProgress) => {
+      if (progress.model_id !== "llm-qwen3-0.6b") return;
+      setDownloadPercent(Math.round(progress.progress_percent));
+      if (progress.status === "Completed") {
+        setModelDownloaded(true);
+        setAiState("idle");
+      }
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, []);
+
+  const handleDownload = useCallback(async () => {
+    setError(null);
+    setAiState("downloading");
+    setDownloadPercent(0);
+    try {
+      await downloadLlmModel();
+      // download-progress event listener handles the rest
+    } catch (e) {
+      setError(String(e));
+      setAiState("idle");
+    }
+  }, []);
+
+  const handleEnable = useCallback(async () => {
+    setError(null);
+    setAiState("loading");
+    try {
+      await enableAiCleanup();
+      setAiState("ready");
+    } catch (e) {
+      setError(String(e));
+      setAiState("idle");
+    }
+  }, []);
+
+  const handleDisable = useCallback(async () => {
+    setError(null);
+    try {
+      await disableAiCleanup();
+      setAiState("idle");
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const isActive = aiState === "ready";
+  const isBusy = aiState === "downloading" || aiState === "loading";
+
+  return (
+    <section
+      className={cn(
+        "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+        isActive
+          ? "border-amber-500/20"
+          : "border-border hover:border-border-hover"
+      )}
+      style={{ opacity: 0, animationDelay: "0.22s", animationFillMode: "forwards" }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Sparkles size={14} strokeWidth={2} className="text-text-muted" />
+        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+          AI Cleanup
+        </span>
+      </div>
+
+      <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+        Uses a local AI model (Qwen3-0.6B) to remove filler words, fix grammar, and
+        polish transcriptions. Runs entirely on your device.
+      </p>
+
+      {/* Step 1: Download model */}
+      {!modelDownloaded && aiState !== "downloading" && (
+        <button
+          onClick={handleDownload}
+          disabled={isBusy}
+          className="inline-flex items-center gap-2 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+        >
+          <Download size={14} strokeWidth={2} />
+          Download Model (~524 MB)
+        </button>
+      )}
+
+      {/* Downloading progress */}
+      {aiState === "downloading" && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Download size={14} strokeWidth={2} className="text-amber-400 animate-pulse" />
+            <span className="text-sm text-amber-400">
+              Downloading... {downloadPercent}%
+            </span>
+          </div>
+          <div className="w-full bg-surface-3 rounded-full h-2">
+            <div
+              className="bg-amber-500 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${downloadPercent}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Enable / Disable */}
+      {modelDownloaded && aiState === "idle" && (
+        <button
+          onClick={handleEnable}
+          className="inline-flex items-center gap-2 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/25 transition-colors"
+        >
+          <Sparkles size={14} strokeWidth={2} />
+          Enable AI Cleanup
+        </button>
+      )}
+
+      {aiState === "loading" && (
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} strokeWidth={2} className="text-amber-400 animate-spin" />
+          <span className="text-sm text-amber-400">Loading model into memory...</span>
+        </div>
+      )}
+
+      {aiState === "ready" && (
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-green-500" />
+            <span className="text-sm text-green-400">Active</span>
+          </div>
+          <button
+            onClick={handleDisable}
+            className="text-xs text-text-muted hover:text-text-secondary transition-colors"
+          >
+            Disable
+          </button>
+        </div>
+      )}
+
+      {/* Error display */}
+      {error && (
+        <p className="mt-3 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2 border border-red-500/20">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
 /* ─────────────────── Main Settings Page ─────────────────────── */
 
 export function SettingsPage() {
@@ -300,6 +559,19 @@ export function SettingsPage() {
     [settings]
   );
 
+  const handleGpuToggle = useCallback(
+    (enabled: boolean) => {
+      if (!settings) return;
+
+      const updated: AppSettings = { ...settings, gpu_acceleration: enabled };
+      setSettings(updated);
+      updateSettings(updated).catch((e) =>
+        console.error("Failed to save settings:", e)
+      );
+    },
+    [settings]
+  );
+
   const handleHotkeySaved = useCallback(
     (config: HotkeyConfig) => {
       if (settings) {
@@ -316,7 +588,7 @@ export function SettingsPage() {
         className="animate-slide-up"
         style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
       >
-        <h1 className="font-display text-2xl text-text-primary">Settings</h1>
+        <h1 className="font-display font-semibold text-2xl text-text-primary">Settings</h1>
         <p className="text-sm text-text-muted mt-1">Configuration</p>
       </div>
 
@@ -389,6 +661,15 @@ export function SettingsPage() {
             })}
           </div>
         </section>
+
+        {/* ── GPU Acceleration ── */}
+        <GpuAccelerationSection
+          enabled={settings?.gpu_acceleration ?? false}
+          onToggle={handleGpuToggle}
+        />
+
+        {/* ── AI Cleanup ── */}
+        <AiCleanupSection />
 
         {/* ── Hotkey ── */}
         <HotkeySection

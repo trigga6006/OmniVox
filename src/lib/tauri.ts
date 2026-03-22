@@ -78,6 +78,8 @@ export interface AppSettings {
   sample_rate: number;
   active_model_id: string | null;
   hotkey: HotkeyConfig | null;
+  ai_cleanup_enabled: boolean;
+  gpu_acceleration: boolean;
 }
 
 // Audio commands
@@ -98,6 +100,7 @@ export const getActiveModel = () => invoke<ModelInfo | null>("get_active_model")
 export const setActiveModel = (modelId: string) =>
   invoke<void>("set_active_model", { modelId });
 export const getHardwareInfo = () => invoke<HardwareInfo>("get_hardware_info");
+export const getGpuSupport = () => invoke<boolean>("get_gpu_support");
 
 // Dictionary commands
 export const addDictionaryEntry = (phrase: string, replacement: string) =>
@@ -125,10 +128,39 @@ export const deleteHistoryRecord = (id: string) =>
 export const exportHistory = (format: string) =>
   invoke<string>("export_history", { format });
 
+// Notes commands
+export interface Note {
+  id: string;
+  title: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const addNote = (title: string, content: string) =>
+  invoke<Note>("add_note", { title, content });
+export const updateNote = (id: string, title: string, content: string) =>
+  invoke<void>("update_note", { id, title, content });
+export const deleteNote = (id: string) =>
+  invoke<void>("delete_note", { id });
+export const listNotes = () => invoke<Note[]>("list_notes");
+
 // Settings commands
 export const getSettings = () => invoke<AppSettings>("get_settings");
 export const updateSettings = (settings: AppSettings) =>
   invoke<void>("update_settings", { settings });
+
+// AI Cleanup commands
+export interface AiCleanupStatus {
+  enabled: boolean;
+  model_downloaded: boolean;
+  model_loaded: boolean;
+}
+export const getAiCleanupStatus = () =>
+  invoke<AiCleanupStatus>("get_ai_cleanup_status");
+export const enableAiCleanup = () => invoke<void>("enable_ai_cleanup");
+export const disableAiCleanup = () => invoke<void>("disable_ai_cleanup");
+export const downloadLlmModel = () => invoke<void>("download_llm_model");
 
 // Hotkey commands
 export const suspendHotkey = (suspended: boolean) =>

@@ -34,7 +34,7 @@ export function DictationPanel() {
       {/* ── Status headline ──────────────────────────────────── */}
       <h1
         className={cn(
-          "font-display text-3xl tracking-tight opacity-0 animate-fade-in",
+          "font-display font-semibold text-3xl tracking-tight opacity-0 animate-fade-in",
           isIdle && "text-text-primary",
           isRecording && "text-amber-400",
           isProcessing && "text-text-secondary"
@@ -88,7 +88,7 @@ export function DictationPanel() {
             "opacity-0 animate-slide-up"
           )}
         >
-          <p className="font-display italic text-sm text-text-muted mb-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-text-muted mb-2">
             Last transcription
           </p>
           <p className="font-sans text-base leading-relaxed text-text-primary select-text">

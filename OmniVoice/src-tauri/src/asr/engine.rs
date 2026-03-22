@@ -84,7 +84,7 @@ impl AsrEngine for WhisperEngine {
 
         // Reduce hallucinations on silence / low-energy audio
         params.set_suppress_blank(true);
-        params.set_suppress_non_speech_tokens(true);
+        params.set_suppress_nst(true);
 
         // Run inference — this is CPU-bound and blocks
         state
@@ -92,29 +92,26 @@ impl AsrEngine for WhisperEngine {
             .map_err(|e| AppError::Asr(format!("Inference failed: {e}")))?;
 
         // Extract segments
-        let n_segments = state
-            .full_n_segments()
-            .map_err(|e| AppError::Asr(format!("Failed to read segments: {e}")))?;
+        let n_segments = state.full_n_segments();
 
         let mut segments = Vec::with_capacity(n_segments as usize);
         let mut full_text = String::new();
 
         for i in 0..n_segments {
-            let text = state
-                .full_get_segment_text(i)
-                .map_err(|e| AppError::Asr(format!("Segment {i} text: {e}")))?;
-            let t0 = state
-                .full_get_segment_t0(i)
-                .map_err(|e| AppError::Asr(format!("Segment {i} t0: {e}")))?;
-            let t1 = state
-                .full_get_segment_t1(i)
-                .map_err(|e| AppError::Asr(format!("Segment {i} t1: {e}")))?;
+            let seg = match state.get_segment(i) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let text = seg.to_str_lossy()
+                .unwrap_or_else(|_| std::borrow::Cow::Borrowed(""))
+                .into_owned();
 
             full_text.push_str(&text);
 
             segments.push(TranscriptionSegment {
-                start_ms: (t0 as u64) * 10, // whisper timestamps are 10 ms units
-                end_ms: (t1 as u64) * 10,
+                start_ms: (seg.start_timestamp() as u64) * 10, // whisper timestamps are centiseconds
+                end_ms: (seg.end_timestamp() as u64) * 10,
                 text,
                 confidence: 0.0, // whisper.cpp doesn't expose per-segment confidence
             });

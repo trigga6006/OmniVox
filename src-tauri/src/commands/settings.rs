@@ -7,7 +7,38 @@ use crate::storage::types::AppSettings;
 const TASKBAR_H: f64 = 48.0;
 const MARGIN: f64 = 12.0;
 
+/// Find which monitor currently contains the mouse cursor.
+/// The cursor tracks the user's active text input, so the overlay pill
+/// follows them across monitors automatically.
+#[cfg(target_os = "windows")]
+fn cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut pt = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut pt) } == 0 {
+        return None;
+    }
+
+    let monitors = app.available_monitors().ok()?;
+    monitors.into_iter().find(|mon| {
+        let pos = mon.position();
+        let size = mon.size();
+        pt.x >= pos.x
+            && pt.x < pos.x + size.width as i32
+            && pt.y >= pos.y
+            && pt.y < pos.y + size.height as i32
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cursor_monitor(_app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    None
+}
+
 /// Resize and reposition the overlay pill window from the frontend.
+/// Automatically moves the pill to whichever monitor has the cursor,
+/// so it follows the user across multi-monitor setups.
 #[tauri::command]
 pub async fn resize_overlay(
     app: tauri::AppHandle,
@@ -18,23 +49,29 @@ pub async fn resize_overlay(
         .get_webview_window("overlay")
         .ok_or("overlay window not found")?;
 
-    let monitor = window
-        .current_monitor()
-        .map_err(|e| e.to_string())?
+    // Prefer the monitor with the cursor; fall back to the overlay's current monitor.
+    let target = cursor_monitor(&app)
+        .or_else(|| window.current_monitor().ok().flatten())
         .ok_or("no monitor")?;
 
-    let scale = monitor.scale_factor();
-    let screen_w = monitor.size().width as f64 / scale;
-    let screen_h = monitor.size().height as f64 / scale;
+    let scale = target.scale_factor();
+    let mon_pos = target.position();
+    let mon_size = target.size();
 
-    let x = (screen_w - width) / 2.0;
-    let y = (screen_h - TASKBAR_H - height - MARGIN).max(0.0);
+    // Calculate position in physical pixels, centered at the bottom of the target monitor
+    let phys_w = width * scale;
+    let phys_h = height * scale;
+    let taskbar_phys = TASKBAR_H * scale;
+    let margin_phys = MARGIN * scale;
+
+    let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
+    let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
 
     window
         .set_size(tauri::LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
     window
-        .set_position(tauri::LogicalPosition::new(x, y))
+        .set_position(tauri::PhysicalPosition::new(x as i32, y.max(0.0) as i32))
         .map_err(|e| e.to_string())?;
 
     Ok(())

@@ -39,6 +39,7 @@ pub struct AppSettings {
     pub output_mode: String,
     pub sample_rate: u32,
     pub active_model_id: Option<String>,
+    pub ai_cleanup_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -51,6 +52,7 @@ impl Default for AppSettings {
             output_mode: "clipboard".to_string(),
             sample_rate: 16000,
             active_model_id: None,
+            ai_cleanup_enabled: false,
         }
     }
 }

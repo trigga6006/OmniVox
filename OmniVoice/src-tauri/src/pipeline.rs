@@ -1,4 +1,4 @@
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::asr::engine::AsrEngine;
 use crate::postprocess::processor::TextProcessor;
@@ -89,11 +89,27 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     }
 
     // 3. Post-process (dictionary replacements, capitalization, etc.)
-    let final_text = {
+    let processed_text = {
         let processor = state.processor.lock().unwrap();
         match processor.process(&transcription.text) {
             Ok(processed) => processed.processed,
             Err(_) => transcription.text.clone(),
+        }
+    };
+
+    // 4. AI cleanup via local LLM (if enabled and model loaded)
+    let final_text = {
+        let llm_guard = state.llm_engine.lock().unwrap();
+        if let Some(ref engine) = *llm_guard {
+            match engine.cleanup_text(&processed_text) {
+                Ok(cleaned) => cleaned,
+                Err(e) => {
+                    eprintln!("LLM cleanup failed, using raw text: {e}");
+                    processed_text
+                }
+            }
+        } else {
+            processed_text
         }
     };
 

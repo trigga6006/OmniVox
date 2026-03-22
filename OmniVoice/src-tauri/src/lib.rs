@@ -2,6 +2,7 @@ pub mod audio;
 pub mod asr;
 pub mod commands;
 pub mod error;
+pub mod llm;
 pub mod models;
 pub mod output;
 pub mod pipeline;
@@ -13,8 +14,8 @@ use tauri::Manager;
 use tauri_plugin_global_shortcut::ShortcutState;
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox")?;
-    let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit")?;
+    let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox", true, None::<&str>)?;
+    let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = tauri::menu::Menu::with_items(app, &[&show_item, &quit_item])?;
 
     tauri::tray::TrayIconBuilder::new()
@@ -92,14 +93,15 @@ pub fn run() {
             setup_tray(app)?;
 
             // Register default hotkey: Ctrl+Win to toggle recording
-            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifier, Shortcut};
+            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
             let shortcut =
-                Shortcut::new(Some(Modifier::CONTROL), Code::MetaLeft);
+                Shortcut::new(Some(Modifiers::CONTROL), Code::MetaLeft);
             app.global_shortcut().register(shortcut)?;
 
             // Ensure data directories exist
             let state = app.state::<state::AppState>();
             let _ = std::fs::create_dir_all(&state.models_dir);
+            let _ = std::fs::create_dir_all(&state.llm_models_dir);
             let _ = std::fs::create_dir_all(&state.data_dir);
 
             // First-launch: copy bundled model from app resources to models dir
@@ -139,6 +141,11 @@ pub fn run() {
             // Settings commands (2)
             commands::get_settings,
             commands::update_settings,
+            // LLM / AI cleanup commands (4)
+            commands::get_ai_cleanup_status,
+            commands::download_llm_model,
+            commands::enable_ai_cleanup,
+            commands::disable_ai_cleanup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

@@ -1,0 +1,21 @@
+# Disable MSVC debug assertions (_ASSERTE) in C/C++ dependencies.
+#
+# In debug Rust builds, the cc crate compiles C code without NDEBUG,
+# which enables _ASSERTE macros in the MSVC UCRT. In a Windows GUI app
+# (no console), any fprintf(stderr, ...) hits an invalid fd and triggers
+# an assertion dialog + crash. Defining NDEBUG disables these at compile
+# time — the proper fix for windowless apps.
+#
+# The build.rs neutralizes llama-cpp-sys-2's GGML import libraries with
+# empty stubs so they don't conflict with whisper-rs-sys's static GGML.
+# No /FORCE:MULTIPLE needed — there are no duplicate symbols.
+
+# Shorten target dir to avoid Windows 260-char MAX_PATH errors during
+# the Vulkan shader build (whisper-rs-sys creates deeply nested paths).
+[build]
+target-dir = "C:\\t"
+
+[env]
+VULKAN_SDK = "C:\\VulkanSDK\\1.4.341.1"
+CFLAGS = "-DNDEBUG"
+CXXFLAGS = "-DNDEBUG"

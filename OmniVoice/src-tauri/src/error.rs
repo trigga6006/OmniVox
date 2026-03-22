@@ -10,6 +10,8 @@ pub enum AppError {
     Model(String),
     #[error("Output error: {0}")]
     Output(String),
+    #[error("LLM error: {0}")]
+    Llm(String),
     #[error("Storage error: {0}")]
     Storage(String),
     #[error("IO error: {0}")]

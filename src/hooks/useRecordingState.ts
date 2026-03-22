@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useTauriEvent } from "./useTauriEvent";
-import { onRecordingStateChange, onAudioLevel, onTranscriptionResult } from "@/lib/tauri";
+import { onRecordingStateChange, onAudioLevel } from "@/lib/tauri";
 import type { RecordingStatus } from "@/stores/recordingStore";
 
 export function useRecordingState() {
-  const { setStatus, setDuration, setAudioLevel, setLastTranscription, reset } =
+  const { setStatus, setDuration, setAudioLevel } =
     useRecordingStore();
 
   // --- Tauri event handlers ---
+  // Note: transcription-result is handled globally in App.tsx via
+  // useGlobalTranscriptionSync() so hotkey dictations are captured
+  // regardless of which page is active.
 
   const handleStateChange = useCallback(
     (status: string) => {
@@ -26,14 +29,8 @@ export function useRecordingState() {
     [setAudioLevel]
   );
 
-  const handleTranscription = useCallback(
-    (text: string) => setLastTranscription(text),
-    [setLastTranscription]
-  );
-
   useTauriEvent(onRecordingStateChange, handleStateChange);
   useTauriEvent(onAudioLevel, handleAudioLevel);
-  useTauriEvent(onTranscriptionResult, handleTranscription);
 
   // --- Duration timer: increments every 100ms while recording ---
 

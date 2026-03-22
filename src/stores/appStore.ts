@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Page = "dictation" | "history" | "dictionary" | "models" | "settings";
+export type Page = "dictation" | "history" | "dictionary" | "notes" | "models" | "settings";
 
 interface AppState {
   currentPage: Page;

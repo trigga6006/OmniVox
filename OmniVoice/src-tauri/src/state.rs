@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioConfig;
+use crate::llm::engine::LlmEngine;
 use crate::models::downloader::ModelDownloader;
 use crate::models::manager::ModelManager;
 use crate::output::router::OutputRouter;
@@ -31,10 +32,14 @@ pub struct AppState {
     pub downloader: ModelDownloader,
     /// ID of the currently active model
     pub active_model_id: Mutex<Option<String>>,
+    /// LLM engine for AI text cleanup — None until user enables and model is downloaded
+    pub llm_engine: Mutex<Option<LlmEngine>>,
     /// Application data directory (~/.local/share/omnivox or AppData/omnivox)
     pub data_dir: PathBuf,
     /// Directory where downloaded model files are stored
     pub models_dir: PathBuf,
+    /// Directory where LLM model files are stored (separate from Whisper models)
+    pub llm_models_dir: PathBuf,
 }
 
 impl AppState {
@@ -43,6 +48,7 @@ impl AppState {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("omnivox");
         let models_dir = data_dir.join("models");
+        let llm_models_dir = data_dir.join("llm_models");
 
         Self {
             audio: Mutex::new(AudioCapture::new(AudioConfig::default())),
@@ -53,8 +59,10 @@ impl AppState {
             model_manager: ModelManager::new(models_dir.clone()),
             downloader: ModelDownloader::new(models_dir.clone()),
             active_model_id: Mutex::new(None),
+            llm_engine: Mutex::new(None),
             data_dir,
             models_dir,
+            llm_models_dir,
         }
     }
 }

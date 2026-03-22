@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Download, Check, Cpu, Loader2 } from "lucide-react";
-import { listModels, getHardwareInfo, downloadModel, setActiveModel } from "@/lib/tauri";
+import { listModels, getHardwareInfo, downloadModel, setActiveModel, getActiveModel } from "@/lib/tauri";
 import { formatBytes, cn } from "@/lib/utils";
 import type { ModelInfo, HardwareInfo } from "@/lib/tauri";
 
@@ -12,9 +12,12 @@ export function ModelsPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [m, hw] = await Promise.all([listModels(), getHardwareInfo()]);
+      const [m, hw, active] = await Promise.all([listModels(), getHardwareInfo(), getActiveModel()]);
       setModels(m);
       setHardware(hw);
+      if (active) {
+        setActiveModelId(active.id);
+      }
     } catch (err) {
       console.error("Failed to load models:", err);
     }
@@ -52,7 +55,7 @@ export function ModelsPage() {
         className="opacity-0 animate-slide-up"
         style={{ animationDelay: "0.05s", animationFillMode: "forwards" }}
       >
-        <h1 className="font-display text-2xl text-text-primary">Models</h1>
+        <h1 className="font-display font-semibold text-2xl text-text-primary">Models</h1>
         <p className="text-sm text-text-muted mt-1">
           Whisper speech recognition models
         </p>

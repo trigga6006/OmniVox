@@ -22,6 +22,8 @@ pub struct AsrConfig {
     pub language: Option<String>,
     pub translate: bool,
     pub n_threads: u32,
+    /// Enable GPU acceleration via Vulkan/CUDA (requires compile-time feature).
+    pub use_gpu: bool,
 }
 
 impl Default for AsrConfig {
@@ -31,6 +33,7 @@ impl Default for AsrConfig {
             language: None,
             translate: false,
             n_threads: 4,
+            use_gpu: false,
         }
     }
 }

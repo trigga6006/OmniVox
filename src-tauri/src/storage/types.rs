@@ -31,6 +31,15 @@ pub struct Snippet {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Note {
+    pub id: Uuid,
+    pub title: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub theme: String,
     pub language: String,
@@ -40,6 +49,8 @@ pub struct AppSettings {
     pub sample_rate: u32,
     pub active_model_id: Option<String>,
     pub hotkey: Option<crate::hotkey::HotkeyConfig>,
+    /// Enable GPU acceleration for Whisper inference (requires Vulkan).
+    pub gpu_acceleration: bool,
 }
 
 impl Default for AppSettings {
@@ -53,6 +64,7 @@ impl Default for AppSettings {
             sample_rate: 16000,
             active_model_id: None,
             hotkey: Some(crate::hotkey::HotkeyConfig::default()),
+            gpu_acceleration: false,
         }
     }
 }
