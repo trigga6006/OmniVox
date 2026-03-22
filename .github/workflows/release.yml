@@ -9,10 +9,10 @@ permissions:
   contents: write
 
 env:
-  # Override the local .cargo/config.toml target-dir ("C:\t") which only
-  # makes sense on the developer's machine to avoid MAX_PATH issues.
-  # CI runners have long-path support enabled by default.
-  CARGO_TARGET_DIR: target
+  # Short absolute target dir to avoid Windows 260-char MAX_PATH errors.
+  # MSBuild FileTracker ignores the long-path registry setting, and
+  # whisper-rs-sys's Vulkan shader build creates deeply nested paths.
+  CARGO_TARGET_DIR: C:\b
 
 jobs:
   build-windows:
@@ -48,11 +48,11 @@ jobs:
           cd src-tauri/llm-sidecar
           cargo build --release
           # Copy sidecar exe + DLLs next to where Tauri will package them
-          cp target/release/omnivox-llm.exe ../resources/
-          cp target/release/llama.dll ../resources/
-          cp target/release/ggml.dll ../resources/
-          cp target/release/ggml-base.dll ../resources/
-          cp target/release/ggml-cpu.dll ../resources/
+          cp /c/b/release/omnivox-llm.exe ../resources/
+          cp /c/b/release/llama.dll ../resources/
+          cp /c/b/release/ggml.dll ../resources/
+          cp /c/b/release/ggml-base.dll ../resources/
+          cp /c/b/release/ggml-cpu.dll ../resources/
 
       - name: Build Tauri app
         shell: bash
@@ -62,14 +62,11 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          # Find the NSIS installer — check both possible locations
-          INSTALLER=$(find src-tauri/target/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
-          if [ -z "$INSTALLER" ]; then
-            INSTALLER=$(find target/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
-          fi
+          # NSIS installer is in the short target dir
+          INSTALLER=$(find /c/b/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
           if [ -z "$INSTALLER" ]; then
             echo "ERROR: No NSIS installer found. Searching all bundle output:"
-            find . -path "*/bundle/nsis/*.exe" 2>/dev/null
+            find /c/b -path "*/bundle/nsis/*.exe" 2>/dev/null
             exit 1
           fi
           echo "Found installer: $INSTALLER"
