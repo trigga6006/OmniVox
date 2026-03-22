@@ -270,16 +270,21 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
     // 5. AI cleanup via local LLM (if enabled and model loaded) — runs
     //    concurrently with focus restoration above.
-    let active_prompt = state.active_llm_prompt.lock()
+    //    Assemble the full system prompt: base rules (code constant) +
+    //    mode-specific additions (from DB).
+    let mode_additions = state.active_llm_prompt.lock()
         .map(|g| g.clone())
         .unwrap_or(None);
+    let system_prompt = crate::storage::context_modes::build_system_prompt(
+        mode_additions.as_deref(),
+    );
     let final_text = {
         let mut llm_guard = match state.llm_engine.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(ref mut engine) = *llm_guard {
-            match engine.cleanup_text(&processed_text, active_prompt.as_deref()) {
+            match engine.cleanup_text(&processed_text, Some(&system_prompt)) {
                 Ok(cleaned) => cleaned,
                 Err(e) => {
                     eprintln!("LLM cleanup error, using raw text: {e}");
@@ -290,6 +295,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             processed_text
         }
     };
+
+    // 5b. Apply deterministic list formatting (bullet lists for enumerated
+    //     items).  This runs after LLM cleanup so the model only handles
+    //     grammar — structural formatting is handled here at zero cost.
+    let final_text = crate::postprocess::formatter::format_lists(&final_text);
 
     // Wait for focus restoration to complete before outputting text.
     if let Some(task) = focus_task {

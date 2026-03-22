@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +39,8 @@ struct Response {
 /// completely avoiding the symbol collision with whisper-rs in the main process.
 pub struct LlmEngine {
     child: Child,
+    stdin: Option<ChildStdin>,
+    reader: BufReader<ChildStdout>,
     #[allow(dead_code)]
     config: LlmConfig,
 }
@@ -54,7 +56,7 @@ impl LlmEngine {
     pub fn load(config: LlmConfig) -> AppResult<Self> {
         let sidecar_path = find_sidecar()?;
 
-        let child = Command::new(&sidecar_path)
+        let mut child = Command::new(&sidecar_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -63,7 +65,17 @@ impl LlmEngine {
                 "Failed to spawn LLM sidecar at {}: {e}", sidecar_path.display()
             )))?;
 
-        let mut engine = Self { child, config: config.clone() };
+        let stdin = child.stdin.take()
+            .ok_or_else(|| AppError::Llm("failed to capture sidecar stdin".into()))?;
+        let stdout = child.stdout.take()
+            .ok_or_else(|| AppError::Llm("failed to capture sidecar stdout".into()))?;
+
+        let mut engine = Self {
+            child,
+            stdin: Some(stdin),
+            reader: BufReader::new(stdout),
+            config: config.clone(),
+        };
 
         // Ask the sidecar to load the model.
         let resp = engine.send(&Request::Load {
@@ -97,7 +109,7 @@ impl LlmEngine {
 
     /// Send a JSON-line request to the sidecar and read one JSON-line response.
     fn send(&mut self, req: &Request<'_>) -> AppResult<Response> {
-        let stdin = self.child.stdin.as_mut()
+        let stdin = self.stdin.as_mut()
             .ok_or_else(|| AppError::Llm("sidecar stdin closed".into()))?;
 
         let json = serde_json::to_string(req)
@@ -108,11 +120,8 @@ impl LlmEngine {
         stdin.flush()
             .map_err(|e| AppError::Llm(format!("flush sidecar: {e}")))?;
 
-        let stdout = self.child.stdout.as_mut()
-            .ok_or_else(|| AppError::Llm("sidecar stdout closed".into()))?;
-
         let mut line = String::new();
-        BufReader::new(stdout).read_line(&mut line)
+        self.reader.read_line(&mut line)
             .map_err(|e| AppError::Llm(format!("read from sidecar: {e}")))?;
 
         if line.trim().is_empty() {
@@ -126,10 +135,12 @@ impl LlmEngine {
 
 impl Drop for LlmEngine {
     fn drop(&mut self) {
-        // Try to send an unload + close stdin; if the process is already
-        // dead this is harmless.
+        // Try to send an unload command; if the process is already dead
+        // this is harmless — the write will fail silently.
         let _ = self.send(&Request::Unload);
-        let _ = self.child.stdin.take(); // close stdin → sidecar exits
+        // Close stdin to signal EOF → sidecar exits its read loop.
+        // Must happen before wait() or we deadlock.
+        self.stdin.take();
         let _ = self.child.wait();
     }
 }

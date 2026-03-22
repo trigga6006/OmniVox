@@ -1,6 +1,9 @@
 import { useEffect, type ReactNode } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { getSettings } from "@/lib/tauri";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+const isOverlay = getCurrentWindow().label === "overlay";
 
 export function Providers({ children }: { children: ReactNode }) {
   const theme = useSettingsStore((s) => s.theme);
@@ -15,8 +18,9 @@ export function Providers({ children }: { children: ReactNode }) {
       .catch(() => {});
   }, []);
 
-  // Apply theme attribute whenever it changes
+  // Apply theme attribute whenever it changes (main window only — pill stays dark)
   useEffect(() => {
+    if (isOverlay) return;
     document.documentElement.dataset.theme = theme;
     try {
       localStorage.setItem("omnivox-theme", theme);

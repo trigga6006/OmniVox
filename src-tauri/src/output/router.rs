@@ -61,13 +61,36 @@ impl OutputRouter {
     ///
     /// Unlike clipboard + Ctrl+V, this inserts at the cursor position and never
     /// triggers app-specific paste handlers that might replace existing content.
-    /// All characters are batched into a single `SendInput` call for speed.
+    ///
+    /// Newlines are sent as `Shift+Enter` keypresses (rather than raw `\n`
+    /// codepoints which Windows apps ignore).  `Shift+Enter` inserts a line
+    /// break in virtually all apps — including chat inputs that treat bare
+    /// `Enter` as "send message".
     fn type_text(&self, text: &str) -> AppResult<()> {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
-        enigo
-            .text(text)
-            .map_err(|e| AppError::Output(format!("Text input failed: {e}")))?;
+
+        let lines: Vec<&str> = text.split('\n').collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.is_empty() {
+                enigo
+                    .text(line)
+                    .map_err(|e| AppError::Output(format!("Text input failed: {e}")))?;
+            }
+            if i < lines.len() - 1 {
+                // Shift+Enter creates a newline in both regular editors and
+                // chat apps (where bare Enter would submit the message).
+                enigo
+                    .key(Key::Shift, Direction::Press)
+                    .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+                enigo
+                    .key(Key::Return, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+                enigo
+                    .key(Key::Shift, Direction::Release)
+                    .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 
