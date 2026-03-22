@@ -44,6 +44,13 @@
   --color-success: oklch(0.65 0.15 145);
   --color-error: oklch(0.55 0.2 20);
 
+  /* Background gradient (main content area) */
+  --color-gradient-from: oklch(0.14 0.015 55);
+  --color-gradient-to: oklch(0.11 0.006 60);
+
+  /* Overlay pill background */
+  --color-pill-bg: #1a1a1a;
+
   /* Spacing */
   --spacing-sidebar: 4.5rem;
 
@@ -59,6 +66,38 @@
   --animate-fade-in: fade-in 0.4s ease-out forwards;
   --animate-slide-up: slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   --animate-scale-in: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ── Light Theme: Warm Stone ──────────────────────────────── */
+
+[data-theme="light"] {
+  /* Surfaces — soft warm stone, very low chroma */
+  --color-surface-0: oklch(0.955 0.007 65);
+  --color-surface-1: oklch(0.925 0.009 60);
+  --color-surface-2: oklch(0.895 0.011 58);
+  --color-surface-3: oklch(0.855 0.014 55);
+  --color-surface-4: oklch(0.810 0.017 52);
+
+  /* Text — warm dark tones */
+  --color-text-primary: oklch(0.22 0.008 55);
+  --color-text-secondary: oklch(0.40 0.010 55);
+  --color-text-muted: oklch(0.56 0.008 55);
+
+  /* Borders — subtle stone edges */
+  --color-border: oklch(0.87 0.010 58);
+  --color-border-hover: oklch(0.79 0.016 55);
+  --color-border-active: oklch(0.58 0.07 55);
+
+  /* Semantic — slightly deeper for light bg contrast */
+  --color-success: oklch(0.52 0.14 145);
+  --color-error: oklch(0.48 0.2 20);
+
+  /* Background gradient */
+  --color-gradient-from: oklch(0.935 0.010 62);
+  --color-gradient-to: oklch(0.955 0.007 65);
+
+  /* Overlay pill */
+  --color-pill-bg: oklch(0.925 0.009 60);
 }
 
 /* ── Keyframes ────────────────────────────────────────────── */

@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Sparkles, Download, Loader2, Zap } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Sparkles, Download, Loader2, Zap, Sun, Moon } from "lucide-react";
 import {
   getSettings,
   updateSettings,
   suspendHotkey,
   updateHotkey,
+  getAudioDevices,
+  setAudioDevice,
   getAiCleanupStatus,
   enableAiCleanup,
   disableAiCleanup,
@@ -13,11 +15,13 @@ import {
   setActiveModel,
   getActiveModel,
   type AppSettings,
+  type AudioDevice,
   type HotkeyConfig,
   type DownloadProgress,
 } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 const outputModes = [
   { id: "clipboard", label: "Clipboard", icon: Clipboard },
@@ -534,6 +538,9 @@ function AiCleanupSection() {
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [activeMode, setActiveMode] = useState<OutputMode>("clipboard");
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
 
   useEffect(() => {
     getSettings()
@@ -543,6 +550,14 @@ export function SettingsPage() {
         setActiveMode(mode ? mode.id : "clipboard");
       })
       .catch((e) => console.error("Failed to load settings:", e));
+
+    getAudioDevices()
+      .then((devices) => {
+        setAudioDevices(devices);
+        const def = devices.find((d) => d.is_default);
+        setSelectedDeviceId(def?.id ?? devices[0]?.id ?? null);
+      })
+      .catch((e) => console.error("Failed to load audio devices:", e));
   }, []);
 
   const handleModeChange = useCallback(
@@ -581,6 +596,18 @@ export function SettingsPage() {
     [settings]
   );
 
+  const currentTheme = settings?.theme ?? "dark";
+  const handleThemeChange = useCallback(
+    (theme: string) => {
+      if (!settings) return;
+      const updated = { ...settings, theme };
+      setSettings(updated);
+      updateSettings(updated).catch(console.error);
+      useSettingsStore.getState().setSettings({ theme });
+    },
+    [settings]
+  );
+
   return (
     <div className="flex h-full flex-col p-6 overflow-y-auto">
       {/* Header */}
@@ -593,6 +620,44 @@ export function SettingsPage() {
       </div>
 
       <div className="mt-6 flex flex-col gap-5">
+        {/* ── Appearance ── */}
+        <section
+          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          style={{ opacity: 0, animationDelay: "0.08s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Sun size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Appearance
+            </span>
+          </div>
+
+          <label className="block text-sm text-text-secondary mb-2">Theme</label>
+          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+            {([
+              { id: "dark", label: "Dark", Icon: Moon },
+              { id: "light", label: "Light", Icon: Sun },
+            ] as const).map(({ id, label, Icon }) => {
+              const isActive = currentTheme === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => handleThemeChange(id)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                      : "text-text-muted hover:text-text-secondary border border-transparent"
+                  )}
+                >
+                  <Icon size={14} strokeWidth={1.75} />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
         {/* ── Audio ── */}
         <section
           className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
@@ -606,14 +671,52 @@ export function SettingsPage() {
           </div>
 
           <div className="flex flex-col gap-3">
-            <div>
+            <div className="relative">
               <label className="block text-sm text-text-secondary mb-1.5">
                 Input device
               </label>
-              <div className="flex items-center gap-2 bg-surface-2 rounded-lg px-3 py-2 border border-border">
+              <button
+                onClick={() => setDeviceMenuOpen((p) => !p)}
+                className="flex items-center gap-2 w-full bg-surface-2 rounded-lg px-3 py-2 border border-border hover:border-border-hover transition-colors text-left"
+              >
                 <Volume2 size={14} strokeWidth={1.75} className="text-text-muted shrink-0" />
-                <span className="text-sm text-text-primary">Default Microphone</span>
-              </div>
+                <span className="text-sm text-text-primary truncate flex-1">
+                  {audioDevices.find((d) => d.id === selectedDeviceId)?.name ?? "Default Microphone"}
+                </span>
+                <svg width="12" height="12" viewBox="0 0 12 12" className="text-text-muted shrink-0">
+                  <path d="M3 4.5L6 7.5L9 4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+
+              {deviceMenuOpen && audioDevices.length > 0 && (
+                <div className="absolute z-10 left-0 right-0 mt-1 bg-surface-1 border border-border rounded-lg shadow-xl overflow-hidden">
+                  {audioDevices.map((device) => {
+                    const isActive = device.id === selectedDeviceId;
+                    return (
+                      <button
+                        key={device.id}
+                        onClick={() => {
+                          setSelectedDeviceId(device.id);
+                          setDeviceMenuOpen(false);
+                          setAudioDevice(device.id).catch(console.error);
+                        }}
+                        className={cn(
+                          "flex items-center gap-2 w-full px-3 py-2 text-left text-sm transition-colors",
+                          isActive
+                            ? "bg-amber-500/10 text-amber-400"
+                            : "text-text-primary hover:bg-surface-2"
+                        )}
+                      >
+                        <Volume2 size={13} strokeWidth={1.75} className={isActive ? "text-amber-400" : "text-text-muted"} />
+                        <span className="truncate">{device.name}</span>
+                        {device.is_default && (
+                          <span className="text-[10px] text-text-muted ml-auto shrink-0">Default</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div>

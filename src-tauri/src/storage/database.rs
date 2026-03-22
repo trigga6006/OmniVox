@@ -42,56 +42,103 @@ impl Database {
 
     /// Create all required tables if they don't already exist.
     fn create_tables(&self) -> AppResult<()> {
+        {
+            let conn = self.conn()?;
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS transcriptions (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    text TEXT NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    model_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_transcriptions_created_at
+                    ON transcriptions(created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS dictionary_entries (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    phrase TEXT NOT NULL,
+                    replacement TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS snippets (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    trigger_text TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    description TEXT,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS context_modes (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT '',
+                    icon TEXT NOT NULL DEFAULT 'mic',
+                    color TEXT NOT NULL DEFAULT 'amber',
+                    llm_prompt TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    is_builtin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS notes (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_notes_updated_at
+                    ON notes(updated_at DESC);
+
+                PRAGMA user_version = 2;
+            ",
+            )?;
+        } // drop conn guard before calling migrate which also needs the lock
+
+        // Migration: add mode_id columns if they don't exist (safe to re-run)
+        self.migrate_add_mode_id()?;
+
+        Ok(())
+    }
+
+    /// Add `mode_id` column to dictionary_entries and snippets if missing.
+    fn migrate_add_mode_id(&self) -> AppResult<()> {
         let conn = self.conn()?;
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS transcriptions (
-                id TEXT PRIMARY KEY NOT NULL,
-                text TEXT NOT NULL,
-                duration_ms INTEGER NOT NULL,
-                model_name TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_transcriptions_created_at
-                ON transcriptions(created_at DESC);
+        // Check if column exists by querying table_info
+        let has_mode_id = |table: &str| -> bool {
+            conn.prepare(&format!("PRAGMA table_info({table})"))
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(1))
+                        .map(|rows| rows.filter_map(|r| r.ok()).any(|name| name == "mode_id"))
+                })
+                .unwrap_or(false)
+        };
 
-            CREATE TABLE IF NOT EXISTS dictionary_entries (
-                id TEXT PRIMARY KEY NOT NULL,
-                phrase TEXT NOT NULL,
-                replacement TEXT NOT NULL,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            );
+        if !has_mode_id("dictionary_entries") {
+            conn.execute_batch(
+                "ALTER TABLE dictionary_entries ADD COLUMN mode_id TEXT REFERENCES context_modes(id);"
+            )?;
+        }
+        if !has_mode_id("snippets") {
+            conn.execute_batch(
+                "ALTER TABLE snippets ADD COLUMN mode_id TEXT REFERENCES context_modes(id);"
+            )?;
+        }
 
-            CREATE TABLE IF NOT EXISTS snippets (
-                id TEXT PRIMARY KEY NOT NULL,
-                trigger_text TEXT NOT NULL,
-                content TEXT NOT NULL,
-                description TEXT,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS notes (
-                id TEXT PRIMARY KEY NOT NULL,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_notes_updated_at
-                ON notes(updated_at DESC);
-
-            PRAGMA user_version = 1;
-        ",
-        )?;
         Ok(())
     }
 }

@@ -274,6 +274,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Another instance was launched — focus the existing main window.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(state::AppState::new())
         .setup(|app| {
             setup_tray(app)?;
@@ -286,6 +294,25 @@ pub fn run() {
 
             // Load persisted settings (output mode, etc.) into in-memory state
             apply_persisted_settings(&state);
+
+            // Seed the default "General" context mode and load the active mode
+            if let Ok(general_id) = crate::storage::context_modes::seed_general_mode(&state.db) {
+                // Load the persisted active mode, or default to General
+                let active_id = crate::storage::settings::get_settings(&state.db)
+                    .ok()
+                    .and_then(|s| s.active_context_mode_id)
+                    .unwrap_or(general_id.clone());
+
+                *state.active_context_mode_id.lock().unwrap() = Some(active_id.clone());
+
+                // Load the mode's LLM prompt
+                if let Ok(mode) = crate::storage::context_modes::get_mode(&state.db, &active_id) {
+                    *state.active_llm_prompt.lock().unwrap() = Some(mode.llm_prompt);
+                }
+
+                // Load global + mode-scoped dictionary/snippets into processor
+                commands::dictionary::sync_processor(&state);
+            }
 
             // First-launch: copy bundled models from app resources to user dirs.
             // Model loading is deferred to a background task so that a slow or
@@ -308,6 +335,18 @@ pub fn run() {
             hotkey::install(app.handle().clone());
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Hide the main window on close instead of destroying it.
+            // The overlay pill stays visible and the app keeps running in the tray.
+            // Users restore it via the tray icon "Show" option or by re-launching
+            // (which the single-instance plugin redirects to show the existing window).
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // Audio commands (5)
@@ -333,11 +372,12 @@ pub fn run() {
             commands::update_snippet,
             commands::delete_snippet,
             commands::list_snippets,
-            // History commands (4)
+            // History commands (5)
             commands::search_history,
             commands::recent_history,
             commands::delete_history_record,
             commands::export_history,
+            commands::get_dictation_stats,
             // Settings & hotkey commands (5)
             commands::get_settings,
             commands::update_settings,
@@ -354,6 +394,21 @@ pub fn run() {
             commands::download_llm_model,
             commands::enable_ai_cleanup,
             commands::disable_ai_cleanup,
+            // Mode-scoped dictionary/snippet commands (6)
+            commands::list_mode_dictionary_entries,
+            commands::add_mode_dictionary_entry,
+            commands::delete_mode_dictionary_entry,
+            commands::list_mode_snippets,
+            commands::add_mode_snippet,
+            commands::delete_mode_snippet,
+            // Context modes (7)
+            commands::list_context_modes,
+            commands::get_context_mode,
+            commands::create_context_mode,
+            commands::update_context_mode,
+            commands::delete_context_mode,
+            commands::get_active_context_mode,
+            commands::set_active_context_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

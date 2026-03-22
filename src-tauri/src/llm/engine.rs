@@ -13,7 +13,11 @@ enum Request<'a> {
     #[serde(rename = "load")]
     Load { model_path: &'a str },
     #[serde(rename = "cleanup")]
-    Cleanup { text: &'a str },
+    Cleanup {
+        text: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        system_prompt: Option<&'a str>,
+    },
     #[serde(rename = "unload")]
     Unload,
     #[serde(rename = "ping")]
@@ -75,12 +79,13 @@ impl LlmEngine {
     }
 
     /// Run the cleanup LLM on raw transcription text.
-    pub fn cleanup_text(&mut self, raw_text: &str) -> AppResult<String> {
+    /// If `system_prompt` is provided, it overrides the sidecar's default prompt.
+    pub fn cleanup_text(&mut self, raw_text: &str, system_prompt: Option<&str>) -> AppResult<String> {
         if raw_text.trim().is_empty() {
             return Ok(raw_text.to_string());
         }
 
-        let resp = self.send(&Request::Cleanup { text: raw_text })?;
+        let resp = self.send(&Request::Cleanup { text: raw_text, system_prompt })?;
 
         if resp.ok {
             Ok(resp.text.unwrap_or_else(|| raw_text.to_string()))

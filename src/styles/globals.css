@@ -27,6 +27,11 @@
   --radius: 0.625rem;
 }
 
+[data-theme="light"] {
+  --primary-foreground: oklch(0.98 0.005 55);
+  --destructive-foreground: oklch(0.98 0.005 55);
+}
+
 /* ── Base ─────────────────────────────────────────────────── */
 
 * {

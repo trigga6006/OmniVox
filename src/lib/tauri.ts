@@ -119,6 +119,13 @@ export const deleteSnippet = (id: string) => invoke<void>("delete_snippet", { id
 export const listSnippets = () => invoke<Snippet[]>("list_snippets");
 
 // History commands
+export interface DictationStats {
+  total_words: number;
+  total_transcriptions: number;
+  total_duration_ms: number;
+}
+export const getDictationStats = () =>
+  invoke<DictationStats>("get_dictation_stats");
 export const searchHistory = (query: string) =>
   invoke<TranscriptionRecord[]>("search_history", { query });
 export const recentHistory = (limit?: number) =>
@@ -168,6 +175,74 @@ export const suspendHotkey = (suspended: boolean) =>
 export const updateHotkey = (config: HotkeyConfig) =>
   invoke<void>("update_hotkey", { config });
 
+// Context mode types and commands
+export interface ContextMode {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  llm_prompt: string;
+  sort_order: number;
+  is_builtin: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listContextModes = () => invoke<ContextMode[]>("list_context_modes");
+export const getContextMode = (id: string) =>
+  invoke<ContextMode>("get_context_mode", { id });
+export const createContextMode = (
+  name: string,
+  description: string,
+  icon: string,
+  color: string,
+  llmPrompt: string
+) =>
+  invoke<ContextMode>("create_context_mode", {
+    name,
+    description,
+    icon,
+    color,
+    llmPrompt,
+  });
+export const updateContextMode = (
+  id: string,
+  name: string,
+  description: string,
+  icon: string,
+  color: string,
+  llmPrompt: string
+) =>
+  invoke<void>("update_context_mode", {
+    id,
+    name,
+    description,
+    icon,
+    color,
+    llmPrompt,
+  });
+export const deleteContextMode = (id: string) =>
+  invoke<void>("delete_context_mode", { id });
+
+// Mode-scoped dictionary/snippet commands (profile editor)
+export const listModeDictionaryEntries = (modeId: string) =>
+  invoke<DictionaryEntry[]>("list_mode_dictionary_entries", { modeId });
+export const addModeDictionaryEntry = (modeId: string, phrase: string, replacement: string) =>
+  invoke<DictionaryEntry>("add_mode_dictionary_entry", { modeId, phrase, replacement });
+export const deleteModeDictionaryEntry = (id: string) =>
+  invoke<void>("delete_mode_dictionary_entry", { id });
+export const listModeSnippets = (modeId: string) =>
+  invoke<Snippet[]>("list_mode_snippets", { modeId });
+export const addModeSnippet = (modeId: string, trigger: string, content: string, description?: string) =>
+  invoke<Snippet>("add_mode_snippet", { modeId, trigger, content, description: description ?? null });
+export const deleteModeSnippet = (id: string) =>
+  invoke<void>("delete_mode_snippet", { id });
+export const getActiveContextMode = () =>
+  invoke<ContextMode | null>("get_active_context_mode");
+export const setActiveContextMode = (id: string) =>
+  invoke<void>("set_active_context_mode", { id });
+
 // Overlay commands
 export const resizeOverlay = (width: number, height: number) =>
   invoke<void>("resize_overlay", { width, height });
@@ -190,3 +265,8 @@ export const onTranscriptionResult = (
   callback: (text: string) => void
 ): Promise<UnlistenFn> =>
   listen<string>("transcription-result", (e) => callback(e.payload));
+
+export const onContextModeChanged = (
+  callback: (mode: { id: string; name: string; icon: string; color: string }) => void
+): Promise<UnlistenFn> =>
+  listen("context-mode-changed", (e) => callback(e.payload as { id: string; name: string; icon: string; color: string }));

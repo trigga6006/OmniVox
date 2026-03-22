@@ -14,6 +14,7 @@ fn row_to_snippet(row: &rusqlite::Row) -> rusqlite::Result<Snippet> {
     let description: Option<String> = row.get(3)?;
     let is_enabled: bool = row.get(4)?;
     let created_at_str: String = row.get(5)?;
+    let mode_id: Option<String> = row.get(6).unwrap_or(None);
 
     let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -27,6 +28,7 @@ fn row_to_snippet(row: &rusqlite::Row) -> rusqlite::Result<Snippet> {
         description,
         is_enabled,
         created_at,
+        mode_id,
     })
 }
 
@@ -36,14 +38,15 @@ pub fn add_snippet(
     trigger: &str,
     content: &str,
     description: Option<&str>,
+    mode_id: Option<&str>,
 ) -> AppResult<Snippet> {
     let id = Uuid::new_v4();
     let now = Utc::now();
 
     let conn = db.conn()?;
     conn.execute(
-        "INSERT INTO snippets (id, trigger_text, content, description, is_enabled, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO snippets (id, trigger_text, content, description, is_enabled, created_at, mode_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             id.to_string(),
             trigger,
@@ -51,6 +54,7 @@ pub fn add_snippet(
             description,
             true,
             now.to_rfc3339(),
+            mode_id,
         ],
     )?;
 
@@ -61,6 +65,7 @@ pub fn add_snippet(
         description: description.map(|d| d.to_string()),
         is_enabled: true,
         created_at: now,
+        mode_id: mode_id.map(|s| s.to_string()),
     })
 }
 
@@ -87,16 +92,32 @@ pub fn delete_snippet(db: &Database, id: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// List all snippets, ordered by creation time ascending.
+/// List global snippets (not tied to any context mode).
 pub fn list_snippets(db: &Database) -> AppResult<Vec<Snippet>> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare(
-        "SELECT id, trigger_text, content, description, is_enabled, created_at
+        "SELECT id, trigger_text, content, description, is_enabled, created_at, mode_id
          FROM snippets
+         WHERE mode_id IS NULL
          ORDER BY created_at ASC",
     )?;
     let snippets = stmt
         .query_map([], row_to_snippet)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(snippets)
+}
+
+/// List snippets belonging to a specific context mode.
+pub fn list_snippets_for_mode(db: &Database, mode_id: &str) -> AppResult<Vec<Snippet>> {
+    let conn = db.conn()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, trigger_text, content, description, is_enabled, created_at, mode_id
+         FROM snippets
+         WHERE mode_id = ?1
+         ORDER BY created_at ASC",
+    )?;
+    let snippets = stmt
+        .query_map(params![mode_id], row_to_snippet)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(snippets)
 }

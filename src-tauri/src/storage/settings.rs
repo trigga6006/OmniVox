@@ -61,6 +61,10 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.gpu_acceleration);
 
+    let active_context_mode_id = map
+        .get("active_context_mode_id")
+        .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) });
+
     Ok(AppSettings {
         theme,
         language,
@@ -71,7 +75,18 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         active_model_id,
         hotkey,
         gpu_acceleration,
+        active_context_mode_id,
     })
+}
+
+/// Set a single setting key-value pair.
+pub fn set_setting(db: &Database, key: &str, value: &str) -> AppResult<()> {
+    let conn = db.conn()?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
 }
 
 /// Persist updated application settings to the database atomically.

@@ -44,6 +44,28 @@ pub fn save_transcription(db: &Database, record: &TranscriptionRecord) -> AppRes
     Ok(())
 }
 
+/// Get aggregate dictation statistics (total words, transcriptions, duration).
+pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::DictationStats> {
+    let conn = db.conn()?;
+    let stats = conn.query_row(
+        "SELECT
+            COALESCE(SUM(LENGTH(TRIM(text)) - LENGTH(REPLACE(TRIM(text), ' ', '')) + 1), 0),
+            COUNT(*),
+            COALESCE(SUM(duration_ms), 0)
+         FROM transcriptions
+         WHERE TRIM(text) != ''",
+        [],
+        |row| {
+            Ok(crate::storage::types::DictationStats {
+                total_words: row.get::<_, i64>(0)? as u64,
+                total_transcriptions: row.get::<_, i64>(1)? as u64,
+                total_duration_ms: row.get::<_, i64>(2)? as u64,
+            })
+        },
+    )?;
+    Ok(stats)
+}
+
 /// Search transcription history by query string (case-insensitive substring match).
 pub fn search_history(db: &Database, query: &str) -> AppResult<Vec<TranscriptionRecord>> {
     let conn = db.conn()?;
