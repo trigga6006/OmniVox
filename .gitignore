@@ -3,3 +3,7 @@ dist/
 target/
 .env
 *.log
+
+# Sidecar build artifacts copied into resources by CI
+src-tauri/resources/*.exe
+src-tauri/resources/*.dll

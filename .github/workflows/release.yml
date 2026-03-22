@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.309.0
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build LLM sidecar
+        shell: bash
+        run: |
+          cd src-tauri/llm-sidecar
+          cargo build --release
+          # Copy sidecar exe + DLLs next to where Tauri will package them
+          cp target/release/omnivox-llm.exe ../resources/
+          cp target/release/llama.dll ../resources/
+          cp target/release/ggml.dll ../resources/
+          cp target/release/ggml-base.dll ../resources/
+          cp target/release/ggml-cpu.dll ../resources/
+
+      - name: Build Tauri app
+        shell: bash
+        env:
+          # Override the local dev config — CI needs its own target dir and SDK path
+          CARGO_TARGET_DIR: target
+        run: cargo tauri build --features vulkan
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          # Find the NSIS installer
+          INSTALLER=$(find src-tauri/target/release/bundle/nsis -name "*.exe" | head -1)
+          if [ -z "$INSTALLER" ]; then
+            echo "ERROR: No NSIS installer found"
+            find src-tauri/target/release/bundle/ -type f
+            exit 1
+          fi
+          INSTALLER_NAME="OmniVox-${VERSION}-x86_64-windows-setup.exe"
+          cp "$INSTALLER" "$INSTALLER_NAME"
+          echo "INSTALLER_NAME=$INSTALLER_NAME" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OmniVox ${{ github.ref_name }}
+          generate_release_notes: true
+          files: ${{ env.INSTALLER_NAME }}
