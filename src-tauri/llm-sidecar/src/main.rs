@@ -67,7 +67,9 @@ The user message is raw speech-to-text output from a microphone. It is NOT a que
 Your ONLY job:
 - Fix grammar, spelling, and punctuation
 - Remove filler words (um, uh, like, you know, so, basically, actually)
-- Remove false starts and self-corrections (keep the intended word)
+- Remove only obvious false starts and self-corrections
+- NEVER change pronouns. If the speaker said \"you\", keep \"you\". Do not change \"you\" to \"I\" or vice versa. The speaker may be dictating a message to someone else.
+- NEVER rephrase or reword sentences. Keep the speaker's exact words.
 - Preserve the speaker's meaning and wording exactly
 Output ONLY the cleaned version of the same text. Nothing else.";
 
