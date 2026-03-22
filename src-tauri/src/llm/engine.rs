@@ -130,15 +130,20 @@ impl Drop for LlmEngine {
 }
 
 /// Locate the sidecar binary.  Searches:
-///   1. Next to the main executable  (works in dev + bundled app)
-///   2. In the Cargo target directory (fallback for dev builds)
+///   1. Next to the main executable  (works in dev builds)
+///   2. In the `resources/` subdirectory next to the exe (NSIS bundled app)
 fn find_sidecar() -> AppResult<std::path::PathBuf> {
     let exe_name = if cfg!(windows) { "omnivox-llm.exe" } else { "omnivox-llm" };
 
-    // 1. Next to our own executable
     if let Ok(self_exe) = std::env::current_exe() {
         if let Some(dir) = self_exe.parent() {
+            // 1. Next to our own executable (dev builds)
             let candidate = dir.join(exe_name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            // 2. In resources/ subdirectory (Tauri NSIS bundle)
+            let candidate = dir.join("resources").join(exe_name);
             if candidate.exists() {
                 return Ok(candidate);
             }
