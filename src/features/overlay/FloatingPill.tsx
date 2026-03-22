@@ -91,8 +91,9 @@ export function FloatingPill() {
     }
   }, [pillState]);
 
-  // Mount: transparent bg, shrink to idle
+  // Mount: transparent bg, force dark theme, shrink to idle
   useEffect(() => {
+    document.documentElement.dataset.theme = "dark";
     document.documentElement.style.background = "transparent";
     document.documentElement.style.margin = "0";
     document.documentElement.style.padding = "0";
