@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+env:
+  # Override the local .cargo/config.toml target-dir ("C:\t") which only
+  # makes sense on the developer's machine to avoid MAX_PATH issues.
+  # CI runners have long-path support enabled by default.
+  CARGO_TARGET_DIR: target
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -20,7 +26,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1
@@ -50,22 +56,23 @@ jobs:
 
       - name: Build Tauri app
         shell: bash
-        env:
-          # Override the local dev config — CI needs its own target dir and SDK path
-          CARGO_TARGET_DIR: target
         run: cargo tauri build --features vulkan
 
       - name: Package release assets
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          # Find the NSIS installer
-          INSTALLER=$(find src-tauri/target/release/bundle/nsis -name "*.exe" | head -1)
+          # Find the NSIS installer — check both possible locations
+          INSTALLER=$(find src-tauri/target/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
           if [ -z "$INSTALLER" ]; then
-            echo "ERROR: No NSIS installer found"
-            find src-tauri/target/release/bundle/ -type f
+            INSTALLER=$(find target/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
+          fi
+          if [ -z "$INSTALLER" ]; then
+            echo "ERROR: No NSIS installer found. Searching all bundle output:"
+            find . -path "*/bundle/nsis/*.exe" 2>/dev/null
             exit 1
           fi
+          echo "Found installer: $INSTALLER"
           INSTALLER_NAME="OmniVox-${VERSION}-x86_64-windows-setup.exe"
           cp "$INSTALLER" "$INSTALLER_NAME"
           echo "INSTALLER_NAME=$INSTALLER_NAME" >> $GITHUB_ENV
