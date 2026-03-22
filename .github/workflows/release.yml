@@ -34,7 +34,7 @@ jobs:
           vulkan_version: 1.4.309.0
           install_runtime: true
           cache: true
-          stripdown: true
+          stripdown: false
 
       - name: Install frontend dependencies
         run: npm ci
