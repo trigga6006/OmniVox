@@ -3,6 +3,27 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextMode {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub color: String,
+    pub llm_prompt: String,
+    pub sort_order: i32,
+    pub is_builtin: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictationStats {
+    pub total_words: u64,
+    pub total_transcriptions: u64,
+    pub total_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptionRecord {
     pub id: Uuid,
     pub text: String,
@@ -18,6 +39,8 @@ pub struct DictionaryEntry {
     pub replacement: String,
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +51,8 @@ pub struct Snippet {
     pub description: Option<String>,
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +76,8 @@ pub struct AppSettings {
     pub hotkey: Option<crate::hotkey::HotkeyConfig>,
     /// Enable GPU acceleration for Whisper inference (requires Vulkan).
     pub gpu_acceleration: bool,
+    /// Active context mode ID — determines which prompt/dictionary/snippets are used.
+    pub active_context_mode_id: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -65,6 +92,7 @@ impl Default for AppSettings {
             active_model_id: None,
             hotkey: Some(crate::hotkey::HotkeyConfig::default()),
             gpu_acceleration: false,
+            active_context_mode_id: None,
         }
     }
 }

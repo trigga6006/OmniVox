@@ -2,11 +2,31 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
-import { startRecording, stopRecording, resizeOverlay } from "@/lib/tauri";
+import {
+  startRecording,
+  stopRecording,
+  resizeOverlay,
+  listContextModes,
+  getActiveContextMode,
+  setActiveContextMode,
+  onContextModeChanged,
+  type ContextMode,
+} from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
 import { PillWaveform } from "./PillWaveform";
+import { ModeSelector } from "./ModeSelector";
 
 type PillState = RecordingStatus | "success";
+
+// Map mode color names → CSS color values for waveform bars
+const MODE_COLORS: Record<string, string> = {
+  amber: "rgb(251,191,36)",
+  blue: "rgb(96,165,250)",
+  green: "rgb(52,211,153)",
+  purple: "rgb(192,132,252)",
+  red: "rgb(248,113,113)",
+  cyan: "rgb(34,211,238)",
+};
 
 // Window sizes — button always fills the window 100%
 const ACTIVE_W = 210;
@@ -25,6 +45,12 @@ export function FloatingPill() {
   const [flashText, setFlashText] = useState<string | null>(null);
   const prevExpandedRef = useRef(false);
   const [showContent, setShowContent] = useState(false);
+
+  // Mode selector state
+  const [showModeSelector, setShowModeSelector] = useState(false);
+  const [modes, setModes] = useState<ContextMode[]>([]);
+  const [activeModId, setActiveModId] = useState<string | null>(null);
+  const [activeColor, setActiveColor] = useState("amber");
 
   useEffect(() => {
     if (status === "idle" && lastTranscription && pillState === "processing") {
@@ -79,14 +105,74 @@ export function FloatingPill() {
     resizeOverlay(IDLE_W, IDLE_H);
   }, []);
 
+  // Load modes on mount and listen for changes
+  useEffect(() => {
+    const loadModes = async () => {
+      try {
+        const [m, active] = await Promise.all([
+          listContextModes(),
+          getActiveContextMode(),
+        ]);
+        setModes(m);
+        setActiveModId(active?.id ?? null);
+        if (active?.color) setActiveColor(active.color);
+      } catch {}
+    };
+    loadModes();
+
+    const unlisten = onContextModeChanged((payload) => {
+      setActiveModId(payload.id);
+      if (payload.color) setActiveColor(payload.color);
+      // Refresh modes list in case names changed
+      listContextModes().then(setModes).catch(() => {});
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Manage overlay size when mode selector opens/closes
+  useEffect(() => {
+    if (showModeSelector) {
+      // Expand window upward to fit the selector + pill
+      const selectorH = Math.min(modes.length * 34 + 40, 200);
+      resizeOverlay(200, ACTIVE_H + selectorH + 4);
+    } else if (pillState === "idle") {
+      resizeOverlay(IDLE_W, IDLE_H);
+    }
+  }, [showModeSelector, modes.length]);
+
   const handleClick = useCallback(async () => {
+    if (showModeSelector) return; // Don't start recording while selector is open
     try {
       if (status === "idle") await startRecording();
       else if (status === "recording") await stopRecording();
     } catch (err) {
       console.error("Pill recording toggle failed:", err);
     }
-  }, [status]);
+  }, [status, showModeSelector]);
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (pillState === "idle") {
+        setShowModeSelector((prev) => !prev);
+      }
+    },
+    [pillState]
+  );
+
+  const handleModeSelect = useCallback(async (id: string) => {
+    try {
+      await setActiveContextMode(id);
+      setActiveModId(id);
+      const selected = modes.find((m) => m.id === id);
+      if (selected?.color) setActiveColor(selected.color);
+    } catch (e) {
+      console.error("Failed to switch mode:", e);
+    }
+  }, [modes]);
 
   const isIdle = pillState === "idle";
   const isRecording = pillState === "recording";
@@ -94,34 +180,48 @@ export function FloatingPill() {
   const isSuccess = pillState === "success";
   const isError = pillState === "error";
 
+  const modeColor = MODE_COLORS[activeColor] ?? MODE_COLORS.amber;
+
   return (
+    <div className="w-screen h-screen flex flex-col justify-end items-center">
+      {/* Mode selector dropdown — in-flow above the pill */}
+      {showModeSelector && modes.length > 0 && (
+        <ModeSelector
+          modes={modes}
+          activeId={activeModId}
+          onSelect={handleModeSelect}
+          onClose={() => setShowModeSelector(false)}
+        />
+      )}
+
     <button
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
       disabled={isProcessing}
       className={cn(
-        // Fill the entire window — the window IS the pill
-        "w-screen h-screen",
-        "relative flex items-center overflow-hidden",
+        // The pill — sized to match resizeOverlay dimensions
+        isIdle && !showModeSelector ? "w-[56px] h-[26px]" : "w-[200px] h-[34px]",
+        "relative flex items-center overflow-hidden shrink-0",
         isProcessing ? "cursor-default" : "cursor-pointer",
 
         // Idle
-        isIdle && "bg-[#1a1a1a] rounded-full",
+        isIdle && "bg-[var(--color-pill-bg)] rounded-full",
 
         // Recording
-        isRecording && "bg-[#1a1a1a] border border-recording-500/30 rounded-full gap-2.5 px-3.5",
+        isRecording && "bg-[var(--color-pill-bg)] border border-recording-500/30 rounded-full gap-2.5 px-3.5",
 
         // Processing
-        isProcessing && "bg-[#1a1a1a] border border-amber-500/25 rounded-full gap-2.5 px-3.5",
+        isProcessing && "bg-[var(--color-pill-bg)] border border-amber-500/25 rounded-full gap-2.5 px-3.5",
 
         // Success
-        isSuccess && "bg-[#1a1a1a] border border-success/30 rounded-full gap-2.5 px-3.5",
+        isSuccess && "bg-[var(--color-pill-bg)] border border-success/30 rounded-full gap-2.5 px-3.5",
 
         // Error
-        isError && "bg-[#1a1a1a] border border-recording-500/35 rounded-full gap-2.5 px-3.5",
+        isError && "bg-[var(--color-pill-bg)] border border-recording-500/35 rounded-full gap-2.5 px-3.5",
       )}
     >
       {/* ── Idle: sleek ambient waveform ── */}
-      {isIdle && <IdleWaveform />}
+      {isIdle && <IdleWaveform color={modeColor} />}
 
       {/* ── Active states: full pill content with fade ── */}
       {!isIdle && (
@@ -178,7 +278,7 @@ export function FloatingPill() {
 
           {/* Center: waveform / status text */}
           <div className="flex-1 flex items-center justify-center overflow-hidden">
-            {isRecording && <PillWaveform active />}
+            {isRecording && <PillWaveform active color={modeColor} />}
             {isProcessing && (
               <span className="text-[10px] font-medium text-amber-400/60 tracking-wide truncate">
                 Transcribing…
@@ -224,11 +324,12 @@ export function FloatingPill() {
         }
       `}</style>
     </button>
+    </div>
   );
 }
 
 /* ── Idle waveform: subtle ambient bars ── */
-function IdleWaveform() {
+function IdleWaveform({ color }: { color: string }) {
   const BAR_COUNT = 5;
 
   return (
@@ -236,10 +337,12 @@ function IdleWaveform() {
       {Array.from({ length: BAR_COUNT }).map((_, i) => (
         <div
           key={i}
-          className="bg-amber-400/25 rounded-full"
+          className="rounded-full"
           style={{
             width: 2,
             height: 6,
+            backgroundColor: color,
+            opacity: 0.25,
             animation: `idle-wave 2s ease-in-out ${i * 0.2}s infinite`,
           }}
         />

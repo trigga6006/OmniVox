@@ -20,9 +20,10 @@ const PHASE_OFFSETS = [
 
 interface PillWaveformProps {
   active: boolean;
+  color?: string;
 }
 
-export function PillWaveform({ active }: PillWaveformProps) {
+export function PillWaveform({ active, color }: PillWaveformProps) {
   const audioLevel = useRecordingStore((s) => s.audioLevel);
 
   return (
@@ -44,18 +45,18 @@ export function PillWaveform({ active }: PillWaveformProps) {
         return (
           <div
             key={i}
+            className="rounded-full"
             style={{
               width: `${BAR_WIDTH}px`,
               height: `${height}px`,
+              backgroundColor: active
+                ? (color ?? "rgb(251,191,36)")
+                : "rgba(255,255,255,0.12)",
+              opacity: active ? 0.8 : 1,
               transition: active
                 ? "height 100ms ease-out, background-color 300ms ease"
                 : "height 400ms ease-out, background-color 300ms ease",
             }}
-            className={
-              active
-                ? "rounded-full bg-amber-400/80"
-                : "rounded-full bg-[rgba(255,255,255,0.12)]"
-            }
           />
         );
       })}

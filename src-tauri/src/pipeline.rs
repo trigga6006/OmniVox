@@ -270,13 +270,16 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
     // 5. AI cleanup via local LLM (if enabled and model loaded) — runs
     //    concurrently with focus restoration above.
+    let active_prompt = state.active_llm_prompt.lock()
+        .map(|g| g.clone())
+        .unwrap_or(None);
     let final_text = {
         let mut llm_guard = match state.llm_engine.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(ref mut engine) = *llm_guard {
-            match engine.cleanup_text(&processed_text) {
+            match engine.cleanup_text(&processed_text, active_prompt.as_deref()) {
                 Ok(cleaned) => cleaned,
                 Err(e) => {
                     eprintln!("LLM cleanup error, using raw text: {e}");

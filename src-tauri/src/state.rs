@@ -48,6 +48,10 @@ pub struct AppState {
     /// HWND of the window that was focused before recording started.
     /// Used to restore focus before pasting transcription text.
     pub prev_foreground: Mutex<Option<isize>>,
+    /// Active context mode's LLM system prompt (swapped when mode changes).
+    pub active_llm_prompt: Mutex<Option<String>>,
+    /// Active context mode ID.
+    pub active_context_mode_id: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -78,6 +82,8 @@ impl AppState {
             data_dir,
             models_dir,
             prev_foreground: Mutex::new(None),
+            active_llm_prompt: Mutex::new(None),
+            active_context_mode_id: Mutex::new(None),
         }
     }
 }

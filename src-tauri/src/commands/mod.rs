@@ -5,6 +5,7 @@ pub mod history;
 pub mod llm;
 pub mod settings;
 pub mod notes;
+pub mod context_modes;
 
 pub use audio::*;
 pub use models::*;
@@ -13,3 +14,4 @@ pub use history::*;
 pub use llm::*;
 pub use settings::*;
 pub use notes::*;
+pub use context_modes::*;

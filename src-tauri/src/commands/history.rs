@@ -3,6 +3,13 @@ use crate::state::AppState;
 use crate::storage::types::TranscriptionRecord;
 
 #[tauri::command]
+pub async fn get_dictation_stats(
+    state: State<'_, AppState>,
+) -> Result<crate::storage::types::DictationStats, String> {
+    crate::storage::history::get_dictation_stats(&state.db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn search_history(
     query: String,
     state: State<'_, AppState>,
