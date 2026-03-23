@@ -272,28 +272,56 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //    concurrently with focus restoration above.
     //    Assemble the full system prompt: base rules (code constant) +
     //    mode-specific additions (from DB).
+    //
+    //    The sidecar communication is blocking I/O (stdin/stdout), so we
+    //    temporarily take the engine out of the Mutex and run on a blocking
+    //    thread to avoid starving Tokio worker threads.
     let mode_additions = state.active_llm_prompt.lock()
         .map(|g| g.clone())
         .unwrap_or(None);
     let system_prompt = crate::storage::context_modes::build_system_prompt(
         mode_additions.as_deref(),
     );
-    let final_text = {
+    // Take the engine out of the Mutex (if present) so we can move it to a
+    // blocking thread.  The guard is dropped immediately — no await while held.
+    let taken_engine = {
         let mut llm_guard = match state.llm_engine.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(ref mut engine) = *llm_guard {
-            match engine.cleanup_text(&processed_text, Some(&system_prompt)) {
-                Ok(cleaned) => cleaned,
-                Err(e) => {
-                    eprintln!("LLM cleanup error, using raw text: {e}");
-                    processed_text
+        llm_guard.take()
+    };
+
+    let final_text = if let Some(mut engine) = taken_engine {
+        let text_for_cleanup = processed_text.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let cleaned = engine.cleanup_text(&text_for_cleanup, Some(&system_prompt));
+            (engine, cleaned)
+        })
+        .await;
+
+        match result {
+            Ok((engine_back, Ok(cleaned))) => {
+                // Put the engine back into the Mutex.
+                if let Ok(mut guard) = state.llm_engine.lock() {
+                    *guard = Some(engine_back);
                 }
+                cleaned
             }
-        } else {
-            processed_text
+            Ok((engine_back, Err(e))) => {
+                if let Ok(mut guard) = state.llm_engine.lock() {
+                    *guard = Some(engine_back);
+                }
+                eprintln!("LLM cleanup error, using raw text: {e}");
+                processed_text
+            }
+            Err(e) => {
+                eprintln!("LLM cleanup task panicked: {e}");
+                processed_text
+            }
         }
+    } else {
+        processed_text
     };
 
     // 5b. Apply deterministic list formatting (bullet lists for enumerated

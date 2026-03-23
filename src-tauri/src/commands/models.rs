@@ -113,12 +113,19 @@ pub fn load_and_activate_model(
         .map(|s| s.gpu_acceleration)
         .unwrap_or(false);
 
+    // Build an initial prompt from dictionary entries to bias Whisper toward
+    // recognizing domain-specific vocabulary on the first pass.  We collect
+    // the "replacement" values (the correct forms) from both global and
+    // active-mode dictionaries.
+    let initial_prompt = build_whisper_vocab_prompt(state);
+
     let config = AsrConfig {
         model_path: model_path.to_string_lossy().into_owned(),
         language: Some("en".into()),
         translate: false,
         n_threads,
         use_gpu,
+        initial_prompt,
     };
 
     // Load on a thread with a larger stack — whisper.cpp + GGML backends
@@ -140,4 +147,43 @@ pub fn load_and_activate_model(
     *state.active_model_id.lock().unwrap() = Some(model_id.to_string());
 
     Ok(())
+}
+
+/// Build a Whisper initial prompt from dictionary replacement values.
+///
+/// Collects all enabled dictionary entries (global + active context mode)
+/// and joins their replacement forms into a comma-separated string.
+/// This biases Whisper toward recognizing domain-specific terms on the
+/// first transcription pass, reducing reliance on post-processing fixes.
+fn build_whisper_vocab_prompt(state: &AppState) -> Option<String> {
+    let mut terms: Vec<String> = Vec::new();
+
+    // Global dictionary entries
+    if let Ok(entries) = crate::storage::dictionary::list_entries(&state.db) {
+        for entry in &entries {
+            if entry.is_enabled && !entry.replacement.is_empty() {
+                terms.push(entry.replacement.clone());
+            }
+        }
+    }
+
+    // Active mode's dictionary entries
+    if let Ok(guard) = state.active_context_mode_id.lock() {
+        if let Some(ref mode_id) = *guard {
+            if let Ok(entries) = crate::storage::dictionary::list_entries_for_mode(&state.db, mode_id) {
+                for entry in &entries {
+                    if entry.is_enabled && !entry.replacement.is_empty() {
+                        terms.push(entry.replacement.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if terms.is_empty() {
+        None
+    } else {
+        terms.dedup();
+        Some(terms.join(", "))
+    }
 }

@@ -59,7 +59,7 @@ impl LlmEngine {
         let mut child = Command::new(&sidecar_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| AppError::Llm(format!(
                 "Failed to spawn LLM sidecar at {}: {e}", sidecar_path.display()

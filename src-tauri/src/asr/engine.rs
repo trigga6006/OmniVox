@@ -92,6 +92,13 @@ impl AsrEngine for WhisperEngine {
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
 
+        // Bias Whisper toward domain-specific vocabulary (e.g. programming
+        // terms) so it recognizes them on the first pass rather than relying
+        // on dictionary post-processing.
+        if let Some(ref prompt) = self.config.initial_prompt {
+            params.set_initial_prompt(prompt);
+        }
+
         // Run inference — this is CPU-bound and blocks
         state
             .full(params, audio)

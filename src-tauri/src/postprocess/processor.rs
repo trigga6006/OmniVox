@@ -116,6 +116,18 @@ impl TextProcessor for ProcessorChain {
     }
 }
 
+/// True if a byte is part of a "word" for dictionary matching purposes.
+/// Includes alphanumerics, apostrophes (contractions like "can't"), and
+/// hyphens (compound words like "real-time").
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'\'' || b == b'\xE2' || b == b'-'
+    // 0xE2 is the first byte of the UTF-8 sequence for U+2019 (right single
+    // quotation mark / typographic apostrophe "…'t").  A full multi-byte
+    // check isn't needed here — the byte never appears as a lead byte in
+    // any other common context, and false positives are harmless (they only
+    // prevent a replacement, never cause one).
+}
+
 /// Case-insensitive whole-word replacement. Returns `Some(new_string)` if any
 /// replacement was made, `None` if the phrase wasn't found.
 fn replace_case_insensitive(text: &str, phrase: &str, replacement: &str) -> Option<String> {
@@ -133,12 +145,13 @@ fn replace_case_insensitive(text: &str, phrase: &str, replacement: &str) -> Opti
     while let Some(pos) = lower_text[search_start..].find(&lower_phrase) {
         let abs_pos = search_start + pos;
 
-        // Check word boundaries to avoid replacing substrings
+        // Check word boundaries to avoid replacing inside contractions
+        // or compound words (e.g. "can" inside "can't").
         let at_word_start =
-            abs_pos == 0 || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            abs_pos == 0 || !is_word_char(text.as_bytes()[abs_pos - 1]);
         let end_pos = abs_pos + phrase.len();
         let at_word_end =
-            end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
+            end_pos >= text.len() || !is_word_char(text.as_bytes()[end_pos]);
 
         if at_word_start && at_word_end {
             result.push_str(&text[search_start..abs_pos]);

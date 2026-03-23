@@ -24,16 +24,24 @@ pub struct AsrConfig {
     pub n_threads: u32,
     /// Enable GPU acceleration via Vulkan/CUDA (requires compile-time feature).
     pub use_gpu: bool,
+    /// Optional initial prompt to bias Whisper toward specific vocabulary.
+    /// Useful for domain-specific terms (e.g. programming keywords) that
+    /// Whisper might otherwise mis-transcribe.
+    pub initial_prompt: Option<String>,
 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(4);
         Self {
             model_path: String::new(),
             language: None,
             translate: false,
-            n_threads: 4,
+            n_threads,
             use_gpu: false,
+            initial_prompt: None,
         }
     }
 }
