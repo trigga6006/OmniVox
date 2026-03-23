@@ -373,6 +373,7 @@ type AiState = "idle" | "downloading" | "loading" | "ready";
 
 function AiCleanupSection() {
   const [modelDownloaded, setModelDownloaded] = useState(false);
+  const [upgradeAvailable, setUpgradeAvailable] = useState(false);
   const [aiState, setAiState] = useState<AiState>("idle");
   const [downloadPercent, setDownloadPercent] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -382,6 +383,7 @@ function AiCleanupSection() {
     getAiCleanupStatus()
       .then((s) => {
         setModelDownloaded(s.model_downloaded);
+        setUpgradeAvailable(s.upgrade_available);
         if (s.model_loaded) setAiState("ready");
       })
       .catch((e) => setError(String(e)));
@@ -390,7 +392,7 @@ function AiCleanupSection() {
   // Listen for LLM download progress events
   useEffect(() => {
     const unlisten = onDownloadProgress((progress: DownloadProgress) => {
-      if (progress.model_id !== "llm-qwen3-0.6b") return;
+      if (progress.model_id !== "llm-qwen3-1.7b") return;
       setDownloadPercent(Math.round(progress.progress_percent));
       if (progress.status === "Completed") {
         setModelDownloaded(true);
@@ -456,9 +458,17 @@ function AiCleanupSection() {
       </div>
 
       <p className="text-xs text-text-muted mb-4 max-w-[400px]">
-        Uses a local AI model (Qwen3-0.6B) to remove filler words, fix grammar, and
+        Uses a local AI model (Qwen3-1.7B) to remove filler words, fix grammar, and
         polish transcriptions. Runs entirely on your device.
       </p>
+
+      {/* Upgrade hint when old model exists but new one hasn't been downloaded */}
+      {upgradeAvailable && !modelDownloaded && aiState !== "downloading" && (
+        <p className="text-xs text-amber-400/80 mb-3 flex items-center gap-1.5">
+          <Sparkles size={12} strokeWidth={2} />
+          New improved model available — download to upgrade.
+        </p>
+      )}
 
       {/* Step 1: Download model */}
       {!modelDownloaded && aiState !== "downloading" && (
@@ -468,7 +478,7 @@ function AiCleanupSection() {
           className="inline-flex items-center gap-2 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
         >
           <Download size={14} strokeWidth={2} />
-          Download Model (~524 MB)
+          Download Model (~1.2 GB)
         </button>
       )}
 

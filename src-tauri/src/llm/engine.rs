@@ -11,7 +11,13 @@ use crate::llm::types::LlmConfig;
 #[serde(tag = "cmd")]
 enum Request<'a> {
     #[serde(rename = "load")]
-    Load { model_path: &'a str },
+    Load {
+        model_path: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        n_threads: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        n_ctx: Option<u32>,
+    },
     #[serde(rename = "cleanup")]
     Cleanup {
         text: &'a str,
@@ -80,6 +86,8 @@ impl LlmEngine {
         // Ask the sidecar to load the model.
         let resp = engine.send(&Request::Load {
             model_path: config.model_path.to_string_lossy().as_ref(),
+            n_threads: Some(config.n_threads),
+            n_ctx: Some(config.context_size),
         })?;
 
         if !resp.ok {

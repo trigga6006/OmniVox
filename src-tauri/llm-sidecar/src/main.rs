@@ -25,7 +25,13 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "cmd")]
 enum Request {
     #[serde(rename = "load")]
-    Load { model_path: String },
+    Load {
+        model_path: String,
+        #[serde(default)]
+        n_threads: Option<u32>,
+        #[serde(default)]
+        n_ctx: Option<u32>,
+    },
     #[serde(rename = "cleanup")]
     Cleanup {
         text: String,
@@ -95,10 +101,14 @@ Okay, I want to do these three things. First, check the logs. Then, fix that bug
 struct Engine {
     _backend: LlamaBackend,
     model: LlamaModel,
+    /// Context size passed from the main app (or default 768).
+    n_ctx: u32,
+    /// Thread count passed from the main app.
+    n_threads: u32,
 }
 
 impl Engine {
-    fn load(path: &str) -> Result<Self, String> {
+    fn load(path: &str, n_threads: Option<u32>, n_ctx: Option<u32>) -> Result<Self, String> {
         let mut backend = LlamaBackend::init()
             .map_err(|e| format!("backend init: {e}"))?;
         backend.void_logs();
@@ -107,7 +117,10 @@ impl Engine {
         let model = LlamaModel::load_from_file(&backend, path, &params)
             .map_err(|e| format!("model load: {e}"))?;
 
-        Ok(Self { _backend: backend, model })
+        let n_threads = n_threads.unwrap_or(4);
+        let n_ctx = n_ctx.unwrap_or(768);
+
+        Ok(Self { _backend: backend, model, n_ctx, n_threads })
     }
 
     fn cleanup(&self, raw: &str, custom_prompt: Option<&str>) -> Result<String, String> {
@@ -135,8 +148,13 @@ impl Engine {
             .str_to_token(&prompt, AddBos::Always)
             .map_err(|e| format!("tokenize: {e}"))?;
 
+        // Use the context size and thread count from config instead of
+        // hard-coded values.  768 is right-sized for dictation cleanup
+        // (~200 token prefix + typical input), saving KV cache memory.
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(Some(NonZeroU32::new(2048).unwrap()));
+            .with_n_ctx(Some(NonZeroU32::new(self.n_ctx).unwrap()))
+            .with_n_threads(self.n_threads as i32)
+            .with_n_threads_batch(self.n_threads as i32);
 
         let mut ctx = self.model
             .new_context(&self._backend, ctx_params)
@@ -148,7 +166,7 @@ impl Engine {
             LlamaSampler::dist(42),
         ]);
 
-        let mut batch = LlamaBatch::new(2048, 1);
+        let mut batch = LlamaBatch::new(self.n_ctx as usize, 1);
         let last_index = (tokens.len() - 1) as i32;
         for (i, token) in (0_i32..).zip(tokens.iter().copied()) {
             batch.add(token, i, &[0], i == last_index)
@@ -162,7 +180,11 @@ impl Engine {
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut n_cur = batch.n_tokens();
 
-        for _ in 0..384 {
+        // Dynamic max tokens: cap at 384 but allow early exit for short inputs.
+        let input_words = raw.split_whitespace().count();
+        let max_gen = 384_usize.min(input_words.saturating_mul(3).max(64));
+
+        for _ in 0..max_gen {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
 
@@ -380,7 +402,7 @@ fn fix_fragmented_versions(text: &str) -> String {
 
 fn main() {
     // Version marker so the main app can confirm the correct sidecar is running.
-    eprintln!("[omnivox-llm] sidecar v2 started (few-shot + strip_markdown)");
+    eprintln!("[omnivox-llm] sidecar v3 started (1.7B + configurable ctx/threads)");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -406,11 +428,11 @@ fn main() {
         let resp = match req {
             Request::Ping => Response::ok(),
 
-            Request::Load { model_path } => {
+            Request::Load { model_path, n_threads, n_ctx } => {
                 // Load on a thread with a large stack (debug builds need it).
                 match std::thread::Builder::new()
                     .stack_size(128 * 1024 * 1024)
-                    .spawn(move || Engine::load(&model_path))
+                    .spawn(move || Engine::load(&model_path, n_threads, n_ctx))
                     .and_then(|h| h.join().map_err(|_| io::Error::other("thread panicked")))
                 {
                     Ok(Ok(e)) => {

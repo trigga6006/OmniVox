@@ -162,6 +162,7 @@ export interface AiCleanupStatus {
   enabled: boolean;
   model_downloaded: boolean;
   model_loaded: boolean;
+  upgrade_available: boolean;
 }
 export const getAiCleanupStatus = () =>
   invoke<AiCleanupStatus>("get_ai_cleanup_status");

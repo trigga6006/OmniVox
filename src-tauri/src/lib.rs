@@ -139,7 +139,8 @@ fn load_default_model_deferred(app_handle: &tauri::AppHandle, state: &state::App
 /// the user's LLM models directory. The model is NOT loaded here — users
 /// enable AI cleanup from the Settings UI which triggers the load.
 fn setup_bundled_llm_model(app: &tauri::App, state: &state::AppState) {
-    const LLM_MODEL_FILENAME: &str = "Qwen3-0.6B-Q4_K_M.gguf";
+    // TODO(model-upgrade): Update filename when the final model is chosen.
+    const LLM_MODEL_FILENAME: &str = "Qwen3-1.7B-Q4_K_M.gguf";
     let target = state.llm_models_dir.join(LLM_MODEL_FILENAME);
 
     if target.exists() {

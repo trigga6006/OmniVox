@@ -7,19 +7,30 @@ use crate::llm::types::{AiCleanupStatus, LlmConfig};
 use crate::models::types::{DownloadProgress, DownloadStatus};
 use crate::state::AppState;
 
+// TODO(model-upgrade): Update these once you've confirmed the exact GGUF
+// model on HuggingFace.  Candidates:
+//   - unsloth/Qwen3-1.7B-GGUF  (same family, 3× larger, known good GGUF)
+//   - qingy2024/GRMR-V3-Q1.7B  (grammar-finetuned, but no pre-built GGUF yet)
+//   - bartowski/GRMR-2B-Instruct-GGUF  (grammar-finetuned, GGUF available)
+// The rest of the codebase (sidecar optimizations, n_threads, n_ctx, frontend)
+// is model-agnostic and ready to go.
 const LLM_MODEL_URL: &str =
-    "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf";
-const LLM_MODEL_FILENAME: &str = "Qwen3-0.6B-Q4_K_M.gguf";
-const LLM_MODEL_ID: &str = "llm-qwen3-0.6b";
+    "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf";
+const LLM_MODEL_FILENAME: &str = "Qwen3-1.7B-Q4_K_M.gguf";
+const LLM_MODEL_ID: &str = "llm-qwen3-1.7b";
+/// Previous model filename — used to detect upgrades and show a migration hint.
+const OLD_LLM_MODEL_FILENAME: &str = "Qwen3-0.6B-Q4_K_M.gguf";
 
 #[tauri::command]
 pub async fn get_ai_cleanup_status(state: State<'_, AppState>) -> Result<AiCleanupStatus, String> {
     let model_path = state.llm_models_dir.join(LLM_MODEL_FILENAME);
     let model_loaded = state.llm_engine.lock().unwrap().is_some();
+    let old_model_exists = state.llm_models_dir.join(OLD_LLM_MODEL_FILENAME).exists();
     Ok(AiCleanupStatus {
         enabled: model_loaded,
         model_downloaded: model_path.exists(),
         model_loaded,
+        upgrade_available: !model_path.exists() && old_model_exists,
     })
 }
 
