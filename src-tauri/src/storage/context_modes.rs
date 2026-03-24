@@ -44,6 +44,17 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
 const SELECT_COLS: &str =
     "id, name, description, icon, color, llm_prompt, sort_order, is_builtin, created_at, updated_at, writing_style";
 
+/// Return the ID of the builtin General mode (the fallback for unbound apps).
+pub fn get_general_mode_id(db: &Database) -> AppResult<String> {
+    let conn = db.conn()?;
+    conn.query_row(
+        "SELECT id FROM context_modes WHERE is_builtin = 1 LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| crate::error::AppError::Storage(format!("General mode not found: {e}")))
+}
+
 /// Ensure the builtin "General" mode exists. Returns its ID.
 /// Also refreshes builtin prompts to the latest version on every launch.
 pub fn seed_general_mode(db: &Database) -> AppResult<String> {

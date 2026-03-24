@@ -203,36 +203,7 @@ OmniVox, Whisper";
 ///   recognition of technical terms and proper nouns.
 /// - Multilingual models get only universal abbreviations + user dictionary
 ///   terms, so the language detector works unbiased for non-English speech.
-/// Style-specific example sentences prepended to the Whisper initial prompt.
-/// Whisper mimics the *style* of the prompt text (not instructions), so these
-/// bias the model's capitalization and punctuation toward the desired format.
-const STYLE_PROMPT_FORMAL: &str = "\
-Hello, my name is John. I would like to discuss the quarterly report. \
-Please review the attached documents and let me know your thoughts. \
-The meeting is scheduled for Monday at 10 a.m.";
-
-const STYLE_PROMPT_CASUAL: &str = "\
-Hey so I was thinking about the project. Let me know what you think, \
-it could be really good. I'll send over the details later today";
-
-const STYLE_PROMPT_VERY_CASUAL: &str = "\
-hey so i was thinking about the project. let me know what you think \
-it could be really good. i'll send over the details later today";
-
 fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-
-    // Prepend style-specific example sentences to bias Whisper's formatting
-    let style_prompt = crate::storage::settings::get_settings(&state.db)
-        .map(|s| match s.writing_style.as_str() {
-            "casual" => STYLE_PROMPT_CASUAL,
-            "very_casual" => STYLE_PROMPT_VERY_CASUAL,
-            _ => STYLE_PROMPT_FORMAL,
-        })
-        .unwrap_or(STYLE_PROMPT_FORMAL);
-    parts.push(style_prompt.to_string());
-
-    // Append vocabulary terms after the style examples
     let mut terms: Vec<String> = Vec::new();
 
     // Start with the appropriate static vocabulary
@@ -266,14 +237,10 @@ fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option
         }
     }
 
-    if !terms.is_empty() {
-        terms.dedup();
-        parts.push(terms.join(", "));
-    }
-
-    if parts.is_empty() {
+    if terms.is_empty() {
         None
     } else {
-        Some(parts.join(" "))
+        terms.dedup();
+        Some(terms.join(", "))
     }
 }

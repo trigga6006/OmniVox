@@ -1,34 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm install:*)",
-      "Bash(rustc --version && cargo --version 2>&1)",
-      "Bash(rustup --version 2>&1 || where rustup 2>&1 || echo \"rustup not found\")",
-      "Bash(where rustc:*)",
-      "Read(//c/Users/fowle/.cargo/**)",
-      "Read(//c/Users/fowle/.rustup//**)",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && rustc --version && cargo --version 2>&1)",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && npx tauri dev 2>&1)",
-      "Bash(cd src-tauri:*)",
-      "Read(//c/Program Files/LLVM/bin/**)",
-      "Read(//c/Program Files \\(x86\\)/Microsoft Visual Studio/**)",
-      "Read(//c/Program Files/Microsoft Visual Studio/**)",
-      "Bash(winget install:*)",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && npx tauri icon --help 2>&1)",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && node -e \"\nconst { createCanvas } = require\\('canvas'\\);\n\" 2>&1 || echo \"No canvas module, will use a different approach\")",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && npx tauri icon app-icon.png 2>&1)",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && cargo search whisper-rs 2>&1)",
-      "Bash(find /c/Users/fowle/.cargo/registry/src -path \"*whisper-rs*\" -name \"*.rs\" 2>/dev/null | head -20)",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && export LIBCLANG_PATH=\"C:/Program Files/LLVM/bin\" && cd C:/Users/fowle/Documents/dev/OmniVox && npx tauri dev 2>&1)",
-      "Bash(wmic cpu:*)",
-      "Bash(node -e \"console.log\\('Logical CPUs:', require\\('os'\\).cpus\\(\\).length\\); console.log\\('Model:', require\\('os'\\).cpus\\(\\)[0].model\\); console.log\\('RAM GB:', \\(require\\('os'\\).totalmem\\(\\) / 1024**3\\).toFixed\\(1\\)\\)\")",
-      "Bash(mkdir -p \"C:/Users/fowle/AppData/Roaming/omnivox/models\")",
-      "Read(//c/Users/fowle/AppData/Roaming/omnivox/models/**)",
-      "Bash(curl -L -o \"C:/Users/fowle/AppData/Roaming/omnivox/models/ggml-base.en.bin\" --progress-bar \"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin\" 2>&1)",
-      "Bash(node -e \"\n// dirs::data_dir\\(\\) on Windows maps to FOLDERID_RoamingAppData\n// which is %APPDATA% = C:/Users/fowle/AppData/Roaming\n// But let's double check by looking at what Rust's 'dirs' crate uses\nconsole.log\\('APPDATA:', process.env.APPDATA\\);\nconsole.log\\('LOCALAPPDATA:', process.env.LOCALAPPDATA\\);\n\")",
-      "Bash(cmd.exe /c \"taskkill /F /IM omnivoice.exe\" 2>&1; cmd.exe /c \"taskkill /F /IM node.exe\" 2>&1)",
-      "Bash(cmd.exe /c \"netstat -ano | findstr :1420\")",
-      "Bash(export PATH=\"$PATH:/c/Users/fowle/.cargo/bin\" && export LIBCLANG_PATH=\"C:/Program Files/LLVM/bin\" && cd C:/Users/fowle/Documents/dev/OmniVox/src-tauri && cargo build 2>&1)"
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "mcp__Claude_Preview__*"
     ]
   }
 }

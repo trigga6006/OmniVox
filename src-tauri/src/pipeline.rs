@@ -209,9 +209,19 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
         if auto_switch {
             if let Some(process_name) = get_process_name_from_hwnd(hwnd) {
-                if let Ok(Some(target_mode_id)) =
-                    crate::storage::app_bindings::find_mode_for_process(&state.db, &process_name)
-                {
+                // Find the target mode: either a bound mode or General fallback.
+                let target_mode_id = match crate::storage::app_bindings::find_mode_for_process(
+                    &state.db,
+                    &process_name,
+                ) {
+                    Ok(Some(id)) => Some(id),
+                    _ => {
+                        // No binding for this app — fall back to the builtin General mode
+                        crate::storage::context_modes::get_general_mode_id(&state.db).ok()
+                    }
+                };
+
+                if let Some(target_mode_id) = target_mode_id {
                     let current_mode = state.active_context_mode_id.lock().unwrap().clone();
                     if current_mode.as_deref() != Some(&target_mode_id) {
                         if let Err(e) = crate::commands::context_modes::activate_mode_internal(

@@ -344,10 +344,10 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 autoSwitchModes
-                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
                   : "border-transparent opacity-50 hover:opacity-80"
               )}
-              style={{ backgroundColor: autoSwitchModes ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
+              style={{ backgroundColor: autoSwitchModes ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
               <Layers size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
@@ -362,10 +362,10 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 livePreviewEnabled
-                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
                   : "border-transparent opacity-50 hover:opacity-80"
               )}
-              style={{ backgroundColor: livePreviewEnabled ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
+              style={{ backgroundColor: livePreviewEnabled ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
               <Eye size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
@@ -380,10 +380,10 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 noiseReduction
-                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
                   : "border-transparent opacity-50 hover:opacity-80"
               )}
-              style={{ backgroundColor: noiseReduction ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
+              style={{ backgroundColor: noiseReduction ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
               <ShieldCheck size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
@@ -398,10 +398,10 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 shipMode
-                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
                   : "border-transparent opacity-50 hover:opacity-80"
               )}
-              style={{ backgroundColor: shipMode ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
+              style={{ backgroundColor: shipMode ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
               <Rocket size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
@@ -440,7 +440,7 @@ export function FloatingPill() {
                   ? "border-white/10 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
                   : "border-transparent opacity-50 hover:opacity-80"
               )}
-              style={{ backgroundColor: ghostMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)" }}
+              style={{ backgroundColor: "var(--color-pill-bg)" }}
             >
               <Ghost size={12} strokeWidth={2} className="text-white/50 drop-shadow-sm" />
             </button>
