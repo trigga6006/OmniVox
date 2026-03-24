@@ -7,6 +7,12 @@ const levelStyles = {
   info: "border-blue-500/30 bg-blue-500/10 text-blue-300",
 };
 
+const actionStyles = {
+  error: "bg-red-500/20 hover:bg-red-500/30 text-red-200",
+  warn: "bg-amber-500/20 hover:bg-amber-500/30 text-amber-200",
+  info: "bg-blue-500/20 hover:bg-blue-500/30 text-blue-200",
+};
+
 export function ToastContainer() {
   const toasts = useToastStore((s) => s.toasts);
   const removeToast = useToastStore((s) => s.removeToast);
@@ -18,15 +24,28 @@ export function ToastContainer() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 shadow-lg backdrop-blur-sm animate-in slide-in-from-right-2 ${levelStyles[toast.level]}`}
+          className={`flex flex-col gap-2 rounded-lg border px-3 py-2.5 shadow-lg backdrop-blur-sm animate-in slide-in-from-right-2 ${levelStyles[toast.level]}`}
         >
-          <p className="flex-1 text-xs leading-relaxed">{toast.message}</p>
-          <button
-            onClick={() => removeToast(toast.id)}
-            className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
-          >
-            <X size={12} />
-          </button>
+          <div className="flex items-start gap-2">
+            <p className="flex-1 text-xs leading-relaxed">{toast.message}</p>
+            <button
+              onClick={() => removeToast(toast.id)}
+              className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          {toast.action && (
+            <button
+              onClick={() => {
+                toast.action!.onClick();
+                removeToast(toast.id);
+              }}
+              className={`self-start rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${actionStyles[toast.level]}`}
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

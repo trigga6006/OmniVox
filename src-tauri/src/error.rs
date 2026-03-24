@@ -11,6 +11,7 @@ pub enum ErrorCode {
     AudioDeviceNotFound,
     AudioDeviceBusy,
     AudioCaptureError,
+    MicPermissionDenied,
     // ASR / Model
     NoModelLoaded,
     ModelLoadFailed,
@@ -48,7 +49,22 @@ impl AppError {
     /// Map error variant to a typed error code for the frontend.
     pub fn code(&self) -> ErrorCode {
         match self {
-            AppError::Audio(_) => ErrorCode::AudioCaptureError,
+            AppError::Audio(msg) => {
+                let lower = msg.to_lowercase();
+                if lower.contains("permission")
+                    || lower.contains("denied")
+                    || lower.contains("not allowed")
+                    || lower.contains("no default input device")
+                {
+                    ErrorCode::MicPermissionDenied
+                } else if lower.contains("not found") {
+                    ErrorCode::AudioDeviceNotFound
+                } else if lower.contains("busy") || lower.contains("exclusive") {
+                    ErrorCode::AudioDeviceBusy
+                } else {
+                    ErrorCode::AudioCaptureError
+                }
+            }
             AppError::Asr(_) => ErrorCode::TranscriptionFailed,
             AppError::Model(_) => ErrorCode::ModelLoadFailed,
             AppError::Output(_) => ErrorCode::KeystrokeError,

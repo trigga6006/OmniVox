@@ -7,7 +7,7 @@ import { useRecordingStore } from "@/stores/recordingStore";
 import { DictationPanel } from "@/features/dictation/DictationPanel";
 import { ToastContainer } from "@/components/ToastContainer";
 import { useToastStore } from "@/stores/toastStore";
-import { recentHistory, onTranscriptionResult, onRecordingError } from "@/lib/tauri";
+import { recentHistory, onTranscriptionResult, onRecordingError, openMicSettings } from "@/lib/tauri";
 
 // Lazy-load page components — they are only parsed/executed when navigated to,
 // saving ~20-50 MB of JS heap in the main WebView window.
@@ -62,10 +62,24 @@ function useGlobalTranscriptionSync() {
     };
   }, [setLastTranscription]);
 
-  // Listen for pipeline errors and surface them as toasts
+  // Listen for pipeline errors and surface them as toasts.
+  // Permission-denied errors get an action button to open System Settings.
   useEffect(() => {
     const unlisten = onRecordingError((err) => {
-      addToast({ message: err.message, code: err.code, level: "error" });
+      if (err.code === "mic_permission_denied") {
+        addToast({
+          message: "Microphone access denied. Grant permission in System Settings to record audio.",
+          code: err.code,
+          level: "error",
+          action: {
+            label: "Open Settings",
+            onClick: () => openMicSettings().catch(console.error),
+          },
+          duration: 15000,
+        });
+      } else {
+        addToast({ message: err.message, code: err.code, level: "error" });
+      }
     });
     return () => {
       unlisten.then((fn) => fn());

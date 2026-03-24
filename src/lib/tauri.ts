@@ -95,6 +95,17 @@ export interface AppBinding {
   created_at: string;
 }
 
+// Platform info
+export interface PlatformInfo {
+  os: string;
+  needs_mic_permission: boolean;
+  needs_accessibility_permission: boolean;
+}
+export const getPlatformInfo = () => invoke<PlatformInfo>("get_platform_info");
+export const openMicSettings = () => invoke<void>("open_mic_settings");
+export const openAccessibilitySettings = () =>
+  invoke<void>("open_accessibility_settings");
+
 // Audio commands
 export const startRecording = () => invoke<void>("start_recording");
 export const stopRecording = () => invoke<string>("stop_recording");

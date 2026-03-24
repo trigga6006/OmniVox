@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink } from "lucide-react";
 import {
   getSettings,
   updateSettings,
@@ -10,9 +10,13 @@ import {
   setActiveModel,
   getActiveModel,
   onSettingsChanged,
+  getPlatformInfo,
+  openMicSettings,
+  openAccessibilitySettings,
   type AppSettings,
   type AudioDevice,
   type HotkeyConfig,
+  type PlatformInfo,
 } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
@@ -380,6 +384,7 @@ export function SettingsPage() {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const [showVoiceCommands, setShowVoiceCommands] = useState(false);
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -399,6 +404,10 @@ export function SettingsPage() {
         setSelectedDeviceId(def?.id ?? devices[0]?.id ?? null);
       })
       .catch((e) => console.error("Failed to load audio devices:", e));
+
+    getPlatformInfo()
+      .then(setPlatformInfo)
+      .catch(() => {});
 
     // Stay in sync when settings change from the overlay pill (or any window)
     const unlisten = onSettingsChanged((s) => {
@@ -625,6 +634,33 @@ export function SettingsPage() {
               </label>
               <span className="font-mono text-sm text-text-muted">16,000 Hz</span>
             </div>
+
+            {/* macOS permission buttons */}
+            {platformInfo?.os === "macos" && (
+              <div className="border-t border-border pt-3 mt-1 flex flex-col gap-2">
+                <p className="text-[11px] text-text-muted">
+                  macOS requires explicit permission for microphone access and global hotkeys.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => openMicSettings().catch(console.error)}
+                    className="flex items-center gap-1.5 rounded-md bg-surface-2 border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+                  >
+                    <Mic size={12} />
+                    Microphone Access
+                    <ExternalLink size={10} className="opacity-50" />
+                  </button>
+                  <button
+                    onClick={() => openAccessibilitySettings().catch(console.error)}
+                    className="flex items-center gap-1.5 rounded-md bg-surface-2 border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+                  >
+                    <Keyboard size={12} />
+                    Accessibility
+                    <ExternalLink size={10} className="opacity-50" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 

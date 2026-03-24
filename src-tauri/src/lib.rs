@@ -368,12 +368,15 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            // Audio commands (5)
+            // Audio commands (8)
             commands::start_recording,
             commands::stop_recording,
             commands::cancel_recording,
             commands::get_audio_devices,
             commands::set_audio_device,
+            commands::open_mic_settings,
+            commands::open_accessibility_settings,
+            commands::get_platform_info,
             // Model commands (6)
             commands::list_models,
             commands::download_model,

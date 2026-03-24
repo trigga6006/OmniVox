@@ -4,6 +4,60 @@ use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioDevice;
 use crate::state::AppState;
 
+/// Open the OS-specific privacy settings for microphone access.
+/// On macOS this opens System Settings → Privacy & Security → Microphone.
+/// On Windows/Linux this is a no-op (permissions are granted at the OS level).
+#[tauri::command]
+pub async fn open_mic_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {e}"))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("ms-settings:privacy-microphone")
+            .spawn();
+    }
+
+    Ok(())
+}
+
+/// Open the OS-specific Accessibility settings.
+/// On macOS the global hotkey requires Accessibility permission via rdev.
+#[tauri::command]
+pub async fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {e}"))?;
+    }
+
+    Ok(())
+}
+
+/// Check the current platform and return permission guidance.
+#[tauri::command]
+pub async fn get_platform_info() -> Result<PlatformInfo, String> {
+    Ok(PlatformInfo {
+        os: std::env::consts::OS.to_string(),
+        needs_mic_permission: cfg!(target_os = "macos"),
+        needs_accessibility_permission: cfg!(target_os = "macos"),
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct PlatformInfo {
+    pub os: String,
+    pub needs_mic_permission: bool,
+    pub needs_accessibility_permission: bool,
+}
+
 #[tauri::command]
 pub async fn start_recording(
     app_handle: tauri::AppHandle,
