@@ -1,20 +1,34 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Sidebar } from "@/app/Sidebar";
 import { Providers } from "@/app/providers";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useAppStore } from "@/stores/appStore";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { DictationPanel } from "@/features/dictation/DictationPanel";
-import { HistoryPage } from "@/features/history/HistoryPage";
-import { DictionaryPage } from "@/features/dictionary/DictionaryPage";
-import { ModelsPage } from "@/features/models/ModelsPage";
-import { ContextModesPage } from "@/features/modes/ContextModesPage";
-import { NotesPage } from "@/features/notes/NotesPage";
-import { SettingsPage } from "@/features/settings/SettingsPage";
-import { FloatingPill } from "@/features/overlay/FloatingPill";
-import { recentHistory, onTranscriptionResult } from "@/lib/tauri";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ToastContainer } from "@/components/ToastContainer";
+import { useToastStore } from "@/stores/toastStore";
+import { recentHistory, onTranscriptionResult, onRecordingError } from "@/lib/tauri";
 
-const isOverlay = getCurrentWindow().label === "overlay";
+// Lazy-load page components — they are only parsed/executed when navigated to,
+// saving ~20-50 MB of JS heap in the main WebView window.
+const HistoryPage = lazy(() =>
+  import("@/features/history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
+);
+const DictionaryPage = lazy(() =>
+  import("@/features/dictionary/DictionaryPage").then((m) => ({ default: m.DictionaryPage }))
+);
+const ModelsPage = lazy(() =>
+  import("@/features/models/ModelsPage").then((m) => ({ default: m.ModelsPage }))
+);
+const ContextModesPage = lazy(() =>
+  import("@/features/modes/ContextModesPage").then((m) => ({ default: m.ContextModesPage }))
+);
+const NotesPage = lazy(() =>
+  import("@/features/notes/NotesPage").then((m) => ({ default: m.NotesPage }))
+);
+const SettingsPage = lazy(() =>
+  import("@/features/settings/SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
 
 /**
  * Always-mounted hook that keeps `lastTranscription` in sync:
@@ -25,6 +39,7 @@ const isOverlay = getCurrentWindow().label === "overlay";
  */
 function useGlobalTranscriptionSync() {
   const setLastTranscription = useRecordingStore((s) => s.setLastTranscription);
+  const addToast = useToastStore((s) => s.addToast);
 
   // Seed from DB on mount
   useEffect(() => {
@@ -46,29 +61,51 @@ function useGlobalTranscriptionSync() {
       unlisten.then((fn) => fn());
     };
   }, [setLastTranscription]);
+
+  // Listen for pipeline errors and surface them as toasts
+  useEffect(() => {
+    const unlisten = onRecordingError((err) => {
+      addToast({ message: err.message, code: err.code, level: "error" });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [addToast]);
 }
 
 function PageRouter() {
   const currentPage = useAppStore((s) => s.currentPage);
 
-  switch (currentPage) {
-    case "dictation":
-      return <DictationPanel />;
-    case "history":
-      return <HistoryPage />;
-    case "dictionary":
-      return <DictionaryPage />;
-    case "modes":
-      return <ContextModesPage />;
-    case "notes":
-      return <NotesPage />;
-    case "models":
-      return <ModelsPage />;
-    case "settings":
-      return <SettingsPage />;
-    default:
-      return <DictationPanel />;
-  }
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-text-muted/20 border-t-amber-500" />
+        </div>
+      }
+    >
+      {(() => {
+        switch (currentPage) {
+          case "dictation":
+            return <DictationPanel />;
+          case "history":
+            return <HistoryPage />;
+          case "dictionary":
+            return <DictionaryPage />;
+          case "modes":
+            return <ContextModesPage />;
+          case "notes":
+            return <NotesPage />;
+          case "models":
+            return <ModelsPage />;
+          case "settings":
+            return <SettingsPage />;
+          default:
+            return <DictationPanel />;
+        }
+      })()}
+    </Suspense>
+  );
 }
 
 function MainApp() {
@@ -86,22 +123,17 @@ function MainApp() {
       >
         <PageRouter />
       </main>
+      <ToastContainer />
     </div>
   );
 }
 
 export default function App() {
-  if (isOverlay) {
-    return (
-      <Providers>
-        <FloatingPill />
-      </Providers>
-    );
-  }
-
   return (
-    <Providers>
-      <MainApp />
-    </Providers>
+    <ErrorBoundary>
+      <Providers>
+        <MainApp />
+      </Providers>
+    </ErrorBoundary>
   );
 }

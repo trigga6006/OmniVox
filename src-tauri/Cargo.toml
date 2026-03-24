@@ -30,12 +30,14 @@ whisper-rs = "0.16"
 enigo = "0.2"
 arboard = "3"
 tauri-plugin-single-instance = "2.4.0"
+nnnoiseless = { version = "0.5", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
 ] }
 windows = { version = "0.61", features = [
     "Win32_Media_Audio",
@@ -45,7 +47,6 @@ windows = { version = "0.61", features = [
 
 [features]
 default = []
-llm = []
 cuda = ["whisper-rs/cuda"]
 # Vulkan provides GPU acceleration for both AMD and NVIDIA GPUs.
 # Install the Vulkan SDK, then build with: cargo build --features vulkan

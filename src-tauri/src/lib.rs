@@ -3,7 +3,6 @@ pub mod asr;
 pub mod commands;
 pub mod error;
 pub mod hotkey;
-pub mod llm;
 pub mod models;
 pub mod output;
 pub mod pipeline;
@@ -62,7 +61,7 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         (400.0, 800.0) // fallback
     };
 
-    let _overlay = WebviewWindowBuilder::new(app, "overlay", tauri::WebviewUrl::App("/".into()))
+    let _overlay = WebviewWindowBuilder::new(app, "overlay", tauri::WebviewUrl::App("/overlay.html".into()))
         .title("")
         .inner_size(pill_width, pill_height)
         .min_inner_size(1.0, 1.0)
@@ -116,47 +115,47 @@ fn load_default_model_deferred(app_handle: &tauri::AppHandle, state: &state::App
         return; // already loaded
     }
 
-    // Check if the bundled model exists on disk
-    if state.model_manager.model_path(BUNDLED_MODEL_ID).is_none() {
+    // Prefer the persisted model choice; fall back to the bundled default.
+    let model_id = crate::storage::settings::get_settings(&state.db)
+        .ok()
+        .and_then(|s| s.active_model_id)
+        .unwrap_or_else(|| BUNDLED_MODEL_ID.to_string());
+
+    // Check if the chosen model exists on disk
+    if state.model_manager.model_path(&model_id).is_none() {
+        // Fall back to bundled model if persisted choice is missing
+        if model_id != BUNDLED_MODEL_ID {
+            eprintln!("Persisted model '{model_id}' not found, falling back to bundled");
+            if state.model_manager.model_path(BUNDLED_MODEL_ID).is_none() {
+                eprintln!("No bundled model found on disk — skipping auto-load");
+                return;
+            }
+            eprintln!("Loading Whisper model in background...");
+            match commands::models::load_and_activate_model(BUNDLED_MODEL_ID, state) {
+                Ok(()) => {
+                    eprintln!("Whisper model loaded successfully");
+                    let _ = app_handle.emit("model-loaded", BUNDLED_MODEL_ID);
+                }
+                Err(e) => {
+                    eprintln!("Failed to load Whisper model (app still usable): {e}");
+                    let _ = app_handle.emit("model-load-error", e);
+                }
+            }
+            return;
+        }
         eprintln!("No bundled model found on disk — skipping auto-load");
         return;
     }
 
     eprintln!("Loading Whisper model in background...");
-    match commands::models::load_and_activate_model(BUNDLED_MODEL_ID, state) {
+    match commands::models::load_and_activate_model(&model_id, state) {
         Ok(()) => {
             eprintln!("Whisper model loaded successfully");
-            let _ = app_handle.emit("model-loaded", BUNDLED_MODEL_ID);
+            let _ = app_handle.emit("model-loaded", model_id);
         }
         Err(e) => {
             eprintln!("Failed to load Whisper model (app still usable): {e}");
             let _ = app_handle.emit("model-load-error", e);
-        }
-    }
-}
-
-/// On first launch, copy the bundled LLM model from app resources into
-/// the user's LLM models directory. The model is NOT loaded here — users
-/// enable AI cleanup from the Settings UI which triggers the load.
-fn setup_bundled_llm_model(app: &tauri::App, state: &state::AppState) {
-    // TODO(model-upgrade): Update filename when the final model is chosen.
-    const LLM_MODEL_FILENAME: &str = "Qwen3-1.7B-Q4_K_M.gguf";
-    let target = state.llm_models_dir.join(LLM_MODEL_FILENAME);
-
-    if target.exists() {
-        return;
-    }
-
-    let resource_path = app
-        .path()
-        .resolve(format!("resources/{LLM_MODEL_FILENAME}"), tauri::path::BaseDirectory::Resource);
-
-    if let Ok(source) = resource_path {
-        if source.exists() {
-            let _ = std::fs::create_dir_all(&state.llm_models_dir);
-            if std::fs::copy(&source, &target).is_ok() {
-                eprintln!("Bundled LLM model installed: {LLM_MODEL_FILENAME}");
-            }
         }
     }
 }
@@ -248,6 +247,29 @@ unsafe fn suppress_crt_asserts() {
     }
 }
 
+/// Remove `.part` files left behind by interrupted model downloads.
+/// Only deletes files older than 1 hour to avoid racing with an active download.
+fn cleanup_part_files(models_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(models_dir) else { return };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("part") {
+            let is_stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| t < cutoff)
+                .unwrap_or(false);
+            if is_stale {
+                eprintln!("Removing orphaned download: {}", path.display());
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
 pub fn run() {
     // In debug builds on Windows, the debug UCRT (ucrtbased.dll) has _ASSERTE
     // checks that show modal dialogs when C code touches invalid file handles
@@ -290,8 +312,10 @@ pub fn run() {
             // Ensure data directories exist
             let state = app.state::<state::AppState>();
             let _ = std::fs::create_dir_all(&state.models_dir);
-            let _ = std::fs::create_dir_all(&state.llm_models_dir);
             let _ = std::fs::create_dir_all(&state.data_dir);
+
+            // Clean up orphaned .part files from interrupted downloads
+            cleanup_part_files(&state.models_dir);
 
             // Load persisted settings (output mode, etc.) into in-memory state
             apply_persisted_settings(&state);
@@ -306,11 +330,6 @@ pub fn run() {
 
                 *state.active_context_mode_id.lock().unwrap() = Some(active_id.clone());
 
-                // Load the mode's LLM prompt
-                if let Ok(mode) = crate::storage::context_modes::get_mode(&state.db, &active_id) {
-                    *state.active_llm_prompt.lock().unwrap() = Some(mode.llm_prompt);
-                }
-
                 // Load global + mode-scoped dictionary/snippets into processor
                 commands::dictionary::sync_processor(&state);
             }
@@ -319,7 +338,6 @@ pub fn run() {
             // Model loading is deferred to a background task so that a slow or
             // crashing model load never prevents the window from appearing.
             copy_bundled_resources(app, &state);
-            setup_bundled_llm_model(app, &state);
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Let the window render first
@@ -385,16 +403,12 @@ pub fn run() {
             commands::suspend_hotkey,
             commands::update_hotkey,
             commands::resize_overlay,
+            commands::show_main_window,
             // Notes commands (4)
             commands::add_note,
             commands::update_note,
             commands::delete_note,
             commands::list_notes,
-            // LLM / AI cleanup commands (4)
-            commands::get_ai_cleanup_status,
-            commands::download_llm_model,
-            commands::enable_ai_cleanup,
-            commands::disable_ai_cleanup,
             // Mode-scoped dictionary/snippet commands (6)
             commands::list_mode_dictionary_entries,
             commands::add_mode_dictionary_entry,
@@ -410,6 +424,10 @@ pub fn run() {
             commands::delete_context_mode,
             commands::get_active_context_mode,
             commands::set_active_context_mode,
+            // App binding commands (3)
+            commands::list_app_bindings,
+            commands::add_app_binding,
+            commands::delete_app_binding,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

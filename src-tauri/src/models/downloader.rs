@@ -212,6 +212,13 @@ impl ModelDownloader {
 
 /// Map model catalog IDs to HuggingFace download URLs.
 fn model_url(model_id: &str) -> AppResult<String> {
+    // Distil models live in a different HuggingFace repo
+    if model_id == "whisper-distil-large-v3" {
+        return Ok(
+            "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin".into()
+        );
+    }
+
     let filename = match model_id {
         "whisper-tiny" => "ggml-tiny.bin",
         "whisper-tiny-en" => "ggml-tiny.en.bin",
@@ -221,7 +228,10 @@ fn model_url(model_id: &str) -> AppResult<String> {
         "whisper-small-en" => "ggml-small.en.bin",
         "whisper-medium" => "ggml-medium.bin",
         "whisper-medium-en" => "ggml-medium.en.bin",
+        "whisper-medium-en-q5" => "ggml-medium.en-q5_0.bin",
         "whisper-large" => "ggml-large-v3.bin",
+        "whisper-large-v3-turbo" | "whisper-large-v3-turbo-multi" => "ggml-large-v3-turbo.bin",
+        "whisper-large-v3-turbo-q5" => "ggml-large-v3-turbo-q5_0.bin",
         _ => {
             return Err(AppError::Model(format!(
                 "Unknown model ID: '{model_id}'"
@@ -245,7 +255,11 @@ pub fn model_filename(model_id: &str) -> String {
         "whisper-small-en" => "ggml-small.en.bin",
         "whisper-medium" => "ggml-medium.bin",
         "whisper-medium-en" => "ggml-medium.en.bin",
+        "whisper-medium-en-q5" => "ggml-medium.en-q5_0.bin",
         "whisper-large" => "ggml-large-v3.bin",
+        "whisper-large-v3-turbo" | "whisper-large-v3-turbo-multi" => "ggml-large-v3-turbo.bin",
+        "whisper-large-v3-turbo-q5" => "ggml-large-v3-turbo-q5_0.bin",
+        "whisper-distil-large-v3" => "ggml-distil-large-v3.bin",
         _ => model_id,
     }
     .to_string()

@@ -11,24 +11,12 @@
       href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <!-- Overlay windows: make html+body transparent BEFORE any CSS/JS loads
-         so WebView2 never flashes a grey/white background. -->
     <script>
       // Apply cached theme before CSS loads to prevent flash
       try {
         var t = localStorage.getItem('omnivox-theme');
         if (t) document.documentElement.dataset.theme = t;
       } catch(e) {}
-      // Overlay windows: transparent background
-      if (window.__TAURI_INTERNALS__) {
-        try {
-          var label = window.__TAURI_INTERNALS__.metadata.currentWindow.label;
-          if (label === 'overlay') {
-            document.documentElement.classList.add('overlay-window');
-            document.documentElement.style.background = 'transparent';
-          }
-        } catch(e) {}
-      }
     </script>
   </head>
   <body>

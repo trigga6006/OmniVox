@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { Copy, Check } from "lucide-react";
 import { RecordButton } from "./RecordButton";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { useRecordingStore } from "@/stores/recordingStore";
@@ -78,25 +79,53 @@ export function DictationPanel() {
 
         <div className="h-6" />
 
-        {/* ── Last transcription card ──────────────────────────── */}
-        {lastTranscription && (
-          <div
-            className={cn(
-              "w-full max-w-lg rounded-lg bg-surface-1 p-5",
-              "opacity-0 animate-slide-up"
-            )}
-          >
-            <p className="text-xs font-medium uppercase tracking-wider text-text-muted mb-2">
-              Last transcription
-            </p>
-            <p className="font-sans text-base leading-relaxed text-text-primary select-text">
-              {lastTranscription}
-            </p>
-          </div>
-        )}
-
         {/* ── Word count & milestone ─────────────────────────── */}
         <StatsCard />
+
+        {/* ── Last transcription card ──────────────────────────── */}
+        {lastTranscription && (
+          <TranscriptionCard text={lastTranscription} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Last transcription card with copy button ── */
+
+function TranscriptionCard({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }, [text]);
+
+  return (
+    <div
+      className={cn(
+        "w-full max-w-lg rounded-lg bg-surface-1 p-5 mt-4",
+        "opacity-0 animate-slide-up"
+      )}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+          Last transcription
+        </p>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
+        >
+          {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+      <div className="max-h-32 overflow-y-auto">
+        <p className="font-sans text-base leading-relaxed text-text-primary select-text">
+          {text}
+        </p>
       </div>
     </div>
   );
@@ -156,7 +185,7 @@ function StatsCard() {
     : 100;
 
   return (
-    <div className="w-full max-w-lg mt-4 opacity-0 animate-fade-in" style={{ animationDelay: "200ms", animationFillMode: "forwards" }}>
+    <div className="w-full max-w-lg opacity-0 animate-fade-in" style={{ animationDelay: "200ms", animationFillMode: "forwards" }}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-amber-400">

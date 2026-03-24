@@ -8,10 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:sidecar": "cargo build --manifest-path src-tauri/llm-sidecar/Cargo.toml && cp src-tauri/llm-sidecar/target/debug/omnivox-llm.exe src-tauri/target/debug/omnivox-llm.exe",
-    "build:sidecar:release": "cargo build --release --manifest-path src-tauri/llm-sidecar/Cargo.toml && cp src-tauri/llm-sidecar/target/release/omnivox-llm.exe src-tauri/target/release/omnivox-llm.exe",
-    "tauri:dev": "npm run build:sidecar && tauri dev --features llm",
-    "tauri:build": "npm run build:sidecar:release && tauri build --features llm"
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

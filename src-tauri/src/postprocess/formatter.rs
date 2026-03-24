@@ -1,9 +1,127 @@
-//! Post-LLM text formatter.
+//! Post-processing text formatter.
 //!
 //! Detects list patterns in cleaned text and applies bullet formatting.
-//! Runs *after* the LLM cleanup step so the small model only has to handle
-//! grammar/filler cleanup — structural formatting is handled here with
-//! deterministic heuristics at zero inference cost.
+//! Runs after the processor chain so structural formatting is handled here
+//! with deterministic heuristics at zero inference cost.
+
+// ── Marker stripping ────────────────────────────────────────────────────
+
+/// Strip pre-existing list/heading markers from text so the formatter starts
+/// clean.  Whisper sometimes hallucinates markdown-style markers from its
+/// training data, and users may say "dash" or "bullet point" aloud.
+///
+/// Strips: `- `, `* `, `• `, `1. `, `## `, `**bold**`, inline `- ` markers.
+/// Rejoins everything into flowing prose separated by spaces.
+fn strip_existing_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Strip leading bullet/list markers
+        let stripped = strip_line_marker(trimmed);
+
+        // Strip inline bold markers: **text** or __text__ → text
+        let stripped = strip_inline_bold(stripped);
+
+        if stripped.is_empty() {
+            continue;
+        }
+
+        if !out.is_empty() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push_str(stripped);
+    }
+
+    // Second pass: strip inline markers that appear after sentence punctuation
+    // within a single line.  Whisper sometimes emits "sentence. - next item."
+    // as a single line.
+    strip_inline_markers(&out)
+}
+
+/// Remove bullet markers that appear inline after sentence-ending punctuation.
+/// E.g., "Here are tasks. - Fix bug. - Run tests." → "Here are tasks. Fix bug. Run tests."
+fn strip_inline_markers(text: &str) -> String {
+    let mut result = text.to_string();
+    // Patterns: ". - ", "! - ", "? - " and variants with * or •
+    for marker in &[". - ", "! - ", "? - ", ". * ", "! * ", "? * ", ". • ", "! • ", "? • "] {
+        let punct = &marker[..1]; // Keep the sentence-ending punctuation
+        let replacement = format!("{punct} ");
+        while result.contains(marker) {
+            result = result.replace(marker, &replacement);
+        }
+    }
+    result
+}
+
+/// Strip a single leading list/heading marker from a line.
+fn strip_line_marker(line: &str) -> &str {
+    let s = line.trim_start();
+
+    // Heading markers: "## ", "### ", etc.
+    if s.starts_with('#') {
+        let after_hashes = s.trim_start_matches('#');
+        if after_hashes.starts_with(' ') {
+            return after_hashes.trim_start();
+        }
+    }
+
+    // Bullet markers: "- ", "* ", "• ", "· "
+    for marker in &["- ", "* ", "• ", "· "] {
+        if s.starts_with(marker) {
+            return s[marker.len()..].trim_start();
+        }
+    }
+
+    // Numbered markers: "1. ", "2) ", "10. ", etc.
+    if let Some(rest) = strip_numbered_prefix(s) {
+        return rest;
+    }
+
+    s
+}
+
+/// Strip a leading numbered list marker like "1. " or "2) " from a string.
+/// Returns the remainder, or None if no numbered prefix was found.
+fn strip_numbered_prefix(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    // Consume digits
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+
+    // Need at least one digit followed by ". " or ") "
+    if i == 0 || i >= bytes.len() {
+        return None;
+    }
+
+    if (bytes[i] == b'.' || bytes[i] == b')') && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+        Some(s[i + 2..].trim_start())
+    } else {
+        None
+    }
+}
+
+/// Strip **bold** and __bold__ inline markers.
+fn strip_inline_bold(s: &str) -> &str {
+    let s = s.trim();
+    // Leading + trailing ** or __
+    if s.len() >= 4 {
+        if s.starts_with("**") && s.ends_with("**") {
+            return &s[2..s.len() - 2];
+        }
+        if s.starts_with("__") && s.ends_with("__") {
+            return &s[2..s.len() - 2];
+        }
+    }
+    s
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -31,21 +149,95 @@ const COLLECTION_NOUNS: &[&str] = &[
     "requirements", "examples", "notes", "priorities",
 ];
 
+/// Common abbreviations that end with a period but don't end a sentence.
+const ABBREVIATIONS: &[&str] = &[
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "ave", "blvd",
+    "dept", "est", "govt", "inc", "corp", "ltd", "co", "vs", "etc",
+    "approx", "appt", "dept", "diam", "qty", "temp",
+    // Titles & honorifics
+    "gen", "sgt", "cpl", "pvt", "capt", "lt", "col", "maj", "cmdr",
+    "rev", "hon",
+];
+
+/// True if the period at `dot_pos` in `text` is part of an abbreviation or
+/// decimal number rather than a sentence boundary.
+fn is_non_sentence_period(text: &str, dot_pos: usize) -> bool {
+    let bytes = text.as_bytes();
+
+    // Decimal number: digit before AND digit after the dot ("3.5")
+    if dot_pos > 0
+        && dot_pos + 1 < bytes.len()
+        && bytes[dot_pos - 1].is_ascii_digit()
+        && bytes[dot_pos + 1].is_ascii_digit()
+    {
+        return true;
+    }
+
+    // Ellipsis: part of "..." — don't split mid-ellipsis
+    if dot_pos + 1 < bytes.len() && bytes[dot_pos + 1] == b'.' {
+        return true;
+    }
+    if dot_pos > 0 && bytes[dot_pos - 1] == b'.' {
+        return true;
+    }
+
+    // Abbreviation: short word before the dot that's in our list
+    // Walk backwards to find the word before the dot.
+    let before = &text[..dot_pos];
+    let word_start = before.rfind(|c: char| !c.is_alphabetic()).map(|p| p + 1).unwrap_or(0);
+    let word = &before[word_start..];
+    if !word.is_empty() && word.len() <= 5 {
+        let lower = word.to_lowercase();
+        if ABBREVIATIONS.contains(&lower.as_str()) {
+            return true;
+        }
+    }
+
+    // Single-letter abbreviation followed by dot (e.g., "U.S.A.", middle initials)
+    if word.len() == 1 && word.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+        return true;
+    }
+
+    false
+}
+
 /// Split text into sentences on `.` `!` `?`, keeping the delimiter attached.
+///
+/// Handles abbreviations (Dr., Mr., U.S.), decimal numbers (3.5), and
+/// ellipses (...) without false splits.
 fn split_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut byte_pos: usize = 0;
+    let mut i = 0;
 
-    for c in text.chars() {
+    while i < chars.len() {
+        let c = chars[i];
         current.push(c);
+        let c_len = c.len_utf8();
+
         if matches!(c, '.' | '!' | '?') {
-            let trimmed = current.trim().to_string();
-            if !trimmed.is_empty() {
-                sentences.push(trimmed);
+            // For periods, check if this is actually a sentence boundary.
+            let is_boundary = if c == '.' {
+                !is_non_sentence_period(text, byte_pos)
+            } else {
+                true // ! and ? are always sentence boundaries
+            };
+
+            if is_boundary {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    sentences.push(trimmed);
+                }
+                current.clear();
             }
-            current.clear();
         }
+
+        byte_pos += c_len;
+        i += 1;
     }
+
     let trimmed = current.trim().to_string();
     if !trimmed.is_empty() {
         sentences.push(trimmed);
@@ -61,6 +253,22 @@ fn sentence_prefix(sentence: &str, n: usize) -> String {
         .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Capitalize the first alphabetic character of a string.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => {
+            let mut result = String::with_capacity(s.len());
+            for uc in c.to_uppercase() {
+                result.push(uc);
+            }
+            result.push_str(chars.as_str());
+            result
+        }
+    }
 }
 
 /// Strip a leading connector word from a sentence (common in spoken lists).
@@ -213,10 +421,22 @@ fn detect_list_header(sentence: &str) -> Option<ListHeader> {
 
 // ── Repeated structure detection ─────────────────────────────────────────
 
+/// 2-word prefixes that are too common in natural speech to indicate a list.
+/// These appear frequently in narrative prose and would cause false-positive
+/// bulleting of ordinary paragraphs.
+const COMMON_PROSE_PREFIXES: &[&str] = &[
+    "i was", "i had", "i am", "i got", "it was", "it is",
+    "he was", "he had", "he is", "she was", "she had", "she is",
+    "we had", "we were", "we are", "we went", "we got",
+    "they were", "they had", "they are", "they got",
+    "the meeting", "the team", "the project", "the system",
+    "there was", "there were", "there is", "there are",
+];
+
 /// Check if the sentence at `start` begins a run of 3+ sentences that share
-/// the same first 2 words after normalizing (stripping ordinals/connectors).
-/// E.g., "First, we need X. Then we need Y. Also we need Z." all share
-/// "we need" after normalization.
+/// the same first 3 words after normalizing (stripping ordinals/connectors).
+/// E.g., "First, we need to X. Then we need to Y. Also we need to Z." all
+/// share "we need to" after normalization.
 /// Returns the number of consecutive matching sentences.
 fn detect_repeated_prefix(sentences: &[String], start: usize) -> Option<usize> {
     if start + 1 >= sentences.len() {
@@ -225,15 +445,30 @@ fn detect_repeated_prefix(sentences: &[String], start: usize) -> Option<usize> {
 
     // Normalize the first sentence to get the base prefix.
     let normalized = normalize_for_prefix(&sentences[start]);
-    let prefix = sentence_prefix(normalized, 2);
-    if prefix.split_whitespace().count() < 2 {
-        return None;
-    }
+
+    // Try 3-word prefix first (stronger signal), fall back to 2-word only
+    // if the 2-word prefix isn't in the common-prose blocklist.
+    let (prefix, prefix_words) = {
+        let p3 = sentence_prefix(normalized, 3);
+        if p3.split_whitespace().count() >= 3 {
+            (p3, 3)
+        } else {
+            let p2 = sentence_prefix(normalized, 2);
+            if p2.split_whitespace().count() < 2 {
+                return None;
+            }
+            // Reject 2-word prefixes that are common in prose
+            if COMMON_PROSE_PREFIXES.contains(&p2.as_str()) {
+                return None;
+            }
+            (p2, 2)
+        }
+    };
 
     let mut end = start;
     while end + 1 < sentences.len() {
         let next_normalized = normalize_for_prefix(&sentences[end + 1]);
-        let next_prefix = sentence_prefix(next_normalized, 2);
+        let next_prefix = sentence_prefix(next_normalized, prefix_words);
 
         if next_prefix == prefix {
             end += 1;
@@ -411,18 +646,33 @@ fn join_parts(parts: &[String]) -> String {
 
 // ── Main entry point ─────────────────────────────────────────────────────
 
+/// Minimum word count before list detection kicks in.  Short dictations
+/// (under ~8 words) are almost never lists and shouldn't be reformatted.
+const MIN_WORDS_FOR_LIST: usize = 8;
+
 /// Detect list patterns in `text` and format them as bullet lists.
 ///
 /// Patterns detected:
 /// 1. **Counted header**: "these three things" → next N sentences become bullets.
 /// 2. **Implicit header**: "here's what I need", "these things", colon → all
-///    following sentences become bullets.
-/// 3. **Ordinal sentences**: "First, … Second, … Third, …" → bullets.
-/// 4. **Repeated sentence starters**: 3+ sentences with the same first 2 words.
+///    following sentences become bullets (requires 3+ items).
+/// 3. **Ordinal sentences**: "First, … Second, … Third, …" → bullets (ordinals stripped).
+/// 4. **Repeated sentence starters**: 3+ sentences with the same first 3 words.
 /// 5. **Inline comma list**: "I need milk, eggs, and bread" → bullets.
 ///
-/// This is a no-op when no list pattern is detected.
+/// Pre-strips existing bullet/heading markers from input to avoid double-marking.
+/// This is a no-op when no list pattern is detected or text is too short.
 pub fn format_lists(text: &str) -> String {
+    // Pre-strip any existing markers (Whisper markdown hallucinations, user
+    // saying "dash" / "bullet point", etc.) to avoid double-marking.
+    let clean = strip_existing_markers(text);
+    let text = &clean;
+
+    // Short text guard — don't apply list formatting to brief dictations.
+    if text.split_whitespace().count() < MIN_WORDS_FOR_LIST {
+        return text.to_string();
+    }
+
     let sentences = split_sentences(text);
 
     // Single-sentence: only inline comma lists can match.
@@ -448,16 +698,18 @@ pub fn format_lists(text: &str) -> String {
         // Pattern 1 & 2: List header (counted or implicit).
         if let Some(header) = detect_list_header(&sentences[i]) {
             let remaining = sentences.len() - i - 1;
-            let items = match header {
+            let (items, min_items) = match header {
                 ListHeader::Counted(n) => {
-                    if remaining >= n { n } else { remaining }
+                    (if remaining >= n { n } else { remaining }, 2)
                 }
                 // Implicit headers use smart termination: scan forward
                 // until a sentence is too different (much longer) from the
                 // other items, signalling a topic transition / conclusion.
-                ListHeader::Implicit => find_implicit_list_end(&sentences, i),
+                // Require 3+ items for implicit headers to avoid false positives
+                // where casual speech like "these things" is followed by prose.
+                ListHeader::Implicit => (find_implicit_list_end(&sentences, i), 3),
             };
-            if items >= 2 {
+            if items >= min_items {
                 parts.push(sentences[i].clone());
                 for j in 1..=items {
                     let item = strip_leading_connector(&sentences[i + j]);
@@ -469,6 +721,8 @@ pub fn format_lists(text: &str) -> String {
         }
 
         // Pattern 3: 3+ consecutive ordinal sentences.
+        // Strip the ordinal marker when adding dashes to avoid redundant
+        // double-markers like "- First, set up the database."
         if starts_with_ordinal(&sentences[i]) {
             let start = i;
             let mut end = i;
@@ -477,7 +731,10 @@ pub fn format_lists(text: &str) -> String {
             }
             if end - start >= 2 {
                 for j in start..=end {
-                    parts.push(format!("- {}", sentences[j].trim()));
+                    let content = strip_leading_ordinal(sentences[j].trim());
+                    // Capitalize the first letter after stripping the ordinal
+                    let content = capitalize_first(content);
+                    parts.push(format!("- {content}"));
                 }
                 i = end + 1;
                 continue;
@@ -518,6 +775,93 @@ pub fn format_lists(text: &str) -> String {
 mod tests {
     use super::*;
 
+    // ── Marker stripping ──────────────────────────────────────────
+
+    #[test]
+    fn strips_dash_bullets() {
+        assert_eq!(
+            strip_existing_markers("- First item\n- Second item\n- Third item"),
+            "First item Second item Third item"
+        );
+    }
+
+    #[test]
+    fn strips_asterisk_bullets() {
+        assert_eq!(
+            strip_existing_markers("* Buy milk\n* Buy eggs"),
+            "Buy milk Buy eggs"
+        );
+    }
+
+    #[test]
+    fn strips_numbered_list() {
+        assert_eq!(
+            strip_existing_markers("1. First\n2. Second\n3. Third"),
+            "First Second Third"
+        );
+    }
+
+    #[test]
+    fn strips_heading_markers() {
+        assert_eq!(
+            strip_existing_markers("## My List\n- Item one\n- Item two"),
+            "My List Item one Item two"
+        );
+    }
+
+    #[test]
+    fn strips_bold_markers() {
+        assert_eq!(strip_inline_bold("**Important**"), "Important");
+        assert_eq!(strip_inline_bold("__Also bold__"), "Also bold");
+    }
+
+    #[test]
+    fn strips_unicode_bullets() {
+        assert_eq!(
+            strip_existing_markers("• First\n• Second"),
+            "First Second"
+        );
+    }
+
+    #[test]
+    fn no_markers_passthrough() {
+        let input = "Just a normal sentence with no markers.";
+        assert_eq!(strip_existing_markers(input), input);
+    }
+
+    // ── Sentence splitting ────────────────────────────────────────
+
+    #[test]
+    fn splits_basic_sentences() {
+        let result = split_sentences("Hello world. How are you? Great!");
+        assert_eq!(result, vec!["Hello world.", "How are you?", "Great!"]);
+    }
+
+    #[test]
+    fn handles_abbreviations() {
+        let result = split_sentences("Dr. Smith went to the U.S. embassy. He arrived early.");
+        // Should NOT split at "Dr." or "U." or "S."
+        assert_eq!(result.len(), 2, "Got: {result:?}");
+        assert!(result[0].contains("Dr. Smith"));
+        assert!(result[0].contains("U.S."));
+    }
+
+    #[test]
+    fn handles_decimal_numbers() {
+        let result = split_sentences("The price is 3.5 million dollars. That seems high.");
+        assert_eq!(result.len(), 2, "Got: {result:?}");
+        assert!(result[0].contains("3.5"));
+    }
+
+    #[test]
+    fn handles_ellipsis() {
+        let result = split_sentences("I was thinking... maybe we should go.");
+        // Ellipsis should not split into multiple sentences
+        assert_eq!(result.len(), 1, "Got: {result:?}");
+    }
+
+    // ── Counted header (Pattern 1) ────────────────────────────────
+
     #[test]
     fn count_word_header() {
         let input = "I'm testing the cleaning ability to format text. \
@@ -534,8 +878,21 @@ mod tests {
     }
 
     #[test]
+    fn fewer_items_than_stated_count() {
+        let input = "I want to test these three things. \
+                     I want to do a Unicode test. \
+                     I want to do a transformer test.";
+        let result = format_lists(input);
+        assert!(result.contains("- I want to do a Unicode test."));
+        assert!(result.contains("- I want to do a transformer test."));
+        assert!(result.contains("I want to test these three things."));
+    }
+
+    // ── Implicit header (Pattern 2) — requires 3+ items ──────────
+
+    #[test]
     fn implicit_header_no_count() {
-        // "these things" without a number.
+        // "these things" without a number — needs 3+ items.
         let input = "I want to test these things. \
                      Do a Unicode test. \
                      Do a transformer test. \
@@ -544,6 +901,16 @@ mod tests {
         assert!(result.contains("- Do a Unicode test."));
         assert!(result.contains("- Do a transformer test."));
         assert!(result.contains("- Get catch up on the burger."));
+    }
+
+    #[test]
+    fn implicit_header_two_items_not_bulleted() {
+        // Implicit header with only 2 items should NOT trigger (threshold is 3).
+        let input = "I want to test these things. \
+                     Do a Unicode test. \
+                     Do a transformer test.";
+        let result = format_lists(input);
+        assert!(!result.contains("- "), "2 items after implicit header should not be bulleted: {result}");
     }
 
     #[test]
@@ -559,20 +926,49 @@ mod tests {
     }
 
     #[test]
-    fn ordinal_sentences() {
+    fn implicit_list_terminates_at_conclusion() {
+        // After a run of short list items, a significantly longer sentence
+        // should NOT be bulleted — it's a conclusion / topic transition.
+        let input = "Here's the things we added. \
+                     We stripped bullet markers. \
+                     We stripped heading markers. \
+                     We stripped inline bold. \
+                     We rejoined all lines into flowing text. \
+                     The formatting ability is fully preserved and still handles all the smart list detection properly.";
+        let result = format_lists(input);
+        assert!(result.contains("- We stripped bullet markers."), "Items should be bulleted: {result}");
+        assert!(result.contains("- We stripped heading markers."));
+        // The long conclusion should NOT be bulleted.
+        assert!(
+            !result.contains("- The formatting ability"),
+            "Conclusion should NOT be bulleted: {result}"
+        );
+        assert!(result.contains("The formatting ability is fully preserved"));
+    }
+
+    // ── Ordinal sentences (Pattern 3) — ordinals stripped ─────────
+
+    #[test]
+    fn ordinal_sentences_stripped() {
         let input = "Here is the plan. \
                      First, set up the database. \
                      Second, write the API endpoints. \
                      Third, build the frontend.";
         let result = format_lists(input);
-        assert!(result.contains("- First, set up the database."));
-        assert!(result.contains("- Second, write the API endpoints."));
-        assert!(result.contains("- Third, build the frontend."));
+        // Ordinals should be stripped — no redundant "- First,"
+        assert!(result.contains("- Set up the database."), "Ordinal should be stripped: {result}");
+        assert!(result.contains("- Write the API endpoints."));
+        assert!(result.contains("- Build the frontend."));
         assert!(result.starts_with("Here is the plan."));
+        // Should NOT have the ordinal still present with a dash
+        assert!(!result.contains("- First,"), "Ordinal should be removed: {result}");
     }
+
+    // ── Repeated starters (Pattern 4) ─────────────────────────────
 
     #[test]
     fn repeated_sentence_starters() {
+        // "I want to" is a 3-word prefix match — should still trigger.
         let input = "I want to do a Unicode test. \
                      I want to do a transformer test. \
                      I want to check the output format.";
@@ -584,7 +980,7 @@ mod tests {
 
     #[test]
     fn repeated_starters_with_connector() {
-        // Last item starts with "And" but shares the same prefix after stripping.
+        // "I need to" 3-word prefix, last item starts with "And".
         let input = "I need to fix the bug. \
                      I need to update the docs. \
                      And I need to run the tests.";
@@ -595,9 +991,25 @@ mod tests {
     }
 
     #[test]
+    fn common_prose_prefix_not_bulleted() {
+        // "I was" / "it was" etc. are common prose — should NOT become a list.
+        let input = "I was tired after work. I was thinking about dinner. I was ready to relax.";
+        let result = format_lists(input);
+        assert!(!result.contains("- "), "Common prose should not be bulleted: {result}");
+    }
+
+    #[test]
+    fn the_meeting_prose_not_bulleted() {
+        // "The meeting" is narrative prose, not a list.
+        let input = "The meeting was productive. The meeting room was cold. The meeting notes are ready.";
+        let result = format_lists(input);
+        assert!(!result.contains("- "), "Narrative prose should not be bulleted: {result}");
+    }
+
+    // ── Inline comma list (Pattern 5) ─────────────────────────────
+
+    #[test]
     fn inline_comma_list_short_items_stay_inline() {
-        // Short 1-2 word items should stay inline — bulleting them is
-        // over-formatting for simple enumerations.
         let input = "I need milk, eggs, bread, and butter.";
         let result = format_lists(input);
         assert_eq!(result, input, "Short items should not be bulleted");
@@ -605,7 +1017,6 @@ mod tests {
 
     #[test]
     fn inline_comma_list_substantial_items() {
-        // Multi-word items (avg ≥ 3 words) DO get bulleted.
         let input = "I need to update the database, fix the API tests, refactor the auth module, and deploy to production.";
         let result = format_lists(input);
         assert!(result.contains("- to update the database") || result.contains("- update the database"),
@@ -613,6 +1024,8 @@ mod tests {
         assert!(result.contains("- fix the API tests"));
         assert!(result.contains("- deploy to production"));
     }
+
+    // ── Passthrough / guard tests ─────────────────────────────────
 
     #[test]
     fn no_list_passthrough() {
@@ -627,19 +1040,16 @@ mod tests {
     }
 
     #[test]
-    fn fewer_items_than_stated_count() {
-        let input = "I want to test these three things. \
-                     I want to do a Unicode test. \
-                     I want to do a transformer test.";
-        let result = format_lists(input);
-        assert!(result.contains("- I want to do a Unicode test."));
-        assert!(result.contains("- I want to do a transformer test."));
-        assert!(result.contains("I want to test these three things."));
+    fn short_text_min_word_guard() {
+        // Under MIN_WORDS_FOR_LIST — should never be formatted.
+        let input = "Fix the bug. Run tests.";
+        assert_eq!(format_lists(input), input);
     }
+
+    // ── Mixed pattern tests ───────────────────────────────────────
 
     #[test]
     fn couple_of_things_with_mixed_connectors() {
-        // "a couple of things" header + items with "First,", "Then", "also"
         let input = "I really like where the design is going but there's a couple of things I want to change. \
                      First, we need to move the header down about 3 inches. \
                      Then we need to adjust the desert section and also we need to change where the lens comes in.";
@@ -651,7 +1061,6 @@ mod tests {
 
     #[test]
     fn first_then_also_pattern() {
-        // "First," + "Then" + shared "we need" prefix after stripping connectors.
         let input = "First, we need to update the CSS. \
                      Then we need to fix the layout. \
                      Also we need to add the footer.";
@@ -663,45 +1072,36 @@ mod tests {
     }
 
     #[test]
-    fn implicit_list_terminates_at_conclusion() {
-        // After a run of short list items, a significantly longer sentence
-        // should NOT be bulleted — it's a conclusion / topic transition.
-        let input = "Here's the things we added. \
-                     We stripped bullet markers. \
-                     We stripped heading markers. \
-                     We stripped inline bold. \
-                     We rejoined all lines into flowing text. \
-                     The formatting ability is fully preserved and still handles all the smart list detection properly.";
-        let result = format_lists(input);
-        // Items should be bulleted.
-        assert!(result.contains("- We stripped bullet markers."), "Items should be bulleted: {result}");
-        assert!(result.contains("- We stripped heading markers."));
-        // The long conclusion should NOT be bulleted.
-        assert!(
-            !result.contains("- The formatting ability"),
-            "Conclusion should NOT be bulleted: {result}"
-        );
-        assert!(result.contains("The formatting ability is fully preserved"));
-    }
-
-    #[test]
     fn header_not_bulleted_couple_things() {
-        // "a couple things" (no "of") is a header — should NOT be bulleted.
         let input = "I want to get a couple things done today. \
                      First, I want to check how the LLM removes filters. \
                      Second, I want to fix punctuation. \
                      Thirdly, I want to rewrite or shorten and add length.";
         let result = format_lists(input);
-        // Header stays as plain text (no bullet).
         assert!(
             !result.starts_with("- I want to get"),
             "Header should NOT be bulleted: {result}"
         );
         assert!(result.contains("I want to get a couple things done today."));
-        // Items are bulleted.
         assert!(result.contains("- "));
-        assert!(result.contains("I want to check how the LLM removes filters."));
-        assert!(result.contains("I want to fix punctuation."));
-        assert!(result.contains("I want to rewrite or shorten and add length."));
+    }
+
+    // ── Pre-existing marker stripping integration ─────────────────
+
+    #[test]
+    fn strips_existing_dashes_before_formatting() {
+        // Whisper output with existing dashes should not produce "- - item"
+        let input = "Here are my tasks. - Update the code. - Fix the tests. - Deploy to staging.";
+        let result = format_lists(input);
+        assert!(!result.contains("- - "), "Should not double-mark: {result}");
+        assert!(!result.contains("- * "), "Should not have mixed markers: {result}");
+    }
+
+    #[test]
+    fn strips_markdown_bullets_before_formatting() {
+        let input = "## My list\n* First thing to do\n* Second thing to do\n* Third thing to do";
+        let result = format_lists(input);
+        assert!(!result.contains("##"), "Heading markers should be stripped: {result}");
+        assert!(!result.contains("* "), "Asterisk bullets should be stripped: {result}");
     }
 }

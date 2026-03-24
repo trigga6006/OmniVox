@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Sparkles, Download, Loader2, Zap, Sun, Moon } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers } from "lucide-react";
 import {
   getSettings,
   updateSettings,
@@ -7,17 +7,12 @@ import {
   updateHotkey,
   getAudioDevices,
   setAudioDevice,
-  getAiCleanupStatus,
-  enableAiCleanup,
-  disableAiCleanup,
-  downloadLlmModel,
-  onDownloadProgress,
   setActiveModel,
   getActiveModel,
+  onSettingsChanged,
   type AppSettings,
   type AudioDevice,
   type HotkeyConfig,
-  type DownloadProgress,
 } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
@@ -154,7 +149,7 @@ function HotkeySection({
             ? "border-green-500/30"
             : "border-border hover:border-border-hover"
       )}
-      style={{ opacity: 0, animationDelay: "0.26s", animationFillMode: "forwards" }}
+      style={{ opacity: 0, animationDelay: "0.32s", animationFillMode: "forwards" }}
     >
       <div className="flex items-center gap-2 mb-3">
         <Keyboard size={14} strokeWidth={2} className="text-text-muted" />
@@ -367,182 +362,6 @@ function GpuAccelerationSection({
   );
 }
 
-/* ─────────────────── AI Cleanup Section ────────────────────── */
-
-type AiState = "idle" | "downloading" | "loading" | "ready";
-
-function AiCleanupSection() {
-  const [modelDownloaded, setModelDownloaded] = useState(false);
-  const [upgradeAvailable, setUpgradeAvailable] = useState(false);
-  const [aiState, setAiState] = useState<AiState>("idle");
-  const [downloadPercent, setDownloadPercent] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-
-  // Check initial status
-  useEffect(() => {
-    getAiCleanupStatus()
-      .then((s) => {
-        setModelDownloaded(s.model_downloaded);
-        setUpgradeAvailable(s.upgrade_available);
-        if (s.model_loaded) setAiState("ready");
-      })
-      .catch((e) => setError(String(e)));
-  }, []);
-
-  // Listen for LLM download progress events
-  useEffect(() => {
-    const unlisten = onDownloadProgress((progress: DownloadProgress) => {
-      if (progress.model_id !== "llm-qwen3-1.7b") return;
-      setDownloadPercent(Math.round(progress.progress_percent));
-      if (progress.status === "Completed") {
-        setModelDownloaded(true);
-        setAiState("idle");
-      }
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, []);
-
-  const handleDownload = useCallback(async () => {
-    setError(null);
-    setAiState("downloading");
-    setDownloadPercent(0);
-    try {
-      await downloadLlmModel();
-      // download-progress event listener handles the rest
-    } catch (e) {
-      setError(String(e));
-      setAiState("idle");
-    }
-  }, []);
-
-  const handleEnable = useCallback(async () => {
-    setError(null);
-    setAiState("loading");
-    try {
-      await enableAiCleanup();
-      setAiState("ready");
-    } catch (e) {
-      setError(String(e));
-      setAiState("idle");
-    }
-  }, []);
-
-  const handleDisable = useCallback(async () => {
-    setError(null);
-    try {
-      await disableAiCleanup();
-      setAiState("idle");
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
-  const isActive = aiState === "ready";
-  const isBusy = aiState === "downloading" || aiState === "loading";
-
-  return (
-    <section
-      className={cn(
-        "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
-        isActive
-          ? "border-amber-500/20"
-          : "border-border hover:border-border-hover"
-      )}
-      style={{ opacity: 0, animationDelay: "0.22s", animationFillMode: "forwards" }}
-    >
-      <div className="flex items-center gap-2 mb-3">
-        <Sparkles size={14} strokeWidth={2} className="text-text-muted" />
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-          AI Cleanup
-        </span>
-      </div>
-
-      <p className="text-xs text-text-muted mb-4 max-w-[400px]">
-        Uses a local AI model (Qwen3-1.7B) to remove filler words, fix grammar, and
-        polish transcriptions. Runs entirely on your device.
-      </p>
-
-      {/* Upgrade hint when old model exists but new one hasn't been downloaded */}
-      {upgradeAvailable && !modelDownloaded && aiState !== "downloading" && (
-        <p className="text-xs text-amber-400/80 mb-3 flex items-center gap-1.5">
-          <Sparkles size={12} strokeWidth={2} />
-          New improved model available — download to upgrade.
-        </p>
-      )}
-
-      {/* Step 1: Download model */}
-      {!modelDownloaded && aiState !== "downloading" && (
-        <button
-          onClick={handleDownload}
-          disabled={isBusy}
-          className="inline-flex items-center gap-2 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
-        >
-          <Download size={14} strokeWidth={2} />
-          Download Model (~1.2 GB)
-        </button>
-      )}
-
-      {/* Downloading progress */}
-      {aiState === "downloading" && (
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <Download size={14} strokeWidth={2} className="text-amber-400 animate-pulse" />
-            <span className="text-sm text-amber-400">
-              Downloading... {downloadPercent}%
-            </span>
-          </div>
-          <div className="w-full bg-surface-3 rounded-full h-2">
-            <div
-              className="bg-amber-500 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${downloadPercent}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Step 2: Enable / Disable */}
-      {modelDownloaded && aiState === "idle" && (
-        <button
-          onClick={handleEnable}
-          className="inline-flex items-center gap-2 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/25 transition-colors"
-        >
-          <Sparkles size={14} strokeWidth={2} />
-          Enable AI Cleanup
-        </button>
-      )}
-
-      {aiState === "loading" && (
-        <div className="flex items-center gap-2">
-          <Loader2 size={14} strokeWidth={2} className="text-amber-400 animate-spin" />
-          <span className="text-sm text-amber-400">Loading model into memory...</span>
-        </div>
-      )}
-
-      {aiState === "ready" && (
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <div className="h-2 w-2 rounded-full bg-green-500" />
-            <span className="text-sm text-green-400">Active</span>
-          </div>
-          <button
-            onClick={handleDisable}
-            className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-          >
-            Disable
-          </button>
-        </div>
-      )}
-
-      {/* Error display */}
-      {error && (
-        <p className="mt-3 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2 border border-red-500/20">
-          {error}
-        </p>
-      )}
-    </section>
-  );
-}
-
 /* ─────────────────── Main Settings Page ─────────────────────── */
 
 export function SettingsPage() {
@@ -568,6 +387,14 @@ export function SettingsPage() {
         setSelectedDeviceId(def?.id ?? devices[0]?.id ?? null);
       })
       .catch((e) => console.error("Failed to load audio devices:", e));
+
+    // Stay in sync when settings change from the overlay pill (or any window)
+    const unlisten = onSettingsChanged((s) => {
+      setSettings(s);
+      const mode = outputModes.find((m) => m.id === s.output_mode);
+      setActiveMode(mode ? mode.id : "clipboard");
+    });
+    return () => { unlisten.then((fn) => fn()); };
   }, []);
 
   const handleModeChange = useCallback(
@@ -605,6 +432,27 @@ export function SettingsPage() {
     },
     [settings]
   );
+
+  const handleLivePreviewToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, live_preview: !settings.live_preview };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleNoiseReductionToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, noise_reduction: !settings.noise_reduction };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleAutoSwitchToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, auto_switch_modes: !settings.auto_switch_modes };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
 
   const currentTheme = settings?.theme ?? "dark";
   const handleThemeChange = useCallback(
@@ -775,14 +623,143 @@ export function SettingsPage() {
           </div>
         </section>
 
+        {/* ── Live Preview ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.live_preview
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.19s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Eye size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Live Preview
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Show live transcription words in the floating pill while recording.
+            <span className="text-amber-400/70"> Adds latency</span> — runs
+            inference during recording, which can delay the final transcription.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleLivePreviewToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.live_preview ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.live_preview ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.live_preview ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+        </section>
+
+        {/* ── Noise Reduction ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.noise_reduction
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.22s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <ShieldCheck size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Noise Reduction
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Remove background noise from recordings before transcription.
+            Filters fan noise, keyboard clicks, and other non-speech sounds
+            using RNNoise.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleNoiseReductionToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.noise_reduction ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.noise_reduction ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.noise_reduction ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+        </section>
+
+        {/* ── Auto Context Switching ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.auto_switch_modes
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.25s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Layers size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Auto Context Switching
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Automatically switch context mode based on which application is
+            focused when recording starts. Bind apps to modes in the Context
+            Modes editor.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleAutoSwitchToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.auto_switch_modes ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.auto_switch_modes ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.auto_switch_modes ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+        </section>
+
         {/* ── GPU Acceleration ── */}
         <GpuAccelerationSection
           enabled={settings?.gpu_acceleration ?? false}
           onToggle={handleGpuToggle}
         />
-
-        {/* ── AI Cleanup ── */}
-        <AiCleanupSection />
 
         {/* ── Hotkey ── */}
         <HotkeySection
@@ -793,7 +770,7 @@ export function SettingsPage() {
         {/* ── About ── */}
         <section
           className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
-          style={{ opacity: 0, animationDelay: "0.34s", animationFillMode: "forwards" }}
+          style={{ opacity: 0, animationDelay: "0.40s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Info size={14} strokeWidth={2} className="text-text-muted" />

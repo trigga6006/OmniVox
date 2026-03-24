@@ -67,7 +67,12 @@ pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::Di
 }
 
 /// Search transcription history by query string (case-insensitive substring match).
-pub fn search_history(db: &Database, query: &str) -> AppResult<Vec<TranscriptionRecord>> {
+pub fn search_history(
+    db: &Database,
+    query: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<Vec<TranscriptionRecord>> {
     let conn = db.conn()?;
     let like_pattern = format!("%{}%", query);
     let mut stmt = conn.prepare(
@@ -75,25 +80,29 @@ pub fn search_history(db: &Database, query: &str) -> AppResult<Vec<Transcription
          FROM transcriptions
          WHERE text LIKE ?1
          ORDER BY created_at DESC
-         LIMIT 100",
+         LIMIT ?2 OFFSET ?3",
     )?;
     let records = stmt
-        .query_map(params![like_pattern], row_to_record)?
+        .query_map(params![like_pattern, limit, offset], row_to_record)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(records)
 }
 
-/// Get the most recent transcription records, up to `limit`.
-pub fn recent_history(db: &Database, limit: u32) -> AppResult<Vec<TranscriptionRecord>> {
+/// Get the most recent transcription records with pagination.
+pub fn recent_history(
+    db: &Database,
+    limit: u32,
+    offset: u32,
+) -> AppResult<Vec<TranscriptionRecord>> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, text, duration_ms, model_name, created_at
          FROM transcriptions
          ORDER BY created_at DESC
-         LIMIT ?1",
+         LIMIT ?1 OFFSET ?2",
     )?;
     let records = stmt
-        .query_map(params![limit], row_to_record)?
+        .query_map(params![limit, offset], row_to_record)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(records)
 }

@@ -54,6 +54,61 @@ impl WhisperEngine {
     }
 }
 
+impl WhisperEngine {
+    /// Fast greedy transcription for live preview during recording.
+    ///
+    /// Uses greedy decoding (beam_size=1), no temperature fallback, and
+    /// no initial prompt — optimized for speed over accuracy. Returns only
+    /// the concatenated text, no segments.  Creates its own WhisperState
+    /// so it can run concurrently with other transcription calls.
+    pub fn transcribe_preview(&self, audio: &[f32]) -> AppResult<String> {
+        if audio.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut state = self
+            .ctx
+            .create_state()
+            .map_err(|e| AppError::Asr(format!("Failed to create preview state: {e}")))?;
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+
+        match self.config.language.as_deref() {
+            Some("auto") | None => {}
+            Some(lang) => params.set_language(Some(lang)),
+        }
+
+        params.set_translate(false);
+        params.set_n_threads(self.config.n_threads as i32);
+        params.set_print_progress(false);
+        params.set_print_special(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+
+        // No temperature fallback — deterministic single-pass for speed
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.0);
+        params.set_no_speech_thold(0.6);
+
+        state
+            .full(params, audio)
+            .map_err(|e| AppError::Asr(format!("Preview inference failed: {e}")))?;
+
+        let mut text = String::new();
+        for i in 0..state.full_n_segments() {
+            if let Some(seg) = state.get_segment(i) {
+                if let Ok(s) = seg.to_str_lossy() {
+                    text.push_str(&s);
+                }
+            }
+        }
+
+        Ok(text.trim().to_string())
+    }
+}
+
 impl AsrEngine for WhisperEngine {
     fn transcribe(&self, audio: &[f32]) -> AppResult<TranscriptionResult> {
         if audio.is_empty() {
@@ -71,7 +126,18 @@ impl AsrEngine for WhisperEngine {
             .create_state()
             .map_err(|e| AppError::Asr(format!("Failed to create state: {e}")))?;
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        // Select decoding strategy: beam search (default, better accuracy)
+        // or greedy (faster, lower quality). beam_size=1 falls back to greedy.
+        let beam_size = self.config.beam_size.unwrap_or(5);
+        let strategy = if beam_size <= 1 {
+            SamplingStrategy::Greedy { best_of: 1 }
+        } else {
+            SamplingStrategy::BeamSearch {
+                beam_size: beam_size as std::ffi::c_int,
+                patience: -1.0, // -1.0 = whisper.cpp default (1.0)
+            }
+        };
+        let mut params = FullParams::new(strategy);
 
         // Language: Some("en") forces English, None or Some("auto") auto-detects.
         match self.config.language.as_deref() {
@@ -91,6 +157,17 @@ impl AsrEngine for WhisperEngine {
         // Reduce hallucinations on silence / low-energy audio
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
+
+        // Temperature fallback: start deterministic, increment on low-confidence
+        // segments. This is Whisper's reference behavior — the decoder retries at
+        // increasing temperatures when a segment has high entropy or low log prob.
+        let temp = self.config.temperature.unwrap_or(0.0);
+        let temp_inc = self.config.temperature_inc.unwrap_or(0.2);
+        params.set_temperature(temp);
+        params.set_temperature_inc(temp_inc);
+        params.set_entropy_thold(2.4);
+        params.set_logprob_thold(-1.0);
+        params.set_no_speech_thold(0.6);
 
         // Bias Whisper toward domain-specific vocabulary (e.g. programming
         // terms) so it recognizes them on the first pass rather than relying

@@ -3,8 +3,28 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::asr::engine::AsrEngine;
+use crate::error::ErrorCode;
 use crate::postprocess::processor::TextProcessor;
 use crate::state::AppState;
+
+/// Payload emitted with `recording-state-change` when the state is "error".
+#[derive(Clone, serde::Serialize)]
+struct ErrorPayload {
+    state: &'static str,
+    code: ErrorCode,
+    message: String,
+}
+
+/// Emit a typed error event so the frontend can show specific guidance.
+fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into<String>) {
+    let payload = ErrorPayload {
+        state: "error",
+        code,
+        message: message.into(),
+    };
+    let _ = app_handle.emit("recording-error", &payload);
+    let _ = app_handle.emit("recording-state-change", "error");
+}
 
 /// Snapshot the currently focused window so we can restore it before pasting.
 /// Returns the HWND as an isize for storage in AppState.
@@ -17,6 +37,47 @@ fn capture_foreground_window() -> Option<isize> {
 
 #[cfg(not(target_os = "windows"))]
 fn capture_foreground_window() -> Option<isize> {
+    None
+}
+
+/// Extract the process executable name (e.g. "Code.exe") from a window handle.
+#[cfg(target_os = "windows")]
+fn get_process_name_from_hwnd(hwnd: isize) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    unsafe {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd as *mut std::ffi::c_void, &mut pid as *mut u32);
+        if pid == 0 {
+            return None;
+        }
+
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+
+        let mut buf = [0u16; 260]; // MAX_PATH
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+
+        if ok == 0 || len == 0 {
+            return None;
+        }
+
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        // Extract just the filename: "C:\...\Code.exe" -> "Code.exe"
+        path.rsplit('\\').next().map(|s| s.to_string())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_process_name_from_hwnd(_hwnd: isize) -> Option<String> {
     None
 }
 
@@ -102,7 +163,7 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
     let is_recording = match state.audio.lock() {
         Ok(audio) => audio.is_recording(),
         Err(_) => {
-            let _ = app_handle.emit("recording-state-change", "error");
+            emit_error(app_handle, ErrorCode::InternalError, "Audio state lock poisoned");
             return;
         }
     };
@@ -140,6 +201,43 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
         *prev = fg;
     }
 
+    // Auto-switch context mode based on the foreground application.
+    if let Some(hwnd) = fg {
+        let auto_switch = crate::storage::settings::get_settings(&state.db)
+            .map(|s| s.auto_switch_modes)
+            .unwrap_or(false);
+
+        if auto_switch {
+            if let Some(process_name) = get_process_name_from_hwnd(hwnd) {
+                if let Ok(Some(target_mode_id)) =
+                    crate::storage::app_bindings::find_mode_for_process(&state.db, &process_name)
+                {
+                    let current_mode = state.active_context_mode_id.lock().unwrap().clone();
+                    if current_mode.as_deref() != Some(&target_mode_id) {
+                        if let Err(e) = crate::commands::context_modes::activate_mode_internal(
+                            state,
+                            &target_mode_id,
+                        ) {
+                            eprintln!("Auto-switch mode failed: {e}");
+                        } else if let Ok(mode) =
+                            crate::storage::context_modes::get_mode(&state.db, &target_mode_id)
+                        {
+                            let _ = app_handle.emit(
+                                "context-mode-changed",
+                                serde_json::json!({
+                                    "id": mode.id.to_string(),
+                                    "name": mode.name,
+                                    "icon": mode.icon,
+                                    "color": mode.color,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Duck system volume so other audio doesn't compete with the mic.
     crate::audio::ducking::duck();
 
@@ -156,7 +254,7 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     if let Err(e) = audio.start() {
         eprintln!("Failed to start recording: {e}");
-        let _ = app_handle.emit("recording-state-change", "error");
+        emit_error(app_handle, e.code(), format!("Failed to start recording: {e}"));
         return;
     }
 
@@ -169,17 +267,89 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     // Spawn a periodic task that emits audio-level events to the frontend
     let handle = app_handle.clone();
+    let is_rec_clone = is_recording.clone();
     tauri::async_runtime::spawn(async move {
         use std::sync::atomic::Ordering;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            if !is_recording.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if !is_rec_clone.load(Ordering::Relaxed) {
                 break;
             }
             let level = f32::from_bits(rms_level.load(Ordering::Relaxed));
             let _ = handle.emit("audio-level", level);
         }
     });
+
+    // Spawn live preview task — periodically transcribes the last 5s of audio
+    // and emits partial results to the overlay pill.
+    let live_preview = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.live_preview)
+        .unwrap_or(false);
+
+    if live_preview {
+        let handle = app_handle.clone();
+        let engine: Option<Arc<crate::asr::engine::WhisperEngine>> = state
+            .engine
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(Arc::clone));
+
+        if let Some(engine) = engine {
+            tauri::async_runtime::spawn(async move {
+                use std::sync::atomic::Ordering;
+                // 5 seconds of audio at 16 kHz
+                const PREVIEW_SAMPLES: usize = 16_000 * 5;
+
+                // Wait 3s before first preview to accumulate enough audio
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                loop {
+                    if !is_recording.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    // Snapshot the last 5s of audio (brief mutex hold)
+                    let samples = {
+                        let state: tauri::State<'_, AppState> = handle.state();
+                        let audio = match state.audio.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        audio.snapshot_tail(PREVIEW_SAMPLES)
+                    };
+
+                    if samples.len() < 8_000 {
+                        // Less than 0.5s of audio — skip this round
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+
+                    // Run greedy transcription on a blocking thread
+                    let eng = engine.clone();
+                    let mut preview_samples = samples;
+                    crate::audio::normalize::normalize_peak(&mut preview_samples);
+
+                    let result = tokio::task::spawn_blocking(move || {
+                        eng.transcribe_preview(&preview_samples)
+                    })
+                    .await;
+
+                    // Check recording state again — may have stopped during transcription
+                    if !is_recording.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    if let Ok(Ok(text)) = result {
+                        if !text.is_empty() {
+                            let _ = handle.emit("transcription-preview", &text);
+                        }
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            });
+        }
+    }
 }
 
 /// Stop capture, run Whisper inference, post-process, and output the text.
@@ -199,7 +369,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to stop recording: {e}");
-                let _ = app_handle.emit("recording-state-change", "error");
+                emit_error(app_handle, e.code(), format!("Failed to stop recording: {e}"));
                 return;
             }
         }
@@ -209,6 +379,19 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         let _ = app_handle.emit("recording-state-change", "idle");
         return;
     }
+
+    // 1b. Conditionally denoise audio with RNNoise before Whisper.
+    let mut samples = samples;
+    let noise_reduction = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.noise_reduction)
+        .unwrap_or(false);
+    if noise_reduction {
+        crate::audio::denoise::denoise(&mut samples);
+    }
+
+    // 1c. Normalize audio levels for consistent Whisper performance.
+    //     Done here (not in the capture callback) to avoid affecting the VU meter.
+    crate::audio::normalize::normalize_peak(&mut samples);
 
     // 2. Transcribe — CPU-bound, runs on a blocking thread to keep the async
     //    runtime free for UI events during inference.
@@ -222,7 +405,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             None => {
                 drop(guard);
                 eprintln!("No model loaded — cannot transcribe");
-                let _ = app_handle.emit("recording-state-change", "error");
+                emit_error(app_handle, ErrorCode::NoModelLoaded, "No model loaded — go to Models to download one");
                 return;
             }
         }
@@ -233,12 +416,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         Ok(Ok(t)) => t,
         Ok(Err(e)) => {
             eprintln!("Transcription failed: {e}");
-            let _ = app_handle.emit("recording-state-change", "error");
+            emit_error(app_handle, ErrorCode::TranscriptionFailed, format!("Transcription failed: {e}"));
             return;
         }
         Err(e) => {
             eprintln!("Transcription task panicked: {e}");
-            let _ = app_handle.emit("recording-state-change", "error");
+            emit_error(app_handle, ErrorCode::TranscriptionPanicked, format!("Transcription crashed: {e}"));
             return;
         }
     };
@@ -260,74 +443,15 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
-    // 4. Kick off focus restoration in parallel with LLM cleanup.
-    //    Focus restore involves OS sleeps (~52 ms) that can overlap with the
-    //    much slower LLM inference, saving wall-clock time.
+    // 4. Apply deterministic list formatting (bullet lists for enumerated
+    //     items).  Structural formatting is handled here at zero cost.
+    let final_text = crate::postprocess::formatter::format_lists(&processed_text);
+
+    // 5. Kick off focus restoration in parallel with output.
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
     let focus_task = prev_hwnd.map(|hwnd| {
         tokio::task::spawn_blocking(move || restore_foreground_window(hwnd))
     });
-
-    // 5. AI cleanup via local LLM (if enabled and model loaded) — runs
-    //    concurrently with focus restoration above.
-    //    Assemble the full system prompt: base rules (code constant) +
-    //    mode-specific additions (from DB).
-    //
-    //    The sidecar communication is blocking I/O (stdin/stdout), so we
-    //    temporarily take the engine out of the Mutex and run on a blocking
-    //    thread to avoid starving Tokio worker threads.
-    let mode_additions = state.active_llm_prompt.lock()
-        .map(|g| g.clone())
-        .unwrap_or(None);
-    let system_prompt = crate::storage::context_modes::build_system_prompt(
-        mode_additions.as_deref(),
-    );
-    // Take the engine out of the Mutex (if present) so we can move it to a
-    // blocking thread.  The guard is dropped immediately — no await while held.
-    let taken_engine = {
-        let mut llm_guard = match state.llm_engine.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        llm_guard.take()
-    };
-
-    let final_text = if let Some(mut engine) = taken_engine {
-        let text_for_cleanup = processed_text.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let cleaned = engine.cleanup_text(&text_for_cleanup, Some(&system_prompt));
-            (engine, cleaned)
-        })
-        .await;
-
-        match result {
-            Ok((engine_back, Ok(cleaned))) => {
-                // Put the engine back into the Mutex.
-                if let Ok(mut guard) = state.llm_engine.lock() {
-                    *guard = Some(engine_back);
-                }
-                cleaned
-            }
-            Ok((engine_back, Err(e))) => {
-                if let Ok(mut guard) = state.llm_engine.lock() {
-                    *guard = Some(engine_back);
-                }
-                eprintln!("LLM cleanup error, using raw text: {e}");
-                processed_text
-            }
-            Err(e) => {
-                eprintln!("LLM cleanup task panicked: {e}");
-                processed_text
-            }
-        }
-    } else {
-        processed_text
-    };
-
-    // 5b. Apply deterministic list formatting (bullet lists for enumerated
-    //     items).  This runs after LLM cleanup so the model only handles
-    //     grammar — structural formatting is handled here at zero cost.
-    let final_text = crate::postprocess::formatter::format_lists(&final_text);
 
     // Wait for focus restoration to complete before outputting text.
     if let Some(task) = focus_task {
@@ -341,22 +465,24 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     };
     if let Err(e) = state.output.send(&final_text, &output_config) {
         eprintln!("Output failed: {e}");
+        emit_error(app_handle, e.code(), format!("Output failed: {e}"));
     }
 
-    // 7. Save to history
+    // 7. Notify frontend (before moving final_text into history)
+    let _ = app_handle.emit("transcription-result", &final_text);
+
+    // 8. Save to history — move final_text to avoid an extra clone
     let record = crate::storage::types::TranscriptionRecord {
         id: uuid::Uuid::new_v4(),
-        text: final_text.clone(),
+        text: final_text,
         duration_ms: transcription.duration_ms,
-        model_name: transcription.model_name.clone(),
+        model_name: transcription.model_name,
         created_at: chrono::Utc::now(),
     };
     if let Err(e) = crate::storage::history::save_transcription(&state.db, &record) {
         eprintln!("Failed to save transcription to history: {e}");
     }
 
-    // 8. Notify frontend
-    let _ = app_handle.emit("transcription-result", &final_text);
     let _ = app_handle.emit("recording-state-change", "idle");
 }
 

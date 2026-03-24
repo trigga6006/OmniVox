@@ -19,6 +19,8 @@ pub struct ProcessorConfig {
     pub auto_capitalize: bool,
     pub auto_punctuate: bool,
     pub apply_dictionary: bool,
+    /// Remove filler words (um, uh, you know, etc.) and deduplicate repeated words.
+    pub apply_filler_removal: bool,
 }
 
 impl Default for ProcessorConfig {
@@ -27,6 +29,7 @@ impl Default for ProcessorConfig {
             auto_capitalize: true,
             auto_punctuate: true,
             apply_dictionary: true,
+            apply_filler_removal: true,
         }
     }
 }

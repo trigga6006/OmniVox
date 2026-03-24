@@ -28,6 +28,15 @@ pub struct AsrConfig {
     /// Useful for domain-specific terms (e.g. programming keywords) that
     /// Whisper might otherwise mis-transcribe.
     pub initial_prompt: Option<String>,
+    /// Beam search size. None = default (5). 1 = greedy decoding.
+    /// Higher values explore more decoding paths at the cost of latency.
+    pub beam_size: Option<u32>,
+    /// Initial temperature for decoding. None = default (0.0 = deterministic).
+    pub temperature: Option<f32>,
+    /// Temperature increment for fallback on low-confidence segments.
+    /// None = default (0.2). Whisper retries at increasing temperatures when
+    /// a segment has low average log probability or high compression ratio.
+    pub temperature_inc: Option<f32>,
 }
 
 impl Default for AsrConfig {
@@ -42,6 +51,9 @@ impl Default for AsrConfig {
             n_threads,
             use_gpu: false,
             initial_prompt: None,
+            beam_size: None,
+            temperature: None,
+            temperature_inc: None,
         }
     }
 }
