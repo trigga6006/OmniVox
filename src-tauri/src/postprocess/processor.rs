@@ -465,6 +465,7 @@ fn dedup_phrases(text: &str) -> String {
 /// - Double periods ("..") → "."  (preserves real ellipsis "...")
 /// - Space before punctuation ("word .") → "word."
 /// - Trailing connectors ("and" / "so" / "but") from interrupted speech → removed
+/// - Ensures text ends with sentence-ending punctuation (adds "." if missing)
 fn cleanup_punctuation(text: &str) -> String {
     let mut result = text.to_string();
 
@@ -494,7 +495,18 @@ fn cleanup_punctuation(text: &str) -> String {
         }
     }
 
-    result.trim().to_string()
+    let result = result.trim().to_string();
+
+    // Ensure the text ends with sentence-ending punctuation.
+    // Whisper often omits the trailing period on the last sentence.
+    if !result.is_empty() {
+        let last_char = result.chars().last().unwrap();
+        if !matches!(last_char, '.' | '!' | '?' | ':' | ';' | '"' | '\'' | ')' | ']') {
+            return format!("{result}.");
+        }
+    }
+
+    result
 }
 
 /// Collapse runs of whitespace into single spaces and trim.
@@ -613,7 +625,7 @@ mod tests {
 
     #[test]
     fn fixes_space_before_comma() {
-        assert_eq!(cleanup_punctuation("Hello , world"), "Hello, world");
+        assert_eq!(cleanup_punctuation("Hello , world."), "Hello, world.");
     }
 
     #[test]
@@ -630,12 +642,27 @@ mod tests {
     fn removes_trailing_and() {
         assert_eq!(
             cleanup_punctuation("I went to the store and"),
-            "I went to the store"
+            "I went to the store."
         );
     }
 
     #[test]
     fn removes_trailing_so() {
-        assert_eq!(cleanup_punctuation("I was thinking so"), "I was thinking");
+        assert_eq!(cleanup_punctuation("I was thinking so"), "I was thinking.");
+    }
+
+    #[test]
+    fn adds_trailing_period() {
+        assert_eq!(cleanup_punctuation("Hello world"), "Hello world.");
+    }
+
+    #[test]
+    fn no_double_trailing_period() {
+        assert_eq!(cleanup_punctuation("Hello world."), "Hello world.");
+    }
+
+    #[test]
+    fn preserves_trailing_question_mark() {
+        assert_eq!(cleanup_punctuation("Is this working?"), "Is this working?");
     }
 }
