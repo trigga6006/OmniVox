@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Loader2, Eye, ShieldCheck, Layers } from "lucide-react";
+import { Loader2, Eye, ShieldCheck, Layers, Rocket, Ghost } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
 import {
@@ -55,6 +55,8 @@ export function FloatingPill() {
   const [livePreviewEnabled, setLivePreviewEnabled] = useState(false);
   const [noiseReduction, setNoiseReduction] = useState(true);
   const [autoSwitchModes, setAutoSwitchModes] = useState(true);
+  const [shipMode, setShipMode] = useState(false);
+  const [ghostMode, setGhostMode] = useState(false);
 
   // Mode selector state
   const [showModeSelector, setShowModeSelector] = useState(false);
@@ -150,6 +152,8 @@ export function FloatingPill() {
         setLivePreviewEnabled(s.live_preview);
         setNoiseReduction(s.noise_reduction);
         setAutoSwitchModes(s.auto_switch_modes);
+        setShipMode(s.ship_mode);
+        setGhostMode(s.ghost_mode);
       })
       .catch(() => {});
 
@@ -163,6 +167,8 @@ export function FloatingPill() {
       setLivePreviewEnabled(s.live_preview);
       setNoiseReduction(s.noise_reduction);
       setAutoSwitchModes(s.auto_switch_modes);
+      setShipMode(s.ship_mode);
+      setGhostMode(s.ghost_mode);
     });
 
     return () => {
@@ -223,24 +229,68 @@ export function FloatingPill() {
     }
   }, [noiseReduction]);
 
+  const handleToggleShipMode = useCallback(async () => {
+    const next = !shipMode;
+    setShipMode(next);
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, ship_mode: next });
+    } catch {
+      setShipMode(!next);
+    }
+  }, [shipMode]);
+
+  const handleToggleGhostMode = useCallback(async () => {
+    const next = !ghostMode;
+    setGhostMode(next);
+    // When activating ghost mode, close the menu so pill fades out
+    if (next) {
+      setShowModeSelector(false);
+    }
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, ghost_mode: next });
+    } catch {
+      setGhostMode(!next);
+    }
+  }, [ghostMode]);
+
+  // Exit ghost mode — used when user clicks/right-clicks the invisible pill
+  const exitGhostMode = useCallback(async () => {
+    setGhostMode(false);
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, ghost_mode: false });
+    } catch {}
+  }, []);
+
   const handleClick = useCallback(async () => {
     if (showModeSelector) return; // Don't start recording while selector is open
+    // If ghost mode is active, just reveal the pill — don't trigger recording
+    if (ghostMode) {
+      exitGhostMode();
+      return;
+    }
     try {
       if (status === "idle") await startRecording();
       else if (status === "recording") await stopRecording();
     } catch (err) {
       console.error("Pill recording toggle failed:", err);
     }
-  }, [status, showModeSelector]);
+  }, [status, showModeSelector, ghostMode, exitGhostMode]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
+      // If ghost mode is active, reveal the pill and open the menu
+      if (ghostMode) {
+        exitGhostMode();
+      }
       if (pillState === "idle") {
         setShowModeSelector((prev) => !prev);
       }
     },
-    [pillState]
+    [pillState, ghostMode, exitGhostMode]
   );
 
   const handleModeSelect = useCallback(async (id: string) => {
@@ -294,11 +344,12 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 autoSwitchModes
-                  ? "bg-white/[0.14] border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.06)]"
-                  : "bg-white/[0.06] border-white/10 opacity-50 hover:opacity-80"
+                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  : "border-transparent opacity-50 hover:opacity-80"
               )}
+              style={{ backgroundColor: autoSwitchModes ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
             >
-              <Layers size={12} strokeWidth={2} className={autoSwitchModes ? "text-white/80" : "text-white/40"} />
+              <Layers size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
             <button
               onMouseDown={(e) => {
@@ -311,11 +362,12 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 livePreviewEnabled
-                  ? "bg-white/[0.14] border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.06)]"
-                  : "bg-white/[0.06] border-white/10 opacity-50 hover:opacity-80"
+                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  : "border-transparent opacity-50 hover:opacity-80"
               )}
+              style={{ backgroundColor: livePreviewEnabled ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
             >
-              <Eye size={12} strokeWidth={2} className={livePreviewEnabled ? "text-white/80" : "text-white/40"} />
+              <Eye size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
             <button
               onMouseDown={(e) => {
@@ -328,11 +380,69 @@ export function FloatingPill() {
                 "w-[26px] h-[26px] rounded-full flex items-center justify-center",
                 "backdrop-blur-md border transition-all duration-150",
                 noiseReduction
-                  ? "bg-white/[0.14] border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.06)]"
-                  : "bg-white/[0.06] border-white/10 opacity-50 hover:opacity-80"
+                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  : "border-transparent opacity-50 hover:opacity-80"
               )}
+              style={{ backgroundColor: noiseReduction ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
             >
-              <ShieldCheck size={12} strokeWidth={2} className={noiseReduction ? "text-white/80" : "text-white/40"} />
+              <ShieldCheck size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+            </button>
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleToggleShipMode();
+              }}
+              title={shipMode ? "Ship mode: on" : "Ship mode: off"}
+              className={cn(
+                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
+                "backdrop-blur-md border transition-all duration-150",
+                shipMode
+                  ? "border-transparent shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  : "border-transparent opacity-50 hover:opacity-80"
+              )}
+              style={{ backgroundColor: shipMode ? modeColor : `color-mix(in srgb, ${modeColor} 40%, transparent)` }}
+            >
+              <Rocket size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+            </button>
+          </div>
+          {/* Divider between toggle buttons and ghost mode */}
+          <div
+            className="absolute"
+            style={{
+              left: "calc(50% + 96px + 8px)",
+              bottom: "38px",
+              width: 22,
+              height: 1,
+              backgroundColor: "rgba(255,255,255,0.15)",
+              borderRadius: 1,
+            }}
+          />
+          {/* Ghost mode — positioned parallel with "Open OmniVox" row */}
+          <div
+            className="absolute"
+            style={{
+              left: "calc(50% + 96px + 6px)",
+              bottom: "8px",
+            }}
+          >
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleToggleGhostMode();
+              }}
+              title={ghostMode ? "Ghost mode: on — pill hidden" : "Ghost mode: off"}
+              className={cn(
+                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
+                "backdrop-blur-md border transition-all duration-150",
+                ghostMode
+                  ? "border-white/10 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                  : "border-transparent opacity-50 hover:opacity-80"
+              )}
+              style={{ backgroundColor: ghostMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)" }}
+            >
+              <Ghost size={12} strokeWidth={2} className="text-white/50 drop-shadow-sm" />
             </button>
           </div>
         </div>
@@ -342,6 +452,11 @@ export function FloatingPill() {
       onClick={handleClick}
       onContextMenu={handleContextMenu}
       disabled={isProcessing}
+      style={{
+        // Ghost mode: fully transparent but still interactive
+        opacity: ghostMode && !showModeSelector ? 0 : 1,
+        transition: "opacity 0.25s ease",
+      }}
       className={cn(
         // The pill — sized to match resizeOverlay dimensions
         isIdle && !showModeSelector ? "w-[56px] h-[26px]" : "w-[200px] h-[34px]",

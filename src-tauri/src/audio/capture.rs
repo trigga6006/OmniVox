@@ -129,56 +129,71 @@ impl AudioCapture {
                         return;
                     }
 
-                    // --- Stereo → Mono ---
-                    let mono: Vec<f32> = if device_channels == 1 {
-                        data.to_vec()
-                    } else {
-                        // cpal always delivers complete frames, so chunks_exact is safe
-                        data.chunks_exact(device_channels as usize)
-                            .map(|frame| {
-                                frame.iter().sum::<f32>() / device_channels as f32
-                            })
-                            .collect()
-                    };
-
-                    if mono.is_empty() {
+                    let ch = device_channels as usize;
+                    let n_frames = if ch == 1 { data.len() } else { data.len() / ch };
+                    if n_frames == 0 {
                         return;
                     }
 
-                    // --- RMS for VU meter ---
-                    let rms =
-                        (mono.iter().map(|s| s * s).sum::<f32>() / mono.len() as f32).sqrt();
+                    // Inline mono sample accessor — avoids allocating a Vec.
+                    // For stereo+, averages channels on the fly. Each sample is
+                    // accessed at most twice (interpolation), so the redundant
+                    // arithmetic is negligible vs. a heap allocation per callback.
+                    let mono = |i: usize| -> f32 {
+                        if ch == 1 {
+                            data[i]
+                        } else {
+                            let off = i * ch;
+                            let mut sum = 0.0f32;
+                            for c in 0..ch {
+                                sum += data[off + c];
+                            }
+                            sum / ch as f32
+                        }
+                    };
+
+                    // --- RMS for VU meter (no allocation) ---
+                    let mut sum_sq = 0.0f32;
+                    for i in 0..n_frames {
+                        let s = mono(i);
+                        sum_sq += s * s;
+                    }
+                    let rms = (sum_sq / n_frames as f32).sqrt();
                     // Scale up aggressively for UI sensitivity — desktop mic
                     // speech RMS is typically 0.005–0.05 depending on gain.
                     let level = (rms * 35.0).min(1.0);
                     rms_level.store(level.to_bits(), Ordering::Relaxed);
 
-                    // --- Resample to 16 kHz ---
-                    let resampled = if device_rate == TARGET_SAMPLE_RATE {
-                        mono
-                    } else {
-                        let capacity =
-                            (mono.len() as f64 * resample_ratio) as usize + 1;
-                        let mut out = Vec::with_capacity(capacity);
-
-                        while resample_pos < mono.len() as f64 {
-                            let idx = resample_pos as usize;
-                            let frac = (resample_pos - idx as f64) as f32;
-                            let sample = if idx + 1 < mono.len() {
-                                mono[idx] * (1.0 - frac) + mono[idx + 1] * frac
-                            } else {
-                                mono[idx]
-                            };
-                            out.push(sample);
-                            resample_pos += 1.0 / resample_ratio;
-                        }
-                        // Carry fractional position into the next callback
-                        resample_pos -= mono.len() as f64;
-                        out
-                    };
-
+                    // --- Resample to 16 kHz directly into the shared buffer ---
                     if let Ok(mut buf) = buffer.lock() {
-                        buf.extend_from_slice(&resampled);
+                        if device_rate == TARGET_SAMPLE_RATE {
+                            if ch == 1 {
+                                buf.extend_from_slice(data);
+                            } else {
+                                buf.reserve(n_frames);
+                                for i in 0..n_frames {
+                                    buf.push(mono(i));
+                                }
+                            }
+                        } else {
+                            let estimated =
+                                (n_frames as f64 * resample_ratio) as usize + 1;
+                            buf.reserve(estimated);
+
+                            while resample_pos < n_frames as f64 {
+                                let idx = resample_pos as usize;
+                                let frac = (resample_pos - idx as f64) as f32;
+                                let sample = if idx + 1 < n_frames {
+                                    mono(idx) * (1.0 - frac) + mono(idx + 1) * frac
+                                } else {
+                                    mono(idx)
+                                };
+                                buf.push(sample);
+                                resample_pos += 1.0 / resample_ratio;
+                            }
+                            // Carry fractional position into the next callback
+                            resample_pos -= n_frames as f64;
+                        }
                     }
                 },
                 |err| eprintln!("Audio stream error: {err}"),
@@ -197,13 +212,20 @@ impl AudioCapture {
     }
 
     /// Stop recording and return all accumulated 16 kHz mono f32 samples.
+    ///
+    /// Swaps in a fresh pre-allocated buffer so the next recording doesn't
+    /// need to grow from zero capacity.
     pub fn stop(&mut self) -> AppResult<Vec<f32>> {
         self.is_recording.store(false, Ordering::SeqCst);
         // Dropping the stream handle closes the device
         self.stream.take();
         self.rms_level.store(0, Ordering::Relaxed);
 
-        let samples = std::mem::take(&mut *self.buffer.lock().unwrap());
+        let mut buf = self.buffer.lock().unwrap();
+        let samples = std::mem::replace(
+            &mut *buf,
+            Vec::with_capacity(TARGET_SAMPLE_RATE as usize * 60),
+        );
         Ok(samples)
     }
 

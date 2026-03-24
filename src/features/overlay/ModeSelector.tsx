@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { Check, Mic, Code, Mail, FileText, Terminal, Globe, Settings, Briefcase, Heart, Scale } from "lucide-react";
+import { Check, Mic, Code, Mail, FileText, Terminal, Globe, Briefcase, Heart, Scale } from "lucide-react";
 import type { ContextMode } from "@/lib/tauri";
 import { showMainWindow } from "@/lib/tauri";
+import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 
 const ICON_MAP: Record<string, typeof Mic> = {
@@ -110,8 +111,11 @@ export function ModeSelector({
         })}
       </div>
 
+      {/* Divider */}
+      <div className="mx-2 h-px bg-white/15" />
+
       {/* Open main window button */}
-      <div className="px-1 pb-1 pt-0.5 border-t border-white/[0.06]">
+      <div className="px-1 pb-1 pt-0.5">
         <button
           onClick={() => {
             showMainWindow().catch(() => {});
@@ -119,7 +123,7 @@ export function ModeSelector({
           }}
           className="flex items-center gap-2 w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
         >
-          <Settings size={11} className="text-white/30" />
+          <Logo size={11} className="opacity-40" />
           <span className="text-[10px] font-medium text-white/40">
             Open OmniVox
           </span>

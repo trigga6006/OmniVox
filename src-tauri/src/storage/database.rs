@@ -121,6 +121,9 @@ impl Database {
         // Migration: add mode_id columns if they don't exist (safe to re-run)
         self.migrate_add_mode_id()?;
 
+        // Migration: add writing_style column to context_modes if missing
+        self.migrate_add_writing_style()?;
+
         Ok(())
     }
 
@@ -146,6 +149,30 @@ impl Database {
         if !has_mode_id("snippets") {
             conn.execute_batch(
                 "ALTER TABLE snippets ADD COLUMN mode_id TEXT REFERENCES context_modes(id);"
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Add `writing_style` column to context_modes if missing.
+    fn migrate_add_writing_style(&self) -> AppResult<()> {
+        let conn = self.conn()?;
+
+        let has_col: bool = conn
+            .prepare("PRAGMA table_info(context_modes)")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(1))
+                    .map(|rows| {
+                        rows.filter_map(|r| r.ok())
+                            .any(|name| name == "writing_style")
+                    })
+            })
+            .unwrap_or(false);
+
+        if !has_col {
+            conn.execute_batch(
+                "ALTER TABLE context_modes ADD COLUMN writing_style TEXT NOT NULL DEFAULT 'formal';"
             )?;
         }
 

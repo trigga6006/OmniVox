@@ -1,5 +1,6 @@
 use tauri::{Emitter, State};
 
+use crate::postprocess::types::WritingStyle;
 use crate::state::AppState;
 use crate::storage::types::ContextMode;
 
@@ -23,9 +24,10 @@ pub async fn create_context_mode(
     icon: String,
     color: String,
     llm_prompt: String,
+    writing_style: String,
     state: State<'_, AppState>,
 ) -> Result<ContextMode, String> {
-    crate::storage::context_modes::create_mode(&state.db, &name, &description, &icon, &color, &llm_prompt)
+    crate::storage::context_modes::create_mode(&state.db, &name, &description, &icon, &color, &llm_prompt, &writing_style)
         .map_err(|e| e.to_string())
 }
 
@@ -37,9 +39,10 @@ pub async fn update_context_mode(
     icon: String,
     color: String,
     llm_prompt: String,
+    writing_style: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    crate::storage::context_modes::update_mode(&state.db, &id, &name, &description, &icon, &color, &llm_prompt)
+    crate::storage::context_modes::update_mode(&state.db, &id, &name, &description, &icon, &color, &llm_prompt, &writing_style)
         .map_err(|e| e.to_string())?;
 
     Ok(())
@@ -134,7 +137,7 @@ pub async fn delete_app_binding(
 /// 2. Load global + mode's dictionary/snippets into ProcessorChain
 pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<(), String> {
     // Verify mode exists
-    let _mode = crate::storage::context_modes::get_mode(&state.db, mode_id)
+    let mode = crate::storage::context_modes::get_mode(&state.db, mode_id)
         .map_err(|e| e.to_string())?;
 
     // Persist active mode choice
@@ -143,6 +146,11 @@ pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<
 
     // Update in-memory state
     *state.active_context_mode_id.lock().unwrap() = Some(mode_id.to_string());
+
+    // Sync the mode's writing style to the processor chain
+    if let Ok(mut proc) = state.processor.lock() {
+        proc.set_style(WritingStyle::from_str(&mode.writing_style));
+    }
 
     // Load global + mode-scoped entries into the processor
     super::dictionary::sync_processor(state);

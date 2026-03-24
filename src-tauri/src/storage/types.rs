@@ -14,6 +14,8 @@ pub struct ContextMode {
     pub is_builtin: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Writing style for this mode ("formal", "casual", "very_casual").
+    pub writing_style: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +94,14 @@ pub struct AppSettings {
     pub noise_reduction: bool,
     /// Automatically switch context mode based on the foreground application.
     pub auto_switch_modes: bool,
+    /// Recognize spoken voice commands ("new line", "new paragraph", "delete last word").
+    pub voice_commands: bool,
+    /// Automatically press Enter after transcription to send the message (TypeSimulation/Both only).
+    pub ship_mode: bool,
+    /// Hide the floating pill overlay (invisible but still interactive).
+    pub ghost_mode: bool,
+    /// Writing style controls capitalization and punctuation ("formal", "casual", "very_casual").
+    pub writing_style: String,
 }
 
 impl Default for AppSettings {
@@ -110,6 +120,10 @@ impl Default for AppSettings {
             live_preview: false,
             noise_reduction: false,
             auto_switch_modes: true,
+            voice_commands: true,
+            ship_mode: false,
+            ghost_mode: false,
+            writing_style: "formal".to_string(),
         }
     }
 }

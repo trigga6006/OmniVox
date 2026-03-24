@@ -82,6 +82,10 @@ export interface AppSettings {
   live_preview: boolean;
   noise_reduction: boolean;
   auto_switch_modes: boolean;
+  voice_commands: boolean;
+  ship_mode: boolean;
+  ghost_mode: boolean;
+  writing_style: string;
 }
 
 export interface AppBinding {
@@ -191,6 +195,7 @@ export interface ContextMode {
   is_builtin: boolean;
   created_at: string;
   updated_at: string;
+  writing_style: string;
 }
 
 export const listContextModes = () => invoke<ContextMode[]>("list_context_modes");
@@ -201,7 +206,8 @@ export const createContextMode = (
   description: string,
   icon: string,
   color: string,
-  llmPrompt: string
+  llmPrompt: string,
+  writingStyle: string
 ) =>
   invoke<ContextMode>("create_context_mode", {
     name,
@@ -209,6 +215,7 @@ export const createContextMode = (
     icon,
     color,
     llmPrompt,
+    writingStyle,
   });
 export const updateContextMode = (
   id: string,
@@ -216,7 +223,8 @@ export const updateContextMode = (
   description: string,
   icon: string,
   color: string,
-  llmPrompt: string
+  llmPrompt: string,
+  writingStyle: string
 ) =>
   invoke<void>("update_context_mode", {
     id,
@@ -225,6 +233,7 @@ export const updateContextMode = (
     icon,
     color,
     llmPrompt,
+    writingStyle,
   });
 export const deleteContextMode = (id: string) =>
   invoke<void>("delete_context_mode", { id });

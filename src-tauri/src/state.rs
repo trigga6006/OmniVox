@@ -8,7 +8,7 @@ use crate::models::manager::ModelManager;
 use crate::output::router::OutputRouter;
 use crate::output::types::OutputConfig;
 use crate::postprocess::processor::ProcessorChain;
-use crate::postprocess::types::ProcessorConfig;
+use crate::postprocess::types::{ProcessorConfig, WritingStyle};
 use crate::storage::database::Database;
 
 /// Central application state, managed by Tauri.
@@ -59,10 +59,19 @@ impl AppState {
         let db = Database::init(&db_path)
             .expect("Failed to initialize database");
 
+        // Load saved writing style so it persists across restarts
+        let writing_style = crate::storage::settings::get_settings(&db)
+            .map(|s| WritingStyle::from_str(&s.writing_style))
+            .unwrap_or_default();
+        let processor_config = ProcessorConfig {
+            writing_style,
+            ..ProcessorConfig::default()
+        };
+
         Self {
             audio: Mutex::new(AudioCapture::new(AudioConfig::default())),
             engine: Mutex::new(None),
-            processor: Mutex::new(ProcessorChain::new(ProcessorConfig::default())),
+            processor: Mutex::new(ProcessorChain::new(processor_config)),
             output: OutputRouter::new(),
             output_config: Mutex::new(OutputConfig::default()),
             model_manager: ModelManager::new(models_dir.clone()),

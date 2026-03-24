@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine } from "lucide-react";
 import {
   getSettings,
   updateSettings,
@@ -25,6 +25,14 @@ const outputModes = [
 ] as const;
 
 type OutputMode = (typeof outputModes)[number]["id"];
+
+const writingStyles = [
+  { id: "formal", label: "Formal" },
+  { id: "casual", label: "Casual" },
+  { id: "very_casual", label: "Very Casual" },
+] as const;
+
+type WritingStyleId = (typeof writingStyles)[number]["id"];
 
 /* ─────────────────── Hotkey Recorder Component ─────────────────── */
 
@@ -367,9 +375,11 @@ function GpuAccelerationSection({
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [activeMode, setActiveMode] = useState<OutputMode>("clipboard");
+  const [activeStyle, setActiveStyle] = useState<WritingStyleId>("formal");
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
+  const [showVoiceCommands, setShowVoiceCommands] = useState(false);
 
   useEffect(() => {
     getSettings()
@@ -377,6 +387,8 @@ export function SettingsPage() {
         setSettings(s);
         const mode = outputModes.find((m) => m.id === s.output_mode);
         setActiveMode(mode ? mode.id : "clipboard");
+        const style = writingStyles.find((st) => st.id === s.writing_style);
+        setActiveStyle(style ? style.id : "formal");
       })
       .catch((e) => console.error("Failed to load settings:", e));
 
@@ -393,6 +405,8 @@ export function SettingsPage() {
       setSettings(s);
       const mode = outputModes.find((m) => m.id === s.output_mode);
       setActiveMode(mode ? mode.id : "clipboard");
+      const style = writingStyles.find((st) => st.id === s.writing_style);
+      setActiveStyle(style ? style.id : "formal");
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
@@ -403,6 +417,20 @@ export function SettingsPage() {
       if (!settings) return;
 
       const updated: AppSettings = { ...settings, output_mode: mode };
+      setSettings(updated);
+      updateSettings(updated).catch((e) =>
+        console.error("Failed to save settings:", e)
+      );
+    },
+    [settings]
+  );
+
+  const handleStyleChange = useCallback(
+    (style: WritingStyleId) => {
+      setActiveStyle(style);
+      if (!settings) return;
+
+      const updated: AppSettings = { ...settings, writing_style: style };
       setSettings(updated);
       updateSettings(updated).catch((e) =>
         console.error("Failed to save settings:", e)
@@ -447,9 +475,23 @@ export function SettingsPage() {
     updateSettings(updated).catch(console.error);
   }, [settings]);
 
+  const handleVoiceCommandsToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, voice_commands: !settings.voice_commands };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
   const handleAutoSwitchToggle = useCallback(() => {
     if (!settings) return;
     const updated = { ...settings, auto_switch_modes: !settings.auto_switch_modes };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleShipModeToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, ship_mode: !settings.ship_mode };
     setSettings(updated);
     updateSettings(updated).catch(console.error);
   }, [settings]);
@@ -623,6 +665,43 @@ export function SettingsPage() {
           </div>
         </section>
 
+        {/* ── Writing Style ── */}
+        <section
+          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          style={{ opacity: 0, animationDelay: "0.185s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <PenLine size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Writing Style
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Controls capitalization and punctuation in your transcriptions.
+            This is the default style — context modes can override it.
+          </p>
+
+          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+            {writingStyles.map(({ id, label }) => {
+              const isActive = activeStyle === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => handleStyleChange(id)}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    isActive
+                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                      : "text-text-muted hover:text-text-secondary border border-transparent"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
         {/* ── Live Preview ── */}
         <section
           className={cn(
@@ -711,6 +790,109 @@ export function SettingsPage() {
           </div>
         </section>
 
+        {/* ── Voice Commands ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.voice_commands
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.25s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Mic size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Voice Commands
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Recognize spoken commands during dictation. Say "new line" for a line
+            break, "new paragraph" for a paragraph break, or "delete last word"
+            to remove the previous word.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleVoiceCommandsToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.voice_commands ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.voice_commands ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.voice_commands ? "Enabled" : "Disabled"}
+            </span>
+
+            <button
+              onClick={() => setShowVoiceCommands(true)}
+              className="ml-auto text-xs text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
+            >
+              <Info size={12} />
+              View commands
+            </button>
+          </div>
+        </section>
+
+        {/* ── Voice Commands Reference Popup ── */}
+        {showVoiceCommands && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+            onClick={() => setShowVoiceCommands(false)}
+          >
+            <div
+              className="bg-surface-1 border border-border rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-slide-up"
+              style={{ animationDuration: "0.15s" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-2">
+                  <Mic size={16} strokeWidth={2} className="text-amber-500" />
+                  <h3 className="text-sm font-semibold text-text-primary">Voice Commands</h3>
+                </div>
+                <button
+                  onClick={() => setShowVoiceCommands(false)}
+                  className="text-text-muted hover:text-text-secondary transition-colors p-1 rounded-lg hover:bg-surface-2"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {[
+                  { phrase: "new line", desc: "Insert a line break" },
+                  { phrase: "new paragraph", desc: "Insert a paragraph break" },
+                  { phrase: "delete last word", desc: "Remove the previous word" },
+                ].map((cmd) => (
+                  <div
+                    key={cmd.phrase}
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-2/50 border border-border/50"
+                  >
+                    <div>
+                      <span className="text-xs font-mono font-medium text-amber-500">
+                        "{cmd.phrase}"
+                      </span>
+                      <p className="text-xs text-text-muted mt-0.5">{cmd.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-[10px] text-text-muted mt-4 text-center">
+                Speak these phrases naturally during dictation
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* ── Auto Context Switching ── */}
         <section
           className={cn(
@@ -751,6 +933,59 @@ export function SettingsPage() {
             </button>
             <span className="text-sm text-text-secondary">
               {settings?.auto_switch_modes ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+        </section>
+
+        {/* ── Ship Mode ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.ship_mode
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.28s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Rocket size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Ship Mode
+            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">
+              Beta
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Automatically sends your transcription by pressing Enter after
+            output. Built for agentic workflows — Claude Code, Cursor, and
+            similar tools where hands-free submit keeps you in flow.
+            Requires Type Simulation or Both output mode.
+          </p>
+
+          <p className="text-[11px] text-amber-400/70 mb-4 max-w-[400px]">
+            Your message will be sent immediately after transcription — there
+            is no chance to edit before it goes out.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleShipModeToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.ship_mode ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.ship_mode ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.ship_mode ? "Enabled" : "Disabled"}
             </span>
           </div>
         </section>

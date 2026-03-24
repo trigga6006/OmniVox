@@ -295,6 +295,7 @@ function ModeForm({
   const [icon, setIcon] = useState(mode?.icon ?? "mic");
   const [color, setColor] = useState(mode?.color ?? "amber");
   const [prompt, setPrompt] = useState(mode?.llm_prompt ?? DEFAULT_PROMPT);
+  const [writingStyle, setWritingStyle] = useState(mode?.writing_style ?? "formal");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -401,9 +402,9 @@ function ModeForm({
     setError(null);
     try {
       if (isEdit) {
-        await updateContextMode(mode.id, name, description, icon, color, prompt);
+        await updateContextMode(mode.id, name, description, icon, color, prompt, writingStyle);
       } else {
-        await createContextMode(name, description, icon, color, prompt);
+        await createContextMode(name, description, icon, color, prompt, writingStyle);
       }
       onSave();
     } catch (e) {
@@ -498,6 +499,34 @@ function ModeForm({
                 />
               ))}
             </div>
+          </div>
+        </div>
+
+        {/* Writing Style */}
+        <div>
+          <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+            Writing Style
+          </label>
+          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+            {(
+              [
+                { id: "formal", label: "Formal" },
+                { id: "casual", label: "Casual" },
+                { id: "very_casual", label: "Very Casual" },
+              ] as const
+            ).map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => setWritingStyle(id)}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  writingStyle === id
+                    ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                    : "text-text-muted hover:text-text-secondary border border-transparent"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
 

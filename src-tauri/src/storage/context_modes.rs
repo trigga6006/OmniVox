@@ -16,6 +16,7 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
     let is_builtin: bool = row.get(7)?;
     let created_at_str: String = row.get(8)?;
     let updated_at_str: String = row.get(9)?;
+    let writing_style: String = row.get(10)?;
 
     let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -36,11 +37,12 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
         is_builtin,
         created_at,
         updated_at,
+        writing_style,
     })
 }
 
 const SELECT_COLS: &str =
-    "id, name, description, icon, color, llm_prompt, sort_order, is_builtin, created_at, updated_at";
+    "id, name, description, icon, color, llm_prompt, sort_order, is_builtin, created_at, updated_at, writing_style";
 
 /// Ensure the builtin "General" mode exists. Returns its ID.
 /// Also refreshes builtin prompts to the latest version on every launch.
@@ -82,8 +84,8 @@ pub fn seed_general_mode(db: &Database) -> AppResult<String> {
 
         // General mode: empty llm_prompt (no mode-specific additions).
         conn.execute(
-            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
-            params![id, "General", "Default dictation mode", "mic", "amber", "", 0, true, now, now],
+            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
+            params![id, "General", "Default dictation mode", "mic", "amber", "", 0, true, now, now, "formal"],
         )?;
 
         // Leave existing entries with mode_id IS NULL — they're global entries
@@ -179,13 +181,14 @@ pub fn create_mode(
     icon: &str,
     color: &str,
     llm_prompt: &str,
+    writing_style: &str,
 ) -> AppResult<ContextMode> {
     let id = Uuid::new_v4();
     let now = Utc::now();
 
     let conn = db.conn()?;
     conn.execute(
-        &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
+        &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
         params![
             id.to_string(),
             name,
@@ -197,6 +200,7 @@ pub fn create_mode(
             false,
             now.to_rfc3339(),
             now.to_rfc3339(),
+            writing_style,
         ],
     )?;
 
@@ -211,6 +215,7 @@ pub fn create_mode(
         is_builtin: false,
         created_at: now,
         updated_at: now,
+        writing_style: writing_style.to_string(),
     })
 }
 
@@ -222,12 +227,13 @@ pub fn update_mode(
     icon: &str,
     color: &str,
     llm_prompt: &str,
+    writing_style: &str,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     let conn = db.conn()?;
     conn.execute(
-        "UPDATE context_modes SET name=?1, description=?2, icon=?3, color=?4, llm_prompt=?5, updated_at=?6 WHERE id=?7",
-        params![name, description, icon, color, llm_prompt, now, id],
+        "UPDATE context_modes SET name=?1, description=?2, icon=?3, color=?4, llm_prompt=?5, updated_at=?6, writing_style=?8 WHERE id=?7",
+        params![name, description, icon, color, llm_prompt, now, id, writing_style],
     )?;
     Ok(())
 }
@@ -279,8 +285,8 @@ fn seed_programming_mode(db: &Database) -> AppResult<()> {
 
     if !needs_entries {
         conn.execute(
-            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
-            params![id, "Programming", "Optimized for coding and software development", "code", "blue", PROGRAMMING_ADDITIONS, 1, true, now, now],
+            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
+            params![id, "Programming", "Optimized for coding and software development", "code", "blue", PROGRAMMING_ADDITIONS, 1, true, now, now, "formal"],
         )?;
     }
 
@@ -444,8 +450,8 @@ fn seed_business_sales_mode(db: &Database) -> AppResult<()> {
 
     if !needs_entries {
         conn.execute(
-            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
-            params![id, "Business & Sales", "Optimized for sales, CRM, and business communication", "briefcase", "green", BUSINESS_SALES_ADDITIONS, 2, true, now, now],
+            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
+            params![id, "Business & Sales", "Optimized for sales, CRM, and business communication", "briefcase", "green", BUSINESS_SALES_ADDITIONS, 2, true, now, now, "formal"],
         )?;
     }
 
@@ -616,8 +622,8 @@ fn seed_medical_mode(db: &Database) -> AppResult<()> {
 
     if !needs_entries {
         conn.execute(
-            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
-            params![id, "Medical", "Optimized for healthcare and clinical documentation", "heart", "red", MEDICAL_ADDITIONS, 3, true, now, now],
+            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
+            params![id, "Medical", "Optimized for healthcare and clinical documentation", "heart", "red", MEDICAL_ADDITIONS, 3, true, now, now, "formal"],
         )?;
     }
 
@@ -790,8 +796,8 @@ fn seed_legal_mode(db: &Database) -> AppResult<()> {
 
     if !needs_entries {
         conn.execute(
-            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
-            params![id, "Legal", "Optimized for legal writing and correspondence", "scale", "purple", LEGAL_ADDITIONS, 4, true, now, now],
+            &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
+            params![id, "Legal", "Optimized for legal writing and correspondence", "scale", "purple", LEGAL_ADDITIONS, 4, true, now, now, "formal"],
         )?;
     }
 

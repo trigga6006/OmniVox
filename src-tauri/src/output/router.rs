@@ -6,6 +6,7 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
 use crate::error::{AppError, AppResult};
 use crate::output::types::{OutputConfig, OutputMode};
+use crate::postprocess::voice_commands::{OutputSegment, VoiceCommand, segments_to_string};
 
 /// Routes transcribed text to the user's focused application.
 ///
@@ -48,6 +49,100 @@ impl OutputRouter {
         Ok(())
     }
 
+    /// Send a sequence of text segments and voice commands to the focused app.
+    ///
+    /// In **TypeSimulation** mode, text is typed and commands execute keystrokes.
+    /// In **Clipboard** mode, segments are collapsed to a string (commands become
+    /// `\n` characters; `DeleteLastWord` is dropped).
+    /// In **Both** mode, clipboard gets the string and keystrokes execute.
+    pub fn send_segments(&self, segments: &[OutputSegment], config: &OutputConfig) -> AppResult<()> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+
+        match config.mode {
+            OutputMode::Clipboard => {
+                let text = segments_to_string(segments);
+                if !text.is_empty() {
+                    self.set_clipboard(&text)?;
+                }
+            }
+            OutputMode::TypeSimulation => {
+                self.type_segments(segments)?;
+            }
+            OutputMode::Both => {
+                let text = segments_to_string(segments);
+                if !text.is_empty() {
+                    self.set_clipboard(&text)?;
+                }
+                thread::sleep(Duration::from_millis(30));
+                self.type_segments(segments)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Execute a sequence of text + command segments via keystroke simulation.
+    fn type_segments(&self, segments: &[OutputSegment]) -> AppResult<()> {
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+
+        for seg in segments {
+            match seg {
+                OutputSegment::Text(s) => {
+                    if !s.is_empty() {
+                        // Handle embedded newlines the same way type_text does.
+                        let lines: Vec<&str> = s.split('\n').collect();
+                        for (i, line) in lines.iter().enumerate() {
+                            if !line.is_empty() {
+                                Self::type_chunked(&mut enigo, line)?;
+                            }
+                            if i < lines.len() - 1 {
+                                self.send_shift_enter(&mut enigo)?;
+                            }
+                        }
+                    }
+                }
+                OutputSegment::Command(VoiceCommand::NewLine) => {
+                    self.send_shift_enter(&mut enigo)?;
+                }
+                OutputSegment::Command(VoiceCommand::NewParagraph) => {
+                    self.send_shift_enter(&mut enigo)?;
+                    self.send_shift_enter(&mut enigo)?;
+                }
+                OutputSegment::Command(VoiceCommand::DeleteLastWord) => {
+                    // Ctrl+Backspace deletes the previous word.
+                    enigo
+                        .key(Key::Control, Direction::Press)
+                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+                    enigo
+                        .key(Key::Backspace, Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+                    enigo
+                        .key(Key::Control, Direction::Release)
+                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send Shift+Enter (line break that works in chat apps too).
+    fn send_shift_enter(&self, enigo: &mut Enigo) -> AppResult<()> {
+        enigo
+            .key(Key::Shift, Direction::Press)
+            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+        enigo
+            .key(Key::Return, Direction::Click)
+            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+        enigo
+            .key(Key::Shift, Direction::Release)
+            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+        Ok(())
+    }
+
     fn set_clipboard(&self, text: &str) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
@@ -66,6 +161,10 @@ impl OutputRouter {
     /// codepoints which Windows apps ignore).  `Shift+Enter` inserts a line
     /// break in virtually all apps — including chat inputs that treat bare
     /// `Enter` as "send message".
+    ///
+    /// Text is sent in word-sized chunks with small inter-chunk delays to prevent
+    /// the target app's message queue from backing up and triggering Windows
+    /// keyboard auto-repeat on the last character.
     fn type_text(&self, text: &str) -> AppResult<()> {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
@@ -73,95 +172,46 @@ impl OutputRouter {
         let lines: Vec<&str> = text.split('\n').collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.is_empty() {
-                enigo
-                    .text(line)
-                    .map_err(|e| AppError::Output(format!("Text input failed: {e}")))?;
+                Self::type_chunked(&mut enigo, line)?;
             }
             if i < lines.len() - 1 {
-                // Shift+Enter creates a newline in both regular editors and
-                // chat apps (where bare Enter would submit the message).
-                enigo
-                    .key(Key::Shift, Direction::Press)
-                    .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-                enigo
-                    .key(Key::Return, Direction::Click)
-                    .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-                enigo
-                    .key(Key::Shift, Direction::Release)
-                    .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+                self.send_shift_enter(&mut enigo)?;
             }
         }
         Ok(())
     }
 
-    /// Paste into the focused app while preserving the user's clipboard.
-    /// (Legacy — kept as fallback; prefer `type_text` for insertion.)
-    #[allow(dead_code)]
-    fn paste_with_restore(&self, text: &str, config: &OutputConfig) -> AppResult<()> {
-        let mut clipboard = Clipboard::new()
-            .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
+    /// Send text in small chunks with brief pauses so the target app's message
+    /// queue can drain between bursts.  Prevents `SendInput` from flooding the
+    /// queue and triggering keyboard auto-repeat on the last character.
+    ///
+    /// Chunks on word boundaries (space characters) so we never split a
+    /// multi-byte UTF-8 character.  A 5 ms pause between words is imperceptible
+    /// to the user but gives the target app enough time to process each batch.
+    fn type_chunked(enigo: &mut Enigo, text: &str) -> AppResult<()> {
+        const CHUNK_DELAY: Duration = Duration::from_millis(5);
 
-        // Snapshot — clipboard may contain non-text (images, etc.), so failing is OK
-        let previous = clipboard.get_text().ok();
+        let mut remaining = text;
+        while !remaining.is_empty() {
+            // Find the next space after at least one character.
+            let chunk_end = remaining[1..]
+                .find(' ')
+                .map(|pos| pos + 2) // +1 for the offset, +1 to include the space
+                .unwrap_or(remaining.len());
 
-        clipboard
-            .set_text(text)
-            .map_err(|e| AppError::Output(format!("Failed to set clipboard: {e}")))?;
-
-        // Allow the clipboard to settle before sending the keystroke
-        thread::sleep(Duration::from_millis(30));
-
-        self.send_paste_keystroke()?;
-
-        // Give the target application time to process the paste event
-        let settle = (config.typing_delay_ms as u64).max(50);
-        thread::sleep(Duration::from_millis(settle));
-
-        // Restore original clipboard contents
-        if let Some(prev) = previous {
-            let _ = clipboard.set_text(&prev);
-        }
-
-        Ok(())
-    }
-
-    /// Simulates Ctrl+V on Windows.
-    /// (Legacy — kept as fallback; prefer `type_text` for insertion.)
-    #[allow(dead_code)]
-    fn send_paste_keystroke(&self) -> AppResult<()> {
-        let mut enigo = Enigo::new(&Settings::default())
-            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
-
-        enigo
-            .key(Key::Control, Direction::Press)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        enigo
-            .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        enigo
-            .key(Key::Control, Direction::Release)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-
-        Ok(())
-    }
-
-    /// Character-by-character typing fallback.
-    /// Use when the target app intercepts Ctrl+V (rare, but possible).
-    #[allow(dead_code)]
-    fn type_characters(&self, text: &str, char_delay_ms: u32) -> AppResult<()> {
-        let mut enigo = Enigo::new(&Settings::default())
-            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
-
-        for ch in text.chars() {
+            let chunk = &remaining[..chunk_end];
             enigo
-                .text(&ch.to_string())
-                .map_err(|e| AppError::Output(format!("Typing failed: {e}")))?;
+                .text(chunk)
+                .map_err(|e| AppError::Output(format!("Text input failed: {e}")))?;
 
-            if char_delay_ms > 0 {
-                thread::sleep(Duration::from_millis(char_delay_ms as u64));
+            remaining = &remaining[chunk_end..];
+
+            if !remaining.is_empty() {
+                thread::sleep(CHUNK_DELAY);
             }
         }
 
         Ok(())
     }
+
 }

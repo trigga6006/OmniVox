@@ -80,6 +80,26 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.auto_switch_modes);
 
+    let voice_commands = map
+        .get("voice_commands")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.voice_commands);
+
+    let ship_mode = map
+        .get("ship_mode")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.ship_mode);
+
+    let ghost_mode = map
+        .get("ghost_mode")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.ghost_mode);
+
+    let writing_style = map
+        .get("writing_style")
+        .cloned()
+        .unwrap_or(defaults.writing_style);
+
     Ok(AppSettings {
         theme,
         language,
@@ -94,6 +114,10 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         live_preview,
         noise_reduction,
         auto_switch_modes,
+        voice_commands,
+        ship_mode,
+        ghost_mode,
+        writing_style,
     })
 }
 
@@ -165,6 +189,22 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params!["auto_switch_modes", settings.auto_switch_modes.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["voice_commands", settings.voice_commands.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["ship_mode", settings.ship_mode.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["ghost_mode", settings.ghost_mode.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["writing_style", &settings.writing_style],
     )?;
 
     tx.commit()?;

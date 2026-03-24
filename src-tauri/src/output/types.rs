@@ -11,6 +11,8 @@ pub enum OutputMode {
 pub struct OutputConfig {
     pub mode: OutputMode,
     pub typing_delay_ms: u32,
+    /// Automatically press Enter after output to send the message.
+    pub ship_mode: bool,
 }
 
 impl Default for OutputConfig {
@@ -18,6 +20,7 @@ impl Default for OutputConfig {
         Self {
             mode: OutputMode::Clipboard,
             typing_delay_ms: 10,
+            ship_mode: false,
         }
     }
 }

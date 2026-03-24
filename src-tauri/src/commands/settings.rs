@@ -1,6 +1,7 @@
 use tauri::{Emitter, Manager, State};
 use crate::hotkey::HotkeyConfig;
 use crate::output::types::OutputMode;
+use crate::postprocess::types::WritingStyle;
 use crate::state::AppState;
 use crate::storage::types::AppSettings;
 
@@ -101,6 +102,12 @@ pub async fn update_settings(
     };
     if let Ok(mut cfg) = state.output_config.lock() {
         cfg.mode = mode;
+        cfg.ship_mode = settings.ship_mode;
+    }
+
+    // Sync writing style to the processor chain
+    if let Ok(mut proc) = state.processor.lock() {
+        proc.set_style(WritingStyle::from_str(&settings.writing_style));
     }
 
     // Sync hotkey to the live hook

@@ -1,5 +1,5 @@
 use crate::error::AppResult;
-use crate::postprocess::types::{Correction, ProcessedText, ProcessorConfig};
+use crate::postprocess::types::{Correction, ProcessedText, ProcessorConfig, WritingStyle};
 use crate::storage::types::{DictionaryEntry, Snippet};
 
 /// Trait for text post-processing steps.
@@ -39,6 +39,11 @@ impl ProcessorChain {
     pub fn set_snippets(&mut self, snippets: Vec<Snippet>) {
         self.snippets = snippets;
     }
+
+    /// Update the writing style at runtime (called when settings change).
+    pub fn set_style(&mut self, style: WritingStyle) {
+        self.config.writing_style = style;
+    }
 }
 
 impl TextProcessor for ProcessorChain {
@@ -47,43 +52,36 @@ impl TextProcessor for ProcessorChain {
         let mut result = text.to_string();
         let mut corrections = Vec::new();
 
+        // Helper: apply a processing step, recording a correction only when
+        // the text actually changed. Avoids the pre-clone pattern — the old
+        // value is moved into the correction instead of copied up front.
+        macro_rules! apply_step {
+            ($reason:expr, $new_result:expr) => {
+                let new = $new_result;
+                if new != result {
+                    let old = std::mem::replace(&mut result, new);
+                    corrections.push(Correction {
+                        original: old,
+                        replacement: result.clone(),
+                        reason: $reason.to_string(),
+                    });
+                }
+            };
+        }
+
         // Step 0: Remove filler words and deduplicate repeated words
         if self.config.apply_filler_removal {
-            let before = result.clone();
-            result = remove_fillers(&result);
-            if result != before {
-                corrections.push(Correction {
-                    original: before,
-                    replacement: result.clone(),
-                    reason: "filler_removal".to_string(),
-                });
-            }
+            apply_step!("filler_removal", remove_fillers(&result));
         }
 
         // Step 0b: Context-sensitive fillers (sentence-start "so", "well", filler "like")
         if self.config.apply_filler_removal {
-            let before = result.clone();
-            result = remove_contextual_fillers(&result);
-            if result != before {
-                corrections.push(Correction {
-                    original: before,
-                    replacement: result.clone(),
-                    reason: "contextual_filler_removal".to_string(),
-                });
-            }
+            apply_step!("contextual_filler_removal", remove_contextual_fillers(&result));
         }
 
         // Step 0c: Deduplicate repeated 2-3 word phrases ("I think I think" → "I think")
         if self.config.apply_filler_removal {
-            let before = result.clone();
-            result = dedup_phrases(&result);
-            if result != before {
-                corrections.push(Correction {
-                    original: before,
-                    replacement: result.clone(),
-                    reason: "phrase_dedup".to_string(),
-                });
-            }
+            apply_step!("phrase_dedup", dedup_phrases(&result));
         }
 
         // Step 1: Dictionary replacements (case-insensitive)
@@ -137,41 +135,24 @@ impl TextProcessor for ProcessorChain {
             }
         }
 
-        // Step 3: Capitalize first letter of sentences
-        if self.config.auto_capitalize {
-            let before = result.clone();
-            result = capitalize_sentences(&result);
-            if result != before {
-                corrections.push(Correction {
-                    original: before,
-                    replacement: result.clone(),
-                    reason: "auto_capitalize".to_string(),
-                });
-            }
+        // Step 3: Capitalize first letter of sentences (Formal and Casual only)
+        if self.config.auto_capitalize
+            && self.config.writing_style != WritingStyle::VeryCasual
+        {
+            apply_step!("auto_capitalize", capitalize_sentences(&result));
         }
 
         // Step 4: Clean up whitespace (collapse multiple spaces, trim)
-        let before = result.clone();
-        result = normalize_whitespace(&result);
-        if result != before {
-            corrections.push(Correction {
-                original: before,
-                replacement: result.clone(),
-                reason: "whitespace_cleanup".to_string(),
-            });
-        }
+        apply_step!("whitespace_cleanup", normalize_whitespace(&result));
 
         // Step 5: Punctuation cleanup (double periods, space before punctuation, trailing connectors)
         if self.config.apply_filler_removal {
-            let before = result.clone();
-            result = cleanup_punctuation(&result);
-            if result != before {
-                corrections.push(Correction {
-                    original: before,
-                    replacement: result.clone(),
-                    reason: "punctuation_cleanup".to_string(),
-                });
-            }
+            apply_step!("punctuation_cleanup", cleanup_punctuation(&result, self.config.writing_style));
+        }
+
+        // Step 6: Very Casual — lowercase everything, strip trailing periods (keep ? and !)
+        if self.config.writing_style == WritingStyle::VeryCasual {
+            apply_step!("very_casual_style", apply_very_casual(&result));
         }
 
         Ok(ProcessedText {
@@ -465,8 +446,8 @@ fn dedup_phrases(text: &str) -> String {
 /// - Double periods ("..") → "."  (preserves real ellipsis "...")
 /// - Space before punctuation ("word .") → "word."
 /// - Trailing connectors ("and" / "so" / "but") from interrupted speech → removed
-/// - Ensures text ends with sentence-ending punctuation (adds "." if missing)
-fn cleanup_punctuation(text: &str) -> String {
+/// - Formal only: ensures text ends with sentence-ending punctuation (adds "." if missing)
+fn cleanup_punctuation(text: &str, style: WritingStyle) -> String {
     let mut result = text.to_string();
 
     // Space before sentence-ending punctuation
@@ -497,13 +478,28 @@ fn cleanup_punctuation(text: &str) -> String {
 
     let result = result.trim().to_string();
 
-    // Ensure the text ends with sentence-ending punctuation.
+    // Formal only: ensure the text ends with sentence-ending punctuation.
     // Whisper often omits the trailing period on the last sentence.
-    if !result.is_empty() {
+    // Casual and VeryCasual skip this — no forced trailing period.
+    if style == WritingStyle::Formal && !result.is_empty() {
         let last_char = result.chars().last().unwrap();
         if !matches!(last_char, '.' | '!' | '?' | ':' | ';' | '"' | '\'' | ')' | ']') {
             return format!("{result}.");
         }
+    }
+
+    result
+}
+
+/// Apply very-casual style: lowercase the entire text, strip trailing periods
+/// but preserve `?` and `!` since they carry semantic meaning.
+fn apply_very_casual(text: &str) -> String {
+    let mut result = text.to_lowercase();
+
+    // Strip trailing period (but keep ? and !)
+    if result.ends_with('.') {
+        result.pop();
+        result = result.trim_end().to_string();
     }
 
     result
@@ -617,52 +613,99 @@ mod tests {
         assert_eq!(result, "hello world");
     }
 
-    // ── Punctuation cleanup ─────────────────────────────────────
+    // ── Punctuation cleanup (Formal) ──────────────────────────────
     #[test]
     fn fixes_space_before_period() {
-        assert_eq!(cleanup_punctuation("Hello ."), "Hello.");
+        assert_eq!(cleanup_punctuation("Hello .", WritingStyle::Formal), "Hello.");
     }
 
     #[test]
     fn fixes_space_before_comma() {
-        assert_eq!(cleanup_punctuation("Hello , world."), "Hello, world.");
+        assert_eq!(cleanup_punctuation("Hello , world.", WritingStyle::Formal), "Hello, world.");
     }
 
     #[test]
     fn fixes_double_period() {
-        assert_eq!(cleanup_punctuation("Hello.."), "Hello.");
+        assert_eq!(cleanup_punctuation("Hello..", WritingStyle::Formal), "Hello.");
     }
 
     #[test]
     fn preserves_ellipsis() {
-        assert_eq!(cleanup_punctuation("Wait..."), "Wait...");
+        assert_eq!(cleanup_punctuation("Wait...", WritingStyle::Formal), "Wait...");
     }
 
     #[test]
     fn removes_trailing_and() {
         assert_eq!(
-            cleanup_punctuation("I went to the store and"),
+            cleanup_punctuation("I went to the store and", WritingStyle::Formal),
             "I went to the store."
         );
     }
 
     #[test]
     fn removes_trailing_so() {
-        assert_eq!(cleanup_punctuation("I was thinking so"), "I was thinking.");
+        assert_eq!(cleanup_punctuation("I was thinking so", WritingStyle::Formal), "I was thinking.");
     }
 
     #[test]
     fn adds_trailing_period() {
-        assert_eq!(cleanup_punctuation("Hello world"), "Hello world.");
+        assert_eq!(cleanup_punctuation("Hello world", WritingStyle::Formal), "Hello world.");
     }
 
     #[test]
     fn no_double_trailing_period() {
-        assert_eq!(cleanup_punctuation("Hello world."), "Hello world.");
+        assert_eq!(cleanup_punctuation("Hello world.", WritingStyle::Formal), "Hello world.");
     }
 
     #[test]
     fn preserves_trailing_question_mark() {
-        assert_eq!(cleanup_punctuation("Is this working?"), "Is this working?");
+        assert_eq!(cleanup_punctuation("Is this working?", WritingStyle::Formal), "Is this working?");
+    }
+
+    // ── Casual style ────────────────────────────────────────────
+    #[test]
+    fn casual_no_trailing_period() {
+        assert_eq!(cleanup_punctuation("Hello world", WritingStyle::Casual), "Hello world");
+    }
+
+    #[test]
+    fn casual_keeps_existing_period() {
+        assert_eq!(cleanup_punctuation("Hello world.", WritingStyle::Casual), "Hello world.");
+    }
+
+    #[test]
+    fn casual_keeps_question_mark() {
+        assert_eq!(cleanup_punctuation("How are you?", WritingStyle::Casual), "How are you?");
+    }
+
+    #[test]
+    fn casual_still_removes_trailing_connector() {
+        assert_eq!(cleanup_punctuation("I went to the store and", WritingStyle::Casual), "I went to the store");
+    }
+
+    // ── Very Casual style ───────────────────────────────────────
+    #[test]
+    fn very_casual_lowercases() {
+        assert_eq!(apply_very_casual("Hello World"), "hello world");
+    }
+
+    #[test]
+    fn very_casual_strips_trailing_period() {
+        assert_eq!(apply_very_casual("Hello world."), "hello world");
+    }
+
+    #[test]
+    fn very_casual_keeps_question_mark() {
+        assert_eq!(apply_very_casual("How are you?"), "how are you?");
+    }
+
+    #[test]
+    fn very_casual_keeps_exclamation() {
+        assert_eq!(apply_very_casual("That is great!"), "that is great!");
+    }
+
+    #[test]
+    fn very_casual_mid_sentence_periods_unchanged() {
+        assert_eq!(apply_very_casual("First. Second"), "first. second");
     }
 }

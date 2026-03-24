@@ -447,6 +447,20 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //     items).  Structural formatting is handled here at zero cost.
     let final_text = crate::postprocess::formatter::format_lists(&processed_text);
 
+    // 4b. Voice command detection (if enabled).
+    //     Splits text into [Text | Command] segments so the output router can
+    //     type text and execute keystrokes (Shift+Enter, Ctrl+Backspace, etc.).
+    let voice_segments = {
+        let enabled = crate::storage::settings::get_settings(&state.db)
+            .map(|s| s.voice_commands)
+            .unwrap_or(false);
+        if enabled {
+            Some(crate::postprocess::voice_commands::parse_commands(&final_text))
+        } else {
+            None
+        }
+    };
+
     // 5. Kick off focus restoration in parallel with output.
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
     let focus_task = prev_hwnd.map(|hwnd| {
@@ -463,9 +477,37 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
-    if let Err(e) = state.output.send(&final_text, &output_config) {
+    let output_result = if let Some(ref segments) = voice_segments {
+        state.output.send_segments(segments, &output_config)
+    } else {
+        state.output.send(&final_text, &output_config)
+    };
+    if let Err(e) = output_result {
         eprintln!("Output failed: {e}");
         emit_error(app_handle, e.code(), format!("Output failed: {e}"));
+    }
+
+    // 6b. Ship Mode — automatically press Enter to send the message.
+    //     Only fires when type simulation was used (clipboard-only can't auto-send).
+    if output_config.ship_mode
+        && matches!(
+            output_config.mode,
+            crate::output::types::OutputMode::TypeSimulation
+                | crate::output::types::OutputMode::Both
+        )
+    {
+        let _ = tokio::task::spawn_blocking(|| {
+            // Wait for all keystrokes to land in the target app.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
+                let _ = enigo::Keyboard::key(
+                    &mut enigo,
+                    enigo::Key::Return,
+                    enigo::Direction::Click,
+                );
+            }
+        })
+        .await;
     }
 
     // 7. Notify frontend (before moving final_text into history)
