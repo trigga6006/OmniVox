@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required: macOS prompts the user for microphone access on first use -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OmniVox needs microphone access to record your voice for transcription.</string>
+
+    <!-- Accessibility description shown when the user is prompted to grant
+         Input Monitoring / Accessibility permissions for global hotkeys -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>OmniVox uses Apple Events to restore focus to your active application after transcription.</string>
+</dict>
+</plist>

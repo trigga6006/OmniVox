@@ -27,7 +27,7 @@ pub struct AudioCapture {
 
 // SAFETY: AudioCapture is always accessed behind a Mutex in AppState, ensuring
 // exclusive access. cpal::Stream is !Send as a conservative blanket across all
-// platforms, but on Windows (WASAPI) the underlying handles are thread-safe.
+// platforms, but the underlying handles (WASAPI, CoreAudio, ALSA) are thread-safe.
 unsafe impl Send for AudioCapture {}
 unsafe impl Sync for AudioCapture {}
 

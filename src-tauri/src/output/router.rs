@@ -4,6 +4,19 @@ use std::time::Duration;
 use arboard::Clipboard;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
+/// The modifier key used for paste (Ctrl+V on Windows/Linux, Cmd+V on macOS).
+#[cfg(target_os = "macos")]
+const PASTE_MODIFIER: Key = Key::Meta;
+#[cfg(not(target_os = "macos"))]
+const PASTE_MODIFIER: Key = Key::Control;
+
+/// The modifier key used for delete-word (Ctrl+Backspace on Windows/Linux,
+/// Option+Backspace on macOS).
+#[cfg(target_os = "macos")]
+const DELETE_WORD_MODIFIER: Key = Key::Alt;
+#[cfg(not(target_os = "macos"))]
+const DELETE_WORD_MODIFIER: Key = Key::Control;
+
 use crate::error::{AppError, AppResult};
 use crate::output::types::{OutputConfig, OutputMode};
 use crate::postprocess::voice_commands::{OutputSegment, VoiceCommand, segments_to_string};
@@ -119,13 +132,13 @@ impl OutputRouter {
                 }
                 OutputSegment::Command(VoiceCommand::DeleteLastWord) => {
                     enigo
-                        .key(Key::Control, Direction::Press)
+                        .key(DELETE_WORD_MODIFIER, Direction::Press)
                         .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
                     enigo
                         .key(Key::Backspace, Direction::Click)
                         .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
                     enigo
-                        .key(Key::Control, Direction::Release)
+                        .key(DELETE_WORD_MODIFIER, Direction::Release)
                         .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
                 }
             }
@@ -185,13 +198,13 @@ impl OutputRouter {
 
     fn paste_keystroke(enigo: &mut Enigo) -> AppResult<()> {
         enigo
-            .key(Key::Control, Direction::Press)
+            .key(PASTE_MODIFIER, Direction::Press)
             .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
         enigo
             .key(Key::Unicode('v'), Direction::Click)
             .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
         enigo
-            .key(Key::Control, Direction::Release)
+            .key(PASTE_MODIFIER, Direction::Release)
             .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
         Ok(())
     }

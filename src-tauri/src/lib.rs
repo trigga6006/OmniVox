@@ -38,7 +38,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Create the floating overlay pill window — transparent, borderless,
-/// always-on-top, positioned just above the Windows taskbar at screen center.
+/// always-on-top, positioned just above the taskbar/dock at screen center.
 fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::WebviewWindowBuilder;
 
@@ -347,7 +347,7 @@ pub fn run() {
             });
 
             // Create the floating overlay pill — always-on-top, transparent,
-            // positioned just above the Windows taskbar.
+            // positioned just above the taskbar/dock.
             setup_overlay_window(app)?;
 
             // Install the hotkey via a low-level keyboard hook.

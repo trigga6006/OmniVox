@@ -32,7 +32,34 @@ fn cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
     })
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Find which monitor currently contains the mouse cursor on macOS.
+/// Uses CoreGraphics CGEvent API to get the cursor position.
+#[cfg(target_os = "macos")]
+fn cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    use core_graphics::event::CGEvent;
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+    let event = CGEvent::new(source).ok()?;
+    let cursor_pos = event.location();
+
+    // CoreGraphics uses a coordinate system where Y=0 is at the top of the
+    // primary display. Tauri monitor positions use the same convention.
+    let cx = cursor_pos.x as i32;
+    let cy = cursor_pos.y as i32;
+
+    let monitors = app.available_monitors().ok()?;
+    monitors.into_iter().find(|mon| {
+        let pos = mon.position();
+        let size = mon.size();
+        cx >= pos.x
+            && cx < pos.x + size.width as i32
+            && cy >= pos.y
+            && cy < pos.y + size.height as i32
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn cursor_monitor(_app: &tauri::AppHandle) -> Option<tauri::Monitor> {
     None
 }

@@ -27,7 +27,7 @@ fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into
 }
 
 /// Snapshot the currently focused window so we can restore it before pasting.
-/// Returns the HWND as an isize for storage in AppState.
+/// Returns a platform-specific handle (HWND on Windows, pid on macOS).
 #[cfg(target_os = "windows")]
 fn capture_foreground_window() -> Option<isize> {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
@@ -35,7 +35,22 @@ fn capture_foreground_window() -> Option<isize> {
     if hwnd.is_null() { None } else { Some(hwnd as isize) }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn capture_foreground_window() -> Option<isize> {
+    use std::process::Command;
+    // Use osascript to get the frontmost application's PID.
+    // NSWorkspace.shared.frontmostApplication is the Cocoa way, but going
+    // through osascript avoids objc runtime complexity in the hot path.
+    let output = Command::new("osascript")
+        .args(["-e", r#"tell application "System Events" to unix id of first process whose frontmost is true"#])
+        .output()
+        .ok()?;
+
+    let pid_str = String::from_utf8_lossy(&output.stdout);
+    pid_str.trim().parse::<i32>().ok().map(|pid| pid as isize)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn capture_foreground_window() -> Option<isize> {
     None
 }
@@ -76,7 +91,25 @@ fn get_process_name_from_hwnd(hwnd: isize) -> Option<String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn get_process_name_from_hwnd(pid: isize) -> Option<String> {
+    use std::process::Command;
+    // Get the executable name for a given PID via ps.
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        // Extract just the binary name from the path (e.g. "/Applications/Slack.app/Contents/MacOS/Slack" -> "Slack")
+        name.rsplit('/').next().map(|s| s.to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn get_process_name_from_hwnd(_hwnd: isize) -> Option<String> {
     None
 }
@@ -153,7 +186,24 @@ fn deselect_after_focus_restore(hwnd: isize) {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn restore_foreground_window(pid: isize) {
+    use std::process::Command;
+    // Activate the application by PID using osascript.
+    // This is equivalent to NSRunningApplication.activate().
+    let script = format!(
+        r#"tell application "System Events"
+            set targetProcess to first process whose unix id is {}
+            set frontmost of targetProcess to true
+        end tell"#,
+        pid
+    );
+    let _ = Command::new("osascript").args(["-e", &script]).output();
+    // Give the OS time to process the focus switch.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn restore_foreground_window(_hwnd: isize) {}
 
 /// Toggle recording on/off. Called by the frontend start/stop commands.
