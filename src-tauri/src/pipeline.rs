@@ -325,13 +325,16 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     let _ = app_handle.emit("recording-state-change", "recording");
 
-    // Spawn a periodic task that emits audio-level events to the frontend
+    // Spawn a periodic task that emits audio-level events to the frontend.
+    // 150 ms strikes a balance between smooth VU meter animation and CPU usage.
+    // (100 ms was too aggressive for low-end laptops — 10 events/s of React
+    // re-renders + CSS transitions caused pill jank on integrated GPUs.)
     let handle = app_handle.clone();
     let is_rec_clone = is_recording.clone();
     tauri::async_runtime::spawn(async move {
         use std::sync::atomic::Ordering;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             if !is_rec_clone.load(Ordering::Relaxed) {
                 break;
             }
@@ -342,6 +345,11 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     // Spawn live preview task — periodically transcribes the last 5s of audio
     // and emits partial results to the overlay pill.
+    //
+    // IMPORTANT: Only ONE preview inference runs at a time. If a preview takes
+    // longer than the interval, the next one is skipped rather than queued.
+    // This prevents memory accumulation on slower CPUs where Whisper inference
+    // can take 3-5+ seconds per preview window.
     let live_preview = crate::storage::settings::get_settings(&state.db)
         .map(|s| s.live_preview)
         .unwrap_or(false);
@@ -364,6 +372,7 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                 loop {
+                    // Check BEFORE doing any work — exit immediately when recording stops
                     if !is_recording.load(Ordering::Relaxed) {
                         break;
                     }
@@ -384,12 +393,19 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                         continue;
                     }
 
-                    // Run greedy transcription on a blocking thread
+                    // Run greedy transcription on a blocking thread.
+                    // We AWAIT this before looping — guarantees at most 1 concurrent
+                    // preview inference, preventing memory pile-up on slow CPUs.
                     let eng = engine.clone();
+                    let is_rec = is_recording.clone();
                     let mut preview_samples = samples;
                     crate::audio::normalize::normalize_peak(&mut preview_samples);
 
                     let result = tokio::task::spawn_blocking(move || {
+                        // Check cancellation before expensive inference
+                        if !is_rec.load(Ordering::Relaxed) {
+                            return Err(crate::error::AppError::Internal("cancelled".into()));
+                        }
                         eng.transcribe_preview(&preview_samples)
                     })
                     .await;
@@ -405,6 +421,7 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                         }
                     }
 
+                    // Interval between preview attempts — gives the CPU breathing room
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
             });
@@ -439,6 +456,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         let _ = app_handle.emit("recording-state-change", "idle");
         return;
     }
+
+    // 1a. Give the live preview task time to notice is_recording=false and exit.
+    //     The preview checks the flag before and after inference. A short yield
+    //     lets it release its WhisperState (and ~500 MB of decode buffers) before
+    //     the final transcription allocates its own. Critical on 16 GB machines.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // 1b. Conditionally denoise audio with RNNoise before Whisper.
     let mut samples = samples;

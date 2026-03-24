@@ -105,10 +105,13 @@ pub fn load_and_activate_model(
         .model_path(model_id)
         .ok_or_else(|| format!("Model '{}' is not downloaded", model_id))?;
 
+    // Reserve 1–2 cores for the OS, audio capture thread, and UI rendering.
+    // available_parallelism() returns logical cores (including hyperthreads),
+    // so on a 4-core/8-thread laptop this gives 6 threads — enough for Whisper
+    // without starving the system. Clamped to [2, 8] for safety.
     let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(4)
-        .min(8);
+        .map(|n| n.get().saturating_sub(2).max(2).min(8) as u32)
+        .unwrap_or(4);
 
     // Read the GPU acceleration preference from persisted settings.
     let use_gpu = crate::storage::settings::get_settings(&state.db)

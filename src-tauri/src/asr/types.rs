@@ -41,8 +41,9 @@ pub struct AsrConfig {
 
 impl Default for AsrConfig {
     fn default() -> Self {
+        // Reserve 2 logical cores for the OS, audio capture, and UI.
         let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get() as u32)
+            .map(|n| n.get().saturating_sub(2).max(2).min(8) as u32)
             .unwrap_or(4);
         Self {
             model_path: String::new(),
