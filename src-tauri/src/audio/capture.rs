@@ -46,7 +46,22 @@ impl AudioCapture {
     }
 
     /// List all available audio input devices.
+    ///
+    /// Runs on a dedicated thread with a 3-second timeout to avoid hanging
+    /// when USB devices disconnect mid-enumeration.
     pub fn enumerate_devices() -> AppResult<Vec<AudioDevice>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let result = Self::enumerate_devices_inner();
+            let _ = tx.send(result);
+        });
+
+        rx.recv_timeout(std::time::Duration::from_secs(3))
+            .map_err(|_| AppError::Audio("Device enumeration timed out — try unplugging and re-plugging your audio device".into()))?
+    }
+
+    fn enumerate_devices_inner() -> AppResult<Vec<AudioDevice>> {
         let host = cpal::default_host();
         let default_name = host
             .default_input_device()
@@ -223,6 +238,17 @@ impl AudioCapture {
     pub fn duration_secs(&self) -> f32 {
         let len = self.buffer.lock().unwrap().len();
         len as f32 / TARGET_SAMPLE_RATE as f32
+    }
+
+    /// Clone the last `max_samples` from the buffer without stopping capture.
+    ///
+    /// Used by the live preview feature to grab a rolling window of recent
+    /// audio for interim transcription while recording continues.  The lock
+    /// is held only for the clone (~microseconds).
+    pub fn snapshot_tail(&self, max_samples: usize) -> Vec<f32> {
+        let buf = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
+        let start = buf.len().saturating_sub(max_samples);
+        buf[start..].to_vec()
     }
 
     /// Resolve the device to use based on `AudioConfig.device_id`.

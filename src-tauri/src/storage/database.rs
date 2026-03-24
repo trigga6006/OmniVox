@@ -103,7 +103,17 @@ impl Database {
                 CREATE INDEX IF NOT EXISTS idx_notes_updated_at
                     ON notes(updated_at DESC);
 
-                PRAGMA user_version = 2;
+                CREATE TABLE IF NOT EXISTS mode_app_bindings (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    mode_id TEXT NOT NULL REFERENCES context_modes(id) ON DELETE CASCADE,
+                    process_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_mode_app_bindings_mode_id
+                    ON mode_app_bindings(mode_id);
+
+                PRAGMA user_version = 3;
             ",
             )?;
         } // drop conn guard before calling migrate which also needs the lock

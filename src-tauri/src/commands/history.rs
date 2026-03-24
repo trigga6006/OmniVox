@@ -12,18 +12,26 @@ pub async fn get_dictation_stats(
 #[tauri::command]
 pub async fn search_history(
     query: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<Vec<TranscriptionRecord>, String> {
-    crate::storage::history::search_history(&state.db, &query).map_err(|e| e.to_string())
+    let limit = limit.unwrap_or(50);
+    let offset = offset.unwrap_or(0);
+    crate::storage::history::search_history(&state.db, &query, limit, offset)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn recent_history(
     limit: Option<u32>,
+    offset: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<Vec<TranscriptionRecord>, String> {
     let limit = limit.unwrap_or(50);
-    crate::storage::history::recent_history(&state.db, limit).map_err(|e| e.to_string())
+    let offset = offset.unwrap_or(0);
+    crate::storage::history::recent_history(&state.db, limit, offset)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

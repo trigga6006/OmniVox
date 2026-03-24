@@ -65,6 +65,21 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .get("active_context_mode_id")
         .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) });
 
+    let live_preview = map
+        .get("live_preview")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.live_preview);
+
+    let noise_reduction = map
+        .get("noise_reduction")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.noise_reduction);
+
+    let auto_switch_modes = map
+        .get("auto_switch_modes")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.auto_switch_modes);
+
     Ok(AppSettings {
         theme,
         language,
@@ -76,6 +91,9 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         hotkey,
         gpu_acceleration,
         active_context_mode_id,
+        live_preview,
+        noise_reduction,
+        auto_switch_modes,
     })
 }
 
@@ -135,6 +153,18 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params!["gpu_acceleration", settings.gpu_acceleration.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["live_preview", settings.live_preview.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["noise_reduction", settings.noise_reduction.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["auto_switch_modes", settings.auto_switch_modes.to_string()],
     )?;
 
     tx.commit()?;

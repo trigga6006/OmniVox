@@ -65,6 +65,14 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppBinding {
+    pub id: Uuid,
+    pub mode_id: String,
+    pub process_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub theme: String,
     pub language: String,
@@ -78,6 +86,12 @@ pub struct AppSettings {
     pub gpu_acceleration: bool,
     /// Active context mode ID — determines which prompt/dictionary/snippets are used.
     pub active_context_mode_id: Option<String>,
+    /// Show live transcription preview in the floating pill while recording.
+    pub live_preview: bool,
+    /// Pre-process audio with RNNoise to remove background noise before Whisper.
+    pub noise_reduction: bool,
+    /// Automatically switch context mode based on the foreground application.
+    pub auto_switch_modes: bool,
 }
 
 impl Default for AppSettings {
@@ -93,6 +107,9 @@ impl Default for AppSettings {
             hotkey: Some(crate::hotkey::HotkeyConfig::default()),
             gpu_acceleration: false,
             active_context_mode_id: None,
+            live_preview: false,
+            noise_reduction: false,
+            auto_switch_modes: true,
         }
     }
 }

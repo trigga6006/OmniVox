@@ -18,6 +18,7 @@ import {
   PenTool,
   Globe,
   Heart,
+  Scale,
 } from "lucide-react";
 import {
   listContextModes,
@@ -33,9 +34,13 @@ import {
   listModeSnippets,
   addModeSnippet,
   deleteModeSnippet,
+  listAppBindings,
+  addAppBinding,
+  deleteAppBinding,
   type ContextMode,
   type DictionaryEntry,
   type Snippet,
+  type AppBinding,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +57,7 @@ const ICON_OPTIONS = [
   { name: "pen-tool", Icon: PenTool },
   { name: "globe", Icon: Globe },
   { name: "heart", Icon: Heart },
+  { name: "scale", Icon: Scale },
 ] as const;
 
 const COLOR_OPTIONS = [
@@ -299,11 +305,14 @@ function ModeForm({
   const [newReplacement, setNewReplacement] = useState("");
   const [newTrigger, setNewTrigger] = useState("");
   const [newContent, setNewContent] = useState("");
+  const [bindings, setBindings] = useState<AppBinding[]>([]);
+  const [newProcessName, setNewProcessName] = useState("");
 
   useEffect(() => {
     if (!mode) return;
     listModeDictionaryEntries(mode.id).then(setDictEntries).catch(() => {});
     listModeSnippets(mode.id).then(setModeSnippets).catch(() => {});
+    listAppBindings(mode.id).then(setBindings).catch((e) => console.error("Failed to load app bindings:", e));
   }, [mode?.id]);
 
   const handleAddDictEntry = async () => {
@@ -340,11 +349,54 @@ function ModeForm({
     } catch {}
   };
 
+  const handleAddBinding = async () => {
+    if (!mode || !newProcessName.trim()) return;
+    try {
+      const binding = await addAppBinding(mode.id, newProcessName.trim());
+      setBindings((prev) => [...prev, binding]);
+      setNewProcessName("");
+    } catch (e) {
+      console.error("Failed to add app binding:", e);
+    }
+  };
+
+  const handleDeleteBinding = async (id: string) => {
+    try {
+      await deleteAppBinding(id);
+      setBindings((prev) => prev.filter((b) => b.id !== id));
+    } catch (e) {
+      console.error("Failed to delete app binding:", e);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!name.trim()) {
       setError("Name is required");
       return;
     }
+
+    // Flush any pending inputs before saving
+    if (mode && newProcessName.trim()) {
+      try {
+        await addAppBinding(mode.id, newProcessName.trim());
+        setNewProcessName("");
+      } catch {}
+    }
+    if (mode && newPhrase.trim() && newReplacement.trim()) {
+      try {
+        await addModeDictionaryEntry(mode.id, newPhrase.trim(), newReplacement.trim());
+        setNewPhrase("");
+        setNewReplacement("");
+      } catch {}
+    }
+    if (mode && newTrigger.trim() && newContent.trim()) {
+      try {
+        await addModeSnippet(mode.id, newTrigger.trim(), newContent.trim());
+        setNewTrigger("");
+        setNewContent("");
+      } catch {}
+    }
+
     setSaving(true);
     setError(null);
     try {
@@ -598,6 +650,57 @@ function ModeForm({
             </div>
             <p className="text-[11px] text-text-muted mt-1">
               Trigger words that expand into longer text when this mode is active.
+            </p>
+          </div>
+        )}
+
+        {/* App Bindings — auto-switch mode when this app is focused */}
+        {isEdit && (
+          <div>
+            <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+              App Bindings ({bindings.length})
+            </label>
+            <div className="rounded-lg bg-surface-2 border border-border overflow-hidden">
+              {bindings.length > 0 && (
+                <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                  {bindings.map((binding) => (
+                    <div
+                      key={binding.id}
+                      className="flex items-center gap-2 px-3 py-1.5 text-xs group"
+                    >
+                      <span className="text-text-primary truncate flex-1 min-w-0 font-mono">
+                        {binding.process_name}
+                      </span>
+                      <button
+                        onClick={() => handleDeleteBinding(binding.id)}
+                        className="shrink-0 opacity-0 group-hover:opacity-100 text-text-muted hover:text-recording-400 transition-opacity"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
+                <input
+                  value={newProcessName}
+                  onChange={(e) => setNewProcessName(e.target.value)}
+                  placeholder="e.g. Code.exe, chrome.exe"
+                  className="flex-1 min-w-0 bg-transparent text-xs text-text-primary font-mono placeholder:text-text-muted focus:outline-none"
+                  onKeyDown={(e) => e.key === "Enter" && handleAddBinding()}
+                />
+                <button
+                  onClick={handleAddBinding}
+                  disabled={!newProcessName.trim()}
+                  className="shrink-0 text-amber-400 disabled:text-text-muted disabled:opacity-30"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+            </div>
+            <p className="text-[11px] text-text-muted mt-1">
+              When recording starts with this app focused, OmniVox auto-switches
+              to this mode. Enable auto-switch in Settings.
             </p>
           </div>
         )}

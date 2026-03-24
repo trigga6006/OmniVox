@@ -6,3 +6,4 @@ pub mod snippets;
 pub mod settings;
 pub mod notes;
 pub mod context_modes;
+pub mod app_bindings;

@@ -8,7 +8,7 @@
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
-    "features": ["llm", "vulkan"]
+    "features": ["vulkan"]
   },
   "app": {
     "withGlobalTauri": false,

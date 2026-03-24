@@ -1,6 +1,8 @@
 node_modules/
 dist/
 target/
+# Cargo build artifact from Windows target-dir config interpreted on Linux
+src-tauri/C*/
 .env
 *.log
 

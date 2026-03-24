@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Download, Check, Cpu, Loader2 } from "lucide-react";
-import { listModels, getHardwareInfo, downloadModel, setActiveModel, getActiveModel } from "@/lib/tauri";
+import { listModels, getHardwareInfo, downloadModel, setActiveModel, getActiveModel, onModelLoaded } from "@/lib/tauri";
 import { formatBytes, cn } from "@/lib/utils";
 import type { ModelInfo, HardwareInfo } from "@/lib/tauri";
 
@@ -25,6 +25,8 @@ export function ModelsPage() {
 
   useEffect(() => {
     refresh();
+    const unlisten = onModelLoaded(() => refresh());
+    return () => { unlisten.then((fn) => fn()); };
   }, [refresh]);
 
   const handleDownload = async (modelId: string) => {
@@ -61,8 +63,8 @@ export function ModelsPage() {
         </p>
       </div>
 
-      {/* Model grid */}
-      <div className="mt-6 grid gap-4 grid-cols-1 lg:grid-cols-2">
+      {/* Model list */}
+      <div className="mt-6 flex flex-col gap-2">
         {models.map((model, i) => {
           const isDownloading = downloadingId === model.id;
           const isActive = activeModelId === model.id;
@@ -71,65 +73,68 @@ export function ModelsPage() {
             <div
               key={model.id}
               className={cn(
-                "bg-surface-1 rounded-xl border border-border p-5 transition-colors hover:border-border-hover opacity-0 animate-slide-up",
-                model.recommended && "border-l-[3px] border-l-amber-600"
+                "bg-surface-1 rounded-xl border border-border px-5 py-3.5 transition-colors hover:border-border-hover opacity-0 animate-slide-up flex items-center gap-4",
+                isActive && "border-l-[3px] border-l-success/60",
+                model.recommended && !isActive && "border-l-[3px] border-l-amber-600"
               )}
               style={{
-                animationDelay: `${0.1 + i * 0.08}s`,
+                animationDelay: `${0.08 + i * 0.04}s`,
                 animationFillMode: "forwards",
               }}
             >
-              {/* Name row: name + badges */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-medium text-text-primary">
-                  {model.name}
-                </span>
-
-                {model.bundled && (
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
-                    Included
+              {/* Left: name + badges */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-text-primary text-sm">
+                    {model.name}
                   </span>
-                )}
 
-                {model.recommended && (
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                    Recommended
-                  </span>
-                )}
+                  {model.bundled && (
+                    <span className="text-[9px] font-medium uppercase tracking-wider text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
+                      Included
+                    </span>
+                  )}
 
-                {isActive && (
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-success bg-success/10 px-1.5 py-0.5 rounded">
-                    Active
-                  </span>
-                )}
+                  {model.recommended && (
+                    <span className="text-[9px] font-medium uppercase tracking-wider text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                      Recommended
+                    </span>
+                  )}
+
+                  {isActive && (
+                    <span className="text-[9px] font-medium uppercase tracking-wider text-success bg-success/10 px-1.5 py-0.5 rounded">
+                      Active
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-xs text-text-muted mt-0.5 leading-relaxed line-clamp-1">
+                  {model.description}
+                </p>
               </div>
 
-              {/* Size */}
-              <p className="font-mono text-xs text-text-muted mt-1">
-                {formatBytes(model.size_bytes)}
-              </p>
-
-              {/* Description */}
-              <p className="text-sm text-text-secondary mt-3 leading-relaxed">
-                {model.description}
-              </p>
-
-              {/* Footer: quantization + action button */}
-              <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
-                <span className="bg-surface-3 text-text-muted text-xs px-2 py-0.5 rounded-full">
+              {/* Center: size + quant */}
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="font-mono text-xs text-text-muted w-[70px] text-right">
+                  {formatBytes(model.size_bytes)}
+                </span>
+                <span className="bg-surface-3 text-text-muted text-[10px] px-1.5 py-0.5 rounded-full w-[38px] text-center">
                   {model.quantization}
                 </span>
+              </div>
 
+              {/* Right: action button */}
+              <div className="shrink-0 w-[100px] flex justify-end">
                 {model.is_downloaded ? (
                   isActive ? (
-                    <span className="inline-flex items-center gap-1.5 text-success text-sm font-medium">
-                      <Check size={14} strokeWidth={2} />
+                    <span className="inline-flex items-center gap-1.5 text-success text-xs font-medium">
+                      <Check size={13} strokeWidth={2} />
                       In use
                     </span>
                   ) : (
                     <button
                       onClick={() => handleActivate(model.id)}
-                      className="inline-flex items-center gap-1.5 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                      className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-lg px-3 py-1 text-xs font-medium transition-colors"
                     >
                       Activate
                     </button>
@@ -139,7 +144,7 @@ export function ModelsPage() {
                     onClick={() => handleDownload(model.id)}
                     disabled={isDownloading}
                     className={cn(
-                      "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                      "inline-flex items-center gap-1 rounded-lg px-3 py-1 text-xs font-medium transition-colors",
                       isDownloading
                         ? "bg-surface-3 text-text-muted cursor-not-allowed"
                         : "bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
@@ -147,12 +152,12 @@ export function ModelsPage() {
                   >
                     {isDownloading ? (
                       <>
-                        <Loader2 size={14} className="animate-spin" />
-                        Downloading…
+                        <Loader2 size={12} className="animate-spin" />
+                        Downloading
                       </>
                     ) : (
                       <>
-                        <Download size={14} strokeWidth={2} />
+                        <Download size={12} strokeWidth={2} />
                         Download
                       </>
                     )}
@@ -167,17 +172,17 @@ export function ModelsPage() {
       {/* Hardware info */}
       {hardware && (
         <div
-          className="mt-6 bg-surface-1 rounded-xl border border-border p-5 opacity-0 animate-slide-up"
-          style={{ animationDelay: "0.45s", animationFillMode: "forwards" }}
+          className="mt-5 bg-surface-1 rounded-xl border border-border p-4 opacity-0 animate-slide-up"
+          style={{ animationDelay: "0.55s", animationFillMode: "forwards" }}
         >
-          <div className="flex items-center gap-2 mb-3">
-            <Cpu size={16} strokeWidth={1.75} className="text-text-muted" />
+          <div className="flex items-center gap-2 mb-2">
+            <Cpu size={14} strokeWidth={1.75} className="text-text-muted" />
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
               Hardware
             </span>
           </div>
 
-          <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+          <div className="flex flex-wrap gap-x-8 gap-y-1 text-sm">
             <div>
               <span className="text-text-muted">CPU threads: </span>
               <span className="font-mono text-text-secondary">
@@ -185,7 +190,7 @@ export function ModelsPage() {
               </span>
             </div>
             <div>
-              <span className="text-text-muted">Recommended model: </span>
+              <span className="text-text-muted">Recommended: </span>
               <span className="text-amber-400 font-medium">
                 {models.find((m) => m.id === hardware.recommended_model)?.name ??
                   hardware.recommended_model}

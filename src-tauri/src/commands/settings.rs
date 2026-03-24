@@ -1,4 +1,4 @@
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use crate::hotkey::HotkeyConfig;
 use crate::output::types::OutputMode;
 use crate::state::AppState;
@@ -86,6 +86,7 @@ pub async fn get_settings(
 
 #[tauri::command]
 pub async fn update_settings(
+    app: tauri::AppHandle,
     settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -109,6 +110,9 @@ pub async fn update_settings(
         crate::hotkey::update_hotkey_keys(key1, key2);
     }
 
+    // Broadcast to all windows so the overlay and main window stay in sync
+    let _ = app.emit("settings-changed", &settings);
+
     Ok(())
 }
 
@@ -117,6 +121,17 @@ pub async fn update_settings(
 #[tauri::command]
 pub async fn suspend_hotkey(suspended: bool) -> Result<(), String> {
     crate::hotkey::set_suspended(suspended);
+    Ok(())
+}
+
+/// Show and focus the main application window (used by the overlay pill).
+#[tauri::command]
+pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }
 

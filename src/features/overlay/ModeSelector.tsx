@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
-import { Check, Mic, Code, Mail, FileText, Terminal, Globe } from "lucide-react";
+import { Check, Mic, Code, Mail, FileText, Terminal, Globe, Settings, Briefcase, Heart, Scale } from "lucide-react";
 import type { ContextMode } from "@/lib/tauri";
+import { showMainWindow } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 const ICON_MAP: Record<string, typeof Mic> = {
@@ -10,6 +11,9 @@ const ICON_MAP: Record<string, typeof Mic> = {
   "file-text": FileText,
   terminal: Terminal,
   globe: Globe,
+  briefcase: Briefcase,
+  heart: Heart,
+  scale: Scale,
 };
 
 const COLOR_MAP: Record<string, string> = {
@@ -52,6 +56,13 @@ export function ModeSelector({
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  // Close when overlay window loses focus (click on desktop / another window)
+  useEffect(() => {
+    const handler = () => onClose();
+    window.addEventListener("blur", handler);
+    return () => window.removeEventListener("blur", handler);
   }, [onClose]);
 
   return (
@@ -97,6 +108,22 @@ export function ModeSelector({
             </button>
           );
         })}
+      </div>
+
+      {/* Open main window button */}
+      <div className="px-1 pb-1 pt-0.5 border-t border-white/[0.06]">
+        <button
+          onClick={() => {
+            showMainWindow().catch(() => {});
+            onClose();
+          }}
+          className="flex items-center gap-2 w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
+        >
+          <Settings size={11} className="text-white/30" />
+          <span className="text-[10px] font-medium text-white/40">
+            Open OmniVox
+          </span>
+        </button>
       </div>
 
       <style>{`

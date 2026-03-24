@@ -24,6 +24,8 @@ pub async fn download_model(
         .download(&model_id, &app_handle)
         .await
         .map_err(|e| e.to_string())?;
+    // Invalidate cache so the next list_models call picks up the new file
+    state.model_manager.invalidate_cache();
     Ok(())
 }
 
@@ -113,19 +115,31 @@ pub fn load_and_activate_model(
         .map(|s| s.gpu_acceleration)
         .unwrap_or(false);
 
-    // Build an initial prompt from dictionary entries to bias Whisper toward
-    // recognizing domain-specific vocabulary on the first pass.  We collect
-    // the "replacement" values (the correct forms) from both global and
-    // active-mode dictionaries.
-    let initial_prompt = build_whisper_vocab_prompt(state);
+    // English-only models (.en suffix) force English; multilingual models
+    // use auto-detection so users can dictate in any language.
+    let is_multilingual = model_id == "whisper-medium"
+        || model_id == "whisper-large-v3-turbo-multi"
+        || model_id == "whisper-distil-large-v3"
+        || model_id == "whisper-large"
+        || (!model_id.contains("-en") && !model_id.ends_with("-q5"));
+    let language = if is_multilingual { None } else { Some("en".into()) };
+
+    // Build an initial prompt to bias Whisper's decoder.
+    // English models get a rich English vocabulary prompt.
+    // Multilingual models get only user dictionary terms (no English bias)
+    // so the language detector works unbiased.
+    let initial_prompt = build_whisper_vocab_prompt(state, is_multilingual);
 
     let config = AsrConfig {
         model_path: model_path.to_string_lossy().into_owned(),
-        language: Some("en".into()),
+        language,
         translate: false,
         n_threads,
         use_gpu,
         initial_prompt,
+        beam_size: None,       // default: 5 (beam search)
+        temperature: None,     // default: 0.0 (deterministic)
+        temperature_inc: None, // default: 0.2 (fallback on low confidence)
     };
 
     // Load on a thread with a larger stack — whisper.cpp + GGML backends
@@ -146,19 +160,62 @@ pub fn load_and_activate_model(
     *state.engine.lock().unwrap() = Some(Arc::new(engine));
     *state.active_model_id.lock().unwrap() = Some(model_id.to_string());
 
+    // Persist the active model choice so it survives restarts
+    if let Ok(mut settings) = crate::storage::settings::get_settings(&state.db) {
+        settings.active_model_id = Some(model_id.to_string());
+        let _ = crate::storage::settings::update_settings(&state.db, &settings);
+    }
+
     Ok(())
 }
 
-/// Build a Whisper initial prompt from dictionary replacement values.
+/// English vocabulary prompt — biases the decoder toward correct recognition
+/// of common English technical terms, abbreviations, and proper nouns.
+/// These are terms Whisper frequently mishears without prompting.
+const ENGLISH_VOCAB: &str = "\
+AI, API, URL, HTTP, HTTPS, JSON, CSS, HTML, XML, YAML, TOML, \
+JavaScript, TypeScript, Python, Rust, Go, Ruby, Java, C++, C#, Swift, Kotlin, PHP, \
+GitHub, GitLab, VS Code, ChatGPT, GPT, LLM, OpenAI, Anthropic, Claude, \
+CLI, SQL, NoSQL, REST, GraphQL, OAuth, JWT, SSH, TLS, SSL, DNS, TCP, UDP, \
+UI, UX, RAM, CPU, GPU, SSD, NVMe, USB, HDMI, WiFi, Bluetooth, \
+PDF, PNG, JPEG, SVG, GIF, MP3, MP4, WebM, \
+AWS, Azure, GCP, Docker, Kubernetes, Linux, Ubuntu, macOS, Windows, \
+npm, pip, cargo, brew, apt, git, curl, wget, \
+React, Vue, Angular, Next.js, Node.js, Express, Django, Flask, FastAPI, \
+MongoDB, PostgreSQL, MySQL, Redis, SQLite, Elasticsearch, \
+Terraform, Ansible, Jenkins, CircleCI, Webpack, Vite, ESLint, Prettier, \
+OmniVox, Whisper, GGML, Vulkan, CUDA";
+
+/// Multilingual vocabulary prompt — language-neutral terms only.
+/// Uses universal abbreviations and brand names that are the same across
+/// all languages.  Deliberately avoids English-specific words so the
+/// language detector runs unbiased.
+const MULTILINGUAL_VOCAB: &str = "\
+AI, API, URL, HTTP, HTTPS, JSON, CSS, HTML, XML, PDF, USB, WiFi, Bluetooth, \
+GPU, CPU, RAM, SSD, DNS, SSH, SSL, TLS, \
+GitHub, ChatGPT, GPT, OpenAI, Google, Microsoft, Apple, Amazon, \
+Docker, Linux, Windows, macOS, Android, iOS, \
+OmniVox, Whisper";
+
+/// Build a Whisper initial prompt from static vocabulary + dictionary entries.
 ///
-/// Collects all enabled dictionary entries (global + active context mode)
-/// and joins their replacement forms into a comma-separated string.
-/// This biases Whisper toward recognizing domain-specific terms on the
-/// first transcription pass, reducing reliance on post-processing fixes.
-fn build_whisper_vocab_prompt(state: &AppState) -> Option<String> {
+/// - English models get the full English vocab to bias toward correct
+///   recognition of technical terms and proper nouns.
+/// - Multilingual models get only universal abbreviations + user dictionary
+///   terms, so the language detector works unbiased for non-English speech.
+fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option<String> {
     let mut terms: Vec<String> = Vec::new();
 
-    // Global dictionary entries
+    // Start with the appropriate static vocabulary
+    let vocab = if is_multilingual { MULTILINGUAL_VOCAB } else { ENGLISH_VOCAB };
+    for term in vocab.split(", ") {
+        let trimmed = term.trim();
+        if !trimmed.is_empty() {
+            terms.push(trimmed.to_string());
+        }
+    }
+
+    // Global dictionary entries (user-defined, applies to all languages)
     if let Ok(entries) = crate::storage::dictionary::list_entries(&state.db) {
         for entry in &entries {
             if entry.is_enabled && !entry.replacement.is_empty() {

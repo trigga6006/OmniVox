@@ -78,8 +78,17 @@ export interface AppSettings {
   sample_rate: number;
   active_model_id: string | null;
   hotkey: HotkeyConfig | null;
-  ai_cleanup_enabled: boolean;
   gpu_acceleration: boolean;
+  live_preview: boolean;
+  noise_reduction: boolean;
+  auto_switch_modes: boolean;
+}
+
+export interface AppBinding {
+  id: string;
+  mode_id: string;
+  process_name: string;
+  created_at: string;
 }
 
 // Audio commands
@@ -126,10 +135,17 @@ export interface DictationStats {
 }
 export const getDictationStats = () =>
   invoke<DictationStats>("get_dictation_stats");
-export const searchHistory = (query: string) =>
-  invoke<TranscriptionRecord[]>("search_history", { query });
-export const recentHistory = (limit?: number) =>
-  invoke<TranscriptionRecord[]>("recent_history", { limit: limit ?? null });
+export const searchHistory = (query: string, limit?: number, offset?: number) =>
+  invoke<TranscriptionRecord[]>("search_history", {
+    query,
+    limit: limit ?? null,
+    offset: offset ?? null,
+  });
+export const recentHistory = (limit?: number, offset?: number) =>
+  invoke<TranscriptionRecord[]>("recent_history", {
+    limit: limit ?? null,
+    offset: offset ?? null,
+  });
 export const deleteHistoryRecord = (id: string) =>
   invoke<void>("delete_history_record", { id });
 export const exportHistory = (format: string) =>
@@ -156,18 +172,6 @@ export const listNotes = () => invoke<Note[]>("list_notes");
 export const getSettings = () => invoke<AppSettings>("get_settings");
 export const updateSettings = (settings: AppSettings) =>
   invoke<void>("update_settings", { settings });
-
-// AI Cleanup commands
-export interface AiCleanupStatus {
-  enabled: boolean;
-  model_downloaded: boolean;
-  model_loaded: boolean;
-}
-export const getAiCleanupStatus = () =>
-  invoke<AiCleanupStatus>("get_ai_cleanup_status");
-export const enableAiCleanup = () => invoke<void>("enable_ai_cleanup");
-export const disableAiCleanup = () => invoke<void>("disable_ai_cleanup");
-export const downloadLlmModel = () => invoke<void>("download_llm_model");
 
 // Hotkey commands
 export const suspendHotkey = (suspended: boolean) =>
@@ -243,9 +247,18 @@ export const getActiveContextMode = () =>
 export const setActiveContextMode = (id: string) =>
   invoke<void>("set_active_context_mode", { id });
 
+// App binding commands
+export const listAppBindings = (modeId: string) =>
+  invoke<AppBinding[]>("list_app_bindings", { modeId });
+export const addAppBinding = (modeId: string, processName: string) =>
+  invoke<AppBinding>("add_app_binding", { modeId, processName });
+export const deleteAppBinding = (id: string) =>
+  invoke<void>("delete_app_binding", { id });
+
 // Overlay commands
 export const resizeOverlay = (width: number, height: number) =>
   invoke<void>("resize_overlay", { width, height });
+export const showMainWindow = () => invoke<void>("show_main_window");
 
 // Event listeners
 export const onRecordingStateChange = (
@@ -266,7 +279,32 @@ export const onTranscriptionResult = (
 ): Promise<UnlistenFn> =>
   listen<string>("transcription-result", (e) => callback(e.payload));
 
+export const onModelLoaded = (
+  callback: (modelId: string) => void
+): Promise<UnlistenFn> => listen<string>("model-loaded", (e) => callback(e.payload));
+
+export interface RecordingError {
+  state: string;
+  code: string;
+  message: string;
+}
+
+export const onRecordingError = (
+  callback: (error: RecordingError) => void
+): Promise<UnlistenFn> =>
+  listen<RecordingError>("recording-error", (e) => callback(e.payload));
+
 export const onContextModeChanged = (
   callback: (mode: { id: string; name: string; icon: string; color: string }) => void
 ): Promise<UnlistenFn> =>
   listen("context-mode-changed", (e) => callback(e.payload as { id: string; name: string; icon: string; color: string }));
+
+export const onTranscriptionPreview = (
+  callback: (text: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("transcription-preview", (e) => callback(e.payload));
+
+export const onSettingsChanged = (
+  callback: (settings: AppSettings) => void
+): Promise<UnlistenFn> =>
+  listen<AppSettings>("settings-changed", (e) => callback(e.payload));

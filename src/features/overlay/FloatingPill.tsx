@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Eye, ShieldCheck, Layers } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
 import {
@@ -10,6 +10,10 @@ import {
   getActiveContextMode,
   setActiveContextMode,
   onContextModeChanged,
+  onTranscriptionPreview,
+  onSettingsChanged,
+  getSettings,
+  updateSettings,
   type ContextMode,
 } from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
@@ -45,6 +49,12 @@ export function FloatingPill() {
   const [flashText, setFlashText] = useState<string | null>(null);
   const prevExpandedRef = useRef(false);
   const [showContent, setShowContent] = useState(false);
+
+  // Live preview state
+  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [livePreviewEnabled, setLivePreviewEnabled] = useState(false);
+  const [noiseReduction, setNoiseReduction] = useState(true);
+  const [autoSwitchModes, setAutoSwitchModes] = useState(true);
 
   // Mode selector state
   const [showModeSelector, setShowModeSelector] = useState(false);
@@ -133,16 +143,85 @@ export function FloatingPill() {
     };
   }, []);
 
+  // Load settings, listen for changes from other windows, and preview events
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        setLivePreviewEnabled(s.live_preview);
+        setNoiseReduction(s.noise_reduction);
+        setAutoSwitchModes(s.auto_switch_modes);
+      })
+      .catch(() => {});
+
+    const unlistenPreview = onTranscriptionPreview((text) => {
+      const trimmed = text.length > 30 ? "…" + text.slice(-29) : text;
+      setPreviewText(trimmed);
+    });
+
+    // Stay in sync when settings change from the main window (or any window)
+    const unlistenSettings = onSettingsChanged((s) => {
+      setLivePreviewEnabled(s.live_preview);
+      setNoiseReduction(s.noise_reduction);
+      setAutoSwitchModes(s.auto_switch_modes);
+    });
+
+    return () => {
+      unlistenPreview.then((fn) => fn());
+      unlistenSettings.then((fn) => fn());
+    };
+  }, []);
+
+  // Clear preview text when not recording
+  useEffect(() => {
+    if (status !== "recording") {
+      setPreviewText(null);
+    }
+  }, [status]);
+
   // Manage overlay size when mode selector opens/closes
   useEffect(() => {
     if (showModeSelector) {
-      // Expand window upward to fit the selector + pill
-      const selectorH = Math.min(modes.length * 34 + 40, 200);
-      resizeOverlay(200, ACTIVE_H + selectorH + 4);
+      // Expand window to fit selector + pill + side toggle buttons
+      // Menu w-48 (192px) centered + 6px gap + 26px buttons + padding = ~260px
+      const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
+      resizeOverlay(260, ACTIVE_H + selectorH + 4);
     } else if (pillState === "idle") {
       resizeOverlay(IDLE_W, IDLE_H);
     }
   }, [showModeSelector, modes.length]);
+
+  const handleToggleAutoSwitch = useCallback(async () => {
+    const next = !autoSwitchModes;
+    setAutoSwitchModes(next);
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, auto_switch_modes: next });
+    } catch {
+      setAutoSwitchModes(!next);
+    }
+  }, [autoSwitchModes]);
+
+  const handleToggleLivePreview = useCallback(async () => {
+    const next = !livePreviewEnabled;
+    setLivePreviewEnabled(next); // optimistic
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, live_preview: next });
+    } catch {
+      setLivePreviewEnabled(!next); // revert on failure
+    }
+  }, [livePreviewEnabled]);
+
+  const handleToggleNoiseReduction = useCallback(async () => {
+    const next = !noiseReduction;
+    setNoiseReduction(next); // optimistic
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, noise_reduction: next });
+    } catch {
+      setNoiseReduction(!next); // revert on failure
+    }
+  }, [noiseReduction]);
 
   const handleClick = useCallback(async () => {
     if (showModeSelector) return; // Don't start recording while selector is open
@@ -185,14 +264,78 @@ export function FloatingPill() {
 
   return (
     <div className="w-screen h-screen flex flex-col justify-end items-center">
-      {/* Mode selector dropdown — in-flow above the pill */}
+      {/* Mode selector dropdown — centered above the pill */}
       {showModeSelector && modes.length > 0 && (
-        <ModeSelector
-          modes={modes}
-          activeId={activeModId}
-          onSelect={handleModeSelect}
-          onClose={() => setShowModeSelector(false)}
-        />
+        <div className="relative shrink-0 flex justify-center w-full">
+          <ModeSelector
+            modes={modes}
+            activeId={activeModId}
+            onSelect={handleModeSelect}
+            onClose={() => setShowModeSelector(false)}
+          />
+          {/* Quick-toggle circles — frosted glass, lower-right of menu */}
+          {/* Uses mousedown for toggle action since the overlay is transparent
+              and click events can be swallowed at window edges in WebView2 */}
+          <div
+            className="absolute flex flex-col gap-1.5"
+            style={{
+              left: "calc(50% + 96px + 6px)",
+              bottom: "46px",
+            }}
+          >
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleToggleAutoSwitch();
+              }}
+              title={autoSwitchModes ? "Auto context switch: on" : "Auto context switch: off"}
+              className={cn(
+                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
+                "backdrop-blur-md border transition-all duration-150",
+                autoSwitchModes
+                  ? "bg-white/[0.14] border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.06)]"
+                  : "bg-white/[0.06] border-white/10 opacity-50 hover:opacity-80"
+              )}
+            >
+              <Layers size={12} strokeWidth={2} className={autoSwitchModes ? "text-white/80" : "text-white/40"} />
+            </button>
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleToggleLivePreview();
+              }}
+              title={livePreviewEnabled ? "Live preview: on" : "Live preview: off"}
+              className={cn(
+                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
+                "backdrop-blur-md border transition-all duration-150",
+                livePreviewEnabled
+                  ? "bg-white/[0.14] border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.06)]"
+                  : "bg-white/[0.06] border-white/10 opacity-50 hover:opacity-80"
+              )}
+            >
+              <Eye size={12} strokeWidth={2} className={livePreviewEnabled ? "text-white/80" : "text-white/40"} />
+            </button>
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleToggleNoiseReduction();
+              }}
+              title={noiseReduction ? "Noise suppression: on" : "Noise suppression: off"}
+              className={cn(
+                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
+                "backdrop-blur-md border transition-all duration-150",
+                noiseReduction
+                  ? "bg-white/[0.14] border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.06)]"
+                  : "bg-white/[0.06] border-white/10 opacity-50 hover:opacity-80"
+              )}
+            >
+              <ShieldCheck size={12} strokeWidth={2} className={noiseReduction ? "text-white/80" : "text-white/40"} />
+            </button>
+          </div>
+        </div>
       )}
 
     <button
@@ -277,9 +420,17 @@ export function FloatingPill() {
             )}
           </div>
 
-          {/* Center: waveform / status text */}
+          {/* Center: waveform / preview text / status text */}
           <div className="flex-1 flex items-center justify-center overflow-hidden">
-            {isRecording && <PillWaveform active color={modeColor} />}
+            {isRecording && previewText && (
+              <span
+                className="text-[10px] truncate font-normal tracking-tight"
+                style={{ color: modeColor, opacity: 0.7 }}
+              >
+                {previewText}
+              </span>
+            )}
+            {isRecording && !previewText && <PillWaveform active color={modeColor} />}
             {isProcessing && (
               <span className="text-[10px] font-medium text-amber-400/60 tracking-wide truncate">
                 Transcribing…

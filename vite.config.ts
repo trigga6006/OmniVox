@@ -12,6 +12,24 @@ export default defineConfig(async () => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  // Multi-page build: main app + lightweight overlay
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        overlay: path.resolve(__dirname, "overlay.html"),
+      },
+      output: {
+        // Separate vendor chunk so React/Zustand are shared if both
+        // pages happen to load in the same process, and to keep
+        // page-specific code in its own chunk.
+        manualChunks: {
+          "vendor-react": ["react", "react-dom"],
+          "vendor-zustand": ["zustand"],
+        },
+      },
+    },
+  },
   clearScreen: false,
   server: {
     port: 1420,

@@ -9,25 +9,30 @@ import {
 } from "@/lib/tauri";
 import { formatDuration } from "@/lib/utils";
 
+const PAGE_SIZE = 50;
+
 export function HistoryPage() {
   const [records, setRecords] = useState<TranscriptionRecord[]>([]);
   const [query, setQuery] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(true);
   const mountedRef = useRef(true);
 
   const load = useCallback(
-    (searchQuery?: string) => {
+    (searchQuery?: string, append = false) => {
       setLoading(true);
       const q = searchQuery ?? query;
+      const offset = append ? records.length : 0;
       const request = q.trim()
-        ? searchHistory(q.trim())
-        : recentHistory(100);
+        ? searchHistory(q.trim(), PAGE_SIZE, offset)
+        : recentHistory(PAGE_SIZE, offset);
 
       request
         .then((data) => {
           if (mountedRef.current) {
-            setRecords(data);
+            setRecords((prev) => (append ? [...prev, ...data] : data));
+            setHasMore(data.length >= PAGE_SIZE);
           }
         })
         .catch((e) => {
@@ -39,7 +44,7 @@ export function HistoryPage() {
           }
         });
     },
-    [query]
+    [query, records.length]
   );
 
   // Load on mount
@@ -51,10 +56,11 @@ export function HistoryPage() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reload when search query changes (debounced)
+  // Reload when search query changes (debounced) — reset pagination
   useEffect(() => {
     if (!mountedRef.current) return;
-    const timer = setTimeout(() => load(query), query ? 250 : 0);
+    setHasMore(true);
+    const timer = setTimeout(() => load(query, false), query ? 250 : 0);
     return () => clearTimeout(timer);
   }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -185,6 +191,15 @@ export function HistoryPage() {
               </div>
             </div>
           ))}
+          {hasMore && records.length > 0 && (
+            <button
+              onClick={() => load(undefined, true)}
+              disabled={loading}
+              className="py-2 text-xs text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+            >
+              {loading ? "Loading..." : "Load more"}
+            </button>
+          )}
         </div>
       )}
     </div>
