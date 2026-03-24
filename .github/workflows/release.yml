@@ -42,18 +42,6 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
 
-      - name: Build LLM sidecar
-        shell: bash
-        run: |
-          cd src-tauri/llm-sidecar
-          cargo build --release
-          # Copy sidecar exe + DLLs next to where Tauri will package them
-          cp /c/b/release/omnivox-llm.exe ../resources/
-          cp /c/b/release/llama.dll ../resources/
-          cp /c/b/release/ggml.dll ../resources/
-          cp /c/b/release/ggml-base.dll ../resources/
-          cp /c/b/release/ggml-cpu.dll ../resources/
-
       - name: Build Tauri app
         shell: bash
         run: cargo tauri build --features vulkan
