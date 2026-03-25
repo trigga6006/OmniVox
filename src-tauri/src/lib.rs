@@ -332,6 +332,11 @@ pub fn run() {
 
                 *state.active_context_mode_id.lock().unwrap() = Some(active_id.clone());
 
+                // Seed programming symbol dictionary entries on first run
+                if let Err(e) = crate::storage::symbols::seed_programming_symbols(&state.db) {
+                    eprintln!("Failed to seed programming symbols: {e}");
+                }
+
                 // Load global + mode-scoped dictionary/snippets into processor
                 commands::dictionary::sync_processor(&state);
             }
