@@ -170,6 +170,7 @@ fn apply_persisted_settings(state: &state::AppState) {
         };
         if let Ok(mut cfg) = state.output_config.lock() {
             cfg.mode = mode;
+            cfg.ship_mode = settings.ship_mode;
         }
 
         // Load hotkey config into the hook (before hook thread starts).

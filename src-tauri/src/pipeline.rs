@@ -574,7 +574,13 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
     // 6b. Ship Mode — automatically press Enter to send the message.
     //     Only fires when type simulation was used (clipboard-only can't auto-send).
+    //     When Command Send is enabled it overrides Ship Mode — the user controls
+    //     sending by saying "send" at the end, so we skip the automatic Enter.
+    let command_send_active = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.voice_commands && s.command_send)
+        .unwrap_or(false);
     if output_config.ship_mode
+        && !command_send_active
         && matches!(
             output_config.mode,
             crate::output::types::OutputMode::TypeSimulation
