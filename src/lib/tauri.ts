@@ -87,6 +87,11 @@ export interface AppSettings {
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
+  cleanup_enabled: boolean;
+  cleanup_model_id: string;
+  cleanup_mode: string;
+  cleanup_strength: string;
+  cleanup_use_cleaned_by_default: boolean;
 }
 
 export interface AppBinding {
@@ -276,6 +281,60 @@ export const addAppBinding = (modeId: string, processName: string) =>
 export const deleteAppBinding = (id: string) =>
   invoke<void>("delete_app_binding", { id });
 
+// Cleanup types
+export interface CleanupModelInfo {
+  id: string;
+  name: string;
+  description: string;
+  size_class: string;
+  speed_class: string;
+  recommended_use: string;
+  is_default: boolean;
+  is_installed: boolean;
+  endpoint: string | null;
+  model_file: string;
+}
+
+export interface CleanupResult {
+  raw_text: string;
+  cleaned_text: string;
+  model_id: string;
+  mode: string;
+  strength: string;
+  duration_ms: number;
+  status: string;
+}
+
+export interface CleanupSettings {
+  enabled: boolean;
+  model_id: string;
+  mode: string;
+  strength: string;
+  use_cleaned_by_default: boolean;
+}
+
+// Cleanup commands
+export const listCleanupModels = () =>
+  invoke<CleanupModelInfo[]>("list_cleanup_models");
+export const checkCleanupServer = () =>
+  invoke<boolean>("check_cleanup_server");
+export const runCleanup = (text: string) =>
+  invoke<CleanupResult>("run_cleanup", { text });
+export const runCleanupWithOptions = (
+  text: string,
+  modelId: string,
+  mode: string,
+  strength: string
+) =>
+  invoke<CleanupResult>("run_cleanup_with_options", {
+    text,
+    modelId,
+    mode,
+    strength,
+  });
+export const getCleanupSettings = () =>
+  invoke<CleanupSettings>("get_cleanup_settings");
+
 // Overlay commands
 export const resizeOverlay = (width: number, height: number) =>
   invoke<void>("resize_overlay", { width, height });
@@ -329,3 +388,18 @@ export const onSettingsChanged = (
   callback: (settings: AppSettings) => void
 ): Promise<UnlistenFn> =>
   listen<AppSettings>("settings-changed", (e) => callback(e.payload));
+
+export const onCleanupStatus = (
+  callback: (status: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("cleanup-status", (e) => callback(e.payload));
+
+export const onCleanupResult = (
+  callback: (result: CleanupResult) => void
+): Promise<UnlistenFn> =>
+  listen<CleanupResult>("cleanup-result", (e) => callback(e.payload));
+
+export const onCleanupError = (
+  callback: (error: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("cleanup-error", (e) => callback(e.payload));

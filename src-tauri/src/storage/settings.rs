@@ -105,6 +105,31 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .cloned()
         .unwrap_or(defaults.writing_style);
 
+    let cleanup_enabled = map
+        .get("cleanup_enabled")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.cleanup_enabled);
+
+    let cleanup_model_id = map
+        .get("cleanup_model_id")
+        .cloned()
+        .unwrap_or(defaults.cleanup_model_id);
+
+    let cleanup_mode = map
+        .get("cleanup_mode")
+        .cloned()
+        .unwrap_or(defaults.cleanup_mode);
+
+    let cleanup_strength = map
+        .get("cleanup_strength")
+        .cloned()
+        .unwrap_or(defaults.cleanup_strength);
+
+    let cleanup_use_cleaned_by_default = map
+        .get("cleanup_use_cleaned_by_default")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.cleanup_use_cleaned_by_default);
+
     Ok(AppSettings {
         theme,
         language,
@@ -124,6 +149,11 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         ship_mode,
         ghost_mode,
         writing_style,
+        cleanup_enabled,
+        cleanup_model_id,
+        cleanup_mode,
+        cleanup_strength,
+        cleanup_use_cleaned_by_default,
     })
 }
 
@@ -215,6 +245,26 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params!["writing_style", &settings.writing_style],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["cleanup_enabled", settings.cleanup_enabled.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["cleanup_model_id", &settings.cleanup_model_id],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["cleanup_mode", &settings.cleanup_mode],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["cleanup_strength", &settings.cleanup_strength],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["cleanup_use_cleaned_by_default", settings.cleanup_use_cleaned_by_default.to_string()],
     )?;
 
     tx.commit()?;

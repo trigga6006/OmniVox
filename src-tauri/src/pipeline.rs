@@ -604,6 +604,47 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // 7. Notify frontend (before moving final_text into history)
     let _ = app_handle.emit("transcription-result", &final_text);
 
+    // 7b. Kick off async cleanup if enabled — runs in background, never blocks output.
+    //     The cleaned result is emitted as a separate event for the frontend to display.
+    {
+        let cleanup_enabled = crate::storage::settings::get_settings(&state.db)
+            .map(|s| s.cleanup_enabled)
+            .unwrap_or(false);
+
+        if cleanup_enabled {
+            let handle = app_handle.clone();
+            let text_for_cleanup = final_text.clone();
+            tauri::async_runtime::spawn(async move {
+                let st = handle.state::<AppState>();
+                let settings = match crate::storage::settings::get_settings(&st.db) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+
+                let request = crate::cleanup::types::CleanupRequest {
+                    raw_text: text_for_cleanup,
+                    mode: crate::cleanup::types::CleanupMode::from_str(&settings.cleanup_mode),
+                    strength: crate::cleanup::types::RewriteStrength::from_str(&settings.cleanup_strength),
+                    model_id: crate::cleanup::types::CleanupModelId(settings.cleanup_model_id),
+                };
+
+                let _ = handle.emit("cleanup-status", "running");
+
+                match crate::cleanup::service::run_cleanup(&request).await {
+                    Ok(result) => {
+                        let _ = handle.emit("cleanup-status", "success");
+                        let _ = handle.emit("cleanup-result", &result);
+                    }
+                    Err(e) => {
+                        eprintln!("Cleanup failed (non-fatal): {e}");
+                        let _ = handle.emit("cleanup-status", "failed");
+                        let _ = handle.emit("cleanup-error", e.to_string());
+                    }
+                }
+            });
+        }
+    }
+
     // 8. Save to history — move final_text to avoid an extra clone
     let record = crate::storage::types::TranscriptionRecord {
         id: uuid::Uuid::new_v4(),

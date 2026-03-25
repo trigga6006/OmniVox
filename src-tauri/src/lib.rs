@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod asr;
+pub mod cleanup;
 pub mod commands;
 pub mod error;
 pub mod hotkey;
@@ -432,6 +433,12 @@ pub fn run() {
             commands::list_app_bindings,
             commands::add_app_binding,
             commands::delete_app_binding,
+            // Cleanup commands (5)
+            commands::list_cleanup_models,
+            commands::check_cleanup_server,
+            commands::run_cleanup,
+            commands::run_cleanup_with_options,
+            commands::get_cleanup_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

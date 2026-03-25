@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod cleanup;
 pub mod models;
 pub mod dictionary;
 pub mod history;
@@ -7,6 +8,7 @@ pub mod notes;
 pub mod context_modes;
 
 pub use audio::*;
+pub use cleanup::*;
 pub use models::*;
 pub use dictionary::*;
 pub use history::*;

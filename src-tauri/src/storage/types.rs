@@ -104,6 +104,16 @@ pub struct AppSettings {
     pub ghost_mode: bool,
     /// Writing style controls capitalization and punctuation ("formal", "casual", "very_casual").
     pub writing_style: String,
+    /// Whether the cleanup (prompt optimization) feature is enabled.
+    pub cleanup_enabled: bool,
+    /// Selected cleanup model ID (e.g. "qwen3_5_4b").
+    pub cleanup_model_id: String,
+    /// Cleanup mode ("clean", "technical_rectify", "agent_optimize", "claude_code_optimize").
+    pub cleanup_mode: String,
+    /// Rewrite strength ("conservative", "balanced", "aggressive").
+    pub cleanup_strength: String,
+    /// Whether to use cleaned output by default for copy/paste.
+    pub cleanup_use_cleaned_by_default: bool,
 }
 
 impl Default for AppSettings {
@@ -127,6 +137,11 @@ impl Default for AppSettings {
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),
+            cleanup_enabled: false,
+            cleanup_model_id: "qwen3_5_4b".to_string(),
+            cleanup_mode: "agent_optimize".to_string(),
+            cleanup_strength: "balanced".to_string(),
+            cleanup_use_cleaned_by_default: false,
         }
     }
 }

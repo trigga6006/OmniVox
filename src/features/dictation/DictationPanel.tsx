@@ -1,10 +1,19 @@
 import { useEffect, useState, useCallback } from "react";
-import { Copy, Check, X, ArrowRight } from "lucide-react";
+import { Copy, Check, X, ArrowRight, Sparkles, Loader2 } from "lucide-react";
 import { RecordButton } from "./RecordButton";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
-import { getSettings, getDictationStats, type DictationStats, type AppSettings } from "@/lib/tauri";
+import {
+  getSettings,
+  getDictationStats,
+  onCleanupStatus,
+  onCleanupResult,
+  onCleanupError,
+  type DictationStats,
+  type AppSettings,
+  type CleanupResult,
+} from "@/lib/tauri";
 import { useAppStore } from "@/stores/appStore";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +25,10 @@ export function DictationPanel() {
   const lastTranscription = useRecordingStore((s) => s.lastTranscription);
 
   const [hotkeyLabel, setHotkeyLabel] = useState("Ctrl + Alt");
+  const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
+  const [cleanupStatus, setCleanupStatus] = useState<string>("idle");
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [cleanupEnabled, setCleanupEnabled] = useState(false);
 
   useEffect(() => {
     getSettings()
@@ -23,8 +36,30 @@ export function DictationPanel() {
         if (s.hotkey?.labels?.length) {
           setHotkeyLabel(s.hotkey.labels.join(" + "));
         }
+        setCleanupEnabled(s.cleanup_enabled);
       })
       .catch(() => {});
+  }, []);
+
+  // Listen for cleanup events
+  useEffect(() => {
+    const unlistenStatus = onCleanupStatus((s) => {
+      setCleanupStatus(s);
+      if (s === "running") {
+        setCleanupError(null);
+      }
+    });
+    const unlistenResult = onCleanupResult((r) => {
+      setCleanupResult(r);
+    });
+    const unlistenError = onCleanupError((e) => {
+      setCleanupError(e);
+    });
+    return () => {
+      unlistenStatus.then((fn) => fn());
+      unlistenResult.then((fn) => fn());
+      unlistenError.then((fn) => fn());
+    };
   }, []);
 
   const isIdle = status === "idle";
@@ -88,7 +123,16 @@ export function DictationPanel() {
 
         {/* ── Last transcription card ──────────────────────────── */}
         {lastTranscription && (
-          <TranscriptionCard text={lastTranscription} />
+          cleanupEnabled ? (
+            <CleanupTranscriptionCard
+              rawText={lastTranscription}
+              cleanupResult={cleanupResult}
+              cleanupStatus={cleanupStatus}
+              cleanupError={cleanupError}
+            />
+          ) : (
+            <TranscriptionCard text={lastTranscription} />
+          )
         )}
       </div>
     </div>
@@ -130,6 +174,119 @@ function TranscriptionCard({ text }: { text: string }) {
         <p className="font-sans text-base leading-relaxed text-text-primary select-text">
           {text}
         </p>
+      </div>
+    </div>
+  );
+}
+
+/* ── Cleanup transcription card with raw/cleaned tabs ── */
+
+function CleanupTranscriptionCard({
+  rawText,
+  cleanupResult,
+  cleanupStatus,
+  cleanupError,
+}: {
+  rawText: string;
+  cleanupResult: CleanupResult | null;
+  cleanupStatus: string;
+  cleanupError: string | null;
+}) {
+  const [activeTab, setActiveTab] = useState<"raw" | "cleaned">("cleaned");
+  const [copied, setCopied] = useState(false);
+
+  const displayText =
+    activeTab === "cleaned" && cleanupResult?.cleaned_text
+      ? cleanupResult.cleaned_text
+      : rawText;
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard
+      .writeText(displayText)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  }, [displayText]);
+
+  return (
+    <div
+      className={cn(
+        "w-full max-w-lg rounded-lg bg-surface-1 p-5 mt-4",
+        "opacity-0 animate-slide-up"
+      )}
+    >
+      {/* Tab header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
+          <button
+            onClick={() => setActiveTab("raw")}
+            className={cn(
+              "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
+              activeTab === "raw"
+                ? "bg-surface-1 text-text-primary shadow-sm"
+                : "text-text-muted hover:text-text-secondary"
+            )}
+          >
+            Raw
+          </button>
+          <button
+            onClick={() => setActiveTab("cleaned")}
+            className={cn(
+              "px-2.5 py-1 text-xs font-medium rounded-md transition-colors inline-flex items-center gap-1",
+              activeTab === "cleaned"
+                ? "bg-surface-1 text-text-primary shadow-sm"
+                : "text-text-muted hover:text-text-secondary"
+            )}
+          >
+            <Sparkles size={10} />
+            Cleaned
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Cleanup status indicator */}
+          {cleanupStatus === "running" && (
+            <Loader2 size={12} className="animate-spin text-amber-400" />
+          )}
+          {cleanupResult?.duration_ms != null && cleanupStatus === "success" && (
+            <span className="text-[10px] text-text-muted">
+              {(cleanupResult.duration_ms / 1000).toFixed(1)}s
+            </span>
+          )}
+
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
+          >
+            {copied ? (
+              <Check size={12} className="text-emerald-400" />
+            ) : (
+              <Copy size={12} />
+            )}
+            <span>{copied ? "Copied" : "Copy"}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Error state */}
+      {activeTab === "cleaned" && cleanupError && (
+        <p className="text-xs text-red-400 mb-2">{cleanupError}</p>
+      )}
+
+      {/* Text display */}
+      <div className="max-h-40 overflow-y-auto">
+        {activeTab === "cleaned" && cleanupStatus === "running" && !cleanupResult ? (
+          <div className="flex items-center gap-2 py-4 justify-center">
+            <Loader2 size={14} className="animate-spin text-amber-400" />
+            <span className="text-sm text-text-muted">Cleaning up transcript...</span>
+          </div>
+        ) : (
+          <p className="font-sans text-base leading-relaxed text-text-primary select-text">
+            {displayText}
+          </p>
+        )}
       </div>
     </div>
   );

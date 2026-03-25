@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, Sparkles, Server } from "lucide-react";
 import {
   getSettings,
   updateSettings,
@@ -17,10 +17,26 @@ import {
   type AudioDevice,
   type HotkeyConfig,
   type PlatformInfo,
+  listCleanupModels,
+  checkCleanupServer,
+  type CleanupModelInfo,
 } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settingsStore";
+
+const cleanupModes = [
+  { id: "clean", label: "Clean" },
+  { id: "technical_rectify", label: "Technical Rectify" },
+  { id: "agent_optimize", label: "Agent Optimize" },
+  { id: "claude_code_optimize", label: "Claude Code" },
+] as const;
+
+const cleanupStrengths = [
+  { id: "conservative", label: "Conservative" },
+  { id: "balanced", label: "Balanced" },
+  { id: "aggressive", label: "Aggressive" },
+] as const;
 
 const outputModes = [
   { id: "clipboard", label: "Clipboard", icon: Clipboard },
@@ -385,6 +401,8 @@ export function SettingsPage() {
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const [showVoiceCommands, setShowVoiceCommands] = useState(false);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const [cleanupModels, setCleanupModels] = useState<CleanupModelInfo[]>([]);
+  const [cleanupServerUp, setCleanupServerUp] = useState(false);
 
   useEffect(() => {
     getSettings()
@@ -408,6 +426,14 @@ export function SettingsPage() {
     getPlatformInfo()
       .then(setPlatformInfo)
       .catch((e) => console.error("Failed to load platform info:", e));
+
+    listCleanupModels()
+      .then(setCleanupModels)
+      .catch((e) => console.error("Failed to load cleanup models:", e));
+
+    checkCleanupServer()
+      .then(setCleanupServerUp)
+      .catch(() => setCleanupServerUp(false));
 
     // Stay in sync when settings change from the overlay pill (or any window)
     const unlisten = onSettingsChanged((s) => {
@@ -508,6 +534,50 @@ export function SettingsPage() {
   const handleShipModeToggle = useCallback(() => {
     if (!settings) return;
     const updated = { ...settings, ship_mode: !settings.ship_mode };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleCleanupToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, cleanup_enabled: !settings.cleanup_enabled };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleCleanupModelChange = useCallback(
+    (modelId: string) => {
+      if (!settings) return;
+      const updated = { ...settings, cleanup_model_id: modelId };
+      setSettings(updated);
+      updateSettings(updated).catch(console.error);
+    },
+    [settings]
+  );
+
+  const handleCleanupModeChange = useCallback(
+    (mode: string) => {
+      if (!settings) return;
+      const updated = { ...settings, cleanup_mode: mode };
+      setSettings(updated);
+      updateSettings(updated).catch(console.error);
+    },
+    [settings]
+  );
+
+  const handleCleanupStrengthChange = useCallback(
+    (strength: string) => {
+      if (!settings) return;
+      const updated = { ...settings, cleanup_strength: strength };
+      setSettings(updated);
+      updateSettings(updated).catch(console.error);
+    },
+    [settings]
+  );
+
+  const handleCleanupDefaultToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, cleanup_use_cleaned_by_default: !settings.cleanup_use_cleaned_by_default };
     setSettings(updated);
     updateSettings(updated).catch(console.error);
   }, [settings]);
@@ -1069,6 +1139,167 @@ export function SettingsPage() {
               {settings?.ship_mode ? "Enabled" : "Disabled"}
             </span>
           </div>
+        </section>
+
+        {/* ── Prompt Cleanup ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.cleanup_enabled
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.30s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Prompt Cleanup
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Optionally clean up transcriptions using a local LLM. Removes filler,
+            fixes grammar, and optimizes text for AI agents. Requires{" "}
+            <span className="text-text-secondary">Ollama</span> running locally.
+          </p>
+
+          {/* Server status */}
+          <div className="flex items-center gap-2 mb-4">
+            <Server size={12} className={cleanupServerUp ? "text-emerald-400" : "text-red-400"} />
+            <span className={cn("text-xs", cleanupServerUp ? "text-emerald-400" : "text-red-400")}>
+              {cleanupServerUp ? "Ollama server connected" : "Ollama server not detected"}
+            </span>
+          </div>
+
+          {/* Enable toggle */}
+          <div className="flex items-center gap-3 mb-4">
+            <button
+              onClick={handleCleanupToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.cleanup_enabled ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.cleanup_enabled ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.cleanup_enabled ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+
+          {/* Expanded settings when enabled */}
+          {settings?.cleanup_enabled && (
+            <div className="space-y-4 pt-4 border-t border-border/50">
+              {/* Model selector */}
+              <div>
+                <label className="block text-sm text-text-secondary mb-2">
+                  Cleanup Model
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {cleanupModels.map((model) => {
+                    const isActive = settings.cleanup_model_id === model.id;
+                    return (
+                      <button
+                        key={model.id}
+                        onClick={() => handleCleanupModelChange(model.id)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors border",
+                          isActive
+                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                            : "text-text-muted hover:text-text-secondary border-transparent bg-surface-2"
+                        )}
+                        title={model.description}
+                      >
+                        {model.name}
+                        {model.is_installed && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Installed" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Mode selector */}
+              <div>
+                <label className="block text-sm text-text-secondary mb-2">
+                  Cleanup Mode
+                </label>
+                <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+                  {cleanupModes.map(({ id, label }) => {
+                    const isActive = settings.cleanup_mode === id;
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => handleCleanupModeChange(id)}
+                        className={cn(
+                          "inline-flex items-center rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors border",
+                          isActive
+                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                            : "text-text-muted hover:text-text-secondary border-transparent"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Strength selector */}
+              <div>
+                <label className="block text-sm text-text-secondary mb-2">
+                  Rewrite Strength
+                </label>
+                <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+                  {cleanupStrengths.map(({ id, label }) => {
+                    const isActive = settings.cleanup_strength === id;
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => handleCleanupStrengthChange(id)}
+                        className={cn(
+                          "inline-flex items-center rounded-md px-3 py-1.5 text-xs font-medium transition-colors border",
+                          isActive
+                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                            : "text-text-muted hover:text-text-secondary border-transparent"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Use cleaned by default toggle */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleCleanupDefaultToggle}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                    settings.cleanup_use_cleaned_by_default ? "bg-amber-500" : "bg-surface-3"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                      settings.cleanup_use_cleaned_by_default ? "translate-x-[18px]" : "translate-x-0.5"
+                    )}
+                  />
+                </button>
+                <span className="text-xs text-text-secondary">
+                  Use cleaned output by default
+                </span>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* ── GPU Acceleration ── */}
