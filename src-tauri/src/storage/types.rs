@@ -96,6 +96,8 @@ pub struct AppSettings {
     pub auto_switch_modes: bool,
     /// Recognize spoken voice commands ("new line", "new paragraph", "delete last word").
     pub voice_commands: bool,
+    /// Enable the "send" voice command independently — say "send" at the end to press Enter.
+    pub command_send: bool,
     /// Automatically press Enter after transcription to send the message (TypeSimulation/Both only).
     pub ship_mode: bool,
     /// Hide the floating pill overlay (invisible but still interactive).
@@ -121,6 +123,7 @@ impl Default for AppSettings {
             noise_reduction: false,
             auto_switch_modes: true,
             voice_commands: true,
+            command_send: true,
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),

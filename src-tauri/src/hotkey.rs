@@ -29,27 +29,11 @@ pub struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        // Default: LCtrl + LAlt on Windows, LControl + LAlt on macOS/Linux
-        #[cfg(target_os = "windows")]
-        {
-            Self {
-                keys: vec![0xA2, 0xA4], // VK_LCONTROL, VK_LMENU
-                labels: vec!["LCtrl".into(), "LAlt".into()],
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Self {
-                keys: vec![0xA2, 0xA4], // Same codes — mapped via vk_to_rdev_key()
-                labels: vec!["LCtrl".into(), "LAlt".into()],
-            }
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        {
-            Self {
-                keys: vec![0xA2, 0xA4],
-                labels: vec!["LCtrl".into(), "LAlt".into()],
-            }
+        // Default: LCtrl + LAlt (VK_LCONTROL + VK_LMENU).
+        // Same VK codes on all platforms — mapped via vk_to_rdev_key() on macOS/Linux.
+        Self {
+            keys: vec![0xA2, 0xA4],
+            labels: vec!["LCtrl".into(), "LAlt".into()],
         }
     }
 }
@@ -320,14 +304,9 @@ mod rdev_impl {
     }
 
     fn handle_event(event: rdev::Event) {
-        let (is_down, is_up) = match event.event_type {
-            rdev::EventType::KeyPress(_) => (true, false),
-            rdev::EventType::KeyRelease(_) => (false, true),
-            _ => return,
-        };
-
-        let key = match event.event_type {
-            rdev::EventType::KeyPress(k) | rdev::EventType::KeyRelease(k) => k,
+        let (key, is_down, is_up) = match event.event_type {
+            rdev::EventType::KeyPress(k) => (k, true, false),
+            rdev::EventType::KeyRelease(k) => (k, false, true),
             _ => return,
         };
 

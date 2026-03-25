@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, X, ArrowRight } from "lucide-react";
 import { RecordButton } from "./RecordButton";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
-import { getSettings, getDictationStats, type DictationStats } from "@/lib/tauri";
+import { getSettings, getDictationStats, type DictationStats, type AppSettings } from "@/lib/tauri";
+import { useAppStore } from "@/stores/appStore";
 import { cn } from "@/lib/utils";
 
 export function DictationPanel() {
@@ -81,6 +82,9 @@ export function DictationPanel() {
 
         {/* ── Word count & milestone ─────────────────────────── */}
         <StatsCard />
+
+        {/* ── Feature discovery tip ────────────────────────────── */}
+        <FeatureTip />
 
         {/* ── Last transcription card ──────────────────────────── */}
         {lastTranscription && (
@@ -160,6 +164,157 @@ function getNextMilestone(words: number) {
   }
   return null;
 }
+
+/* ── Feature discovery tips ── */
+
+interface Tip {
+  id: string;
+  text: string;
+  /** Return true to show this tip (feature not yet explored). */
+  shouldShow: (s: AppSettings) => boolean;
+  page: "settings" | "modes" | "models";
+}
+
+const TIPS: Tip[] = [
+  {
+    id: "ship_mode",
+    text: "Try Ship Mode — auto-send messages after dictation",
+    shouldShow: (s) => !s.ship_mode,
+    page: "settings",
+  },
+  {
+    id: "gpu",
+    text: "Try GPU Acceleration — faster transcription with Vulkan",
+    shouldShow: (s) => !s.gpu_acceleration,
+    page: "settings",
+  },
+  {
+    id: "voice_commands",
+    text: "Try voice commands — say \"new line\" or \"send\" while dictating",
+    shouldShow: (s) => !s.voice_commands,
+    page: "settings",
+  },
+  {
+    id: "live_preview",
+    text: "Try Live Preview — see words appear as you speak",
+    shouldShow: (s) => !s.live_preview,
+    page: "settings",
+  },
+  {
+    id: "context_modes",
+    text: "Try Context Modes — customize behavior per app",
+    shouldShow: () => true,
+    page: "modes",
+  },
+  {
+    id: "noise_reduction",
+    text: "Try Noise Reduction — filter background sounds with RNNoise",
+    shouldShow: (s) => !s.noise_reduction,
+    page: "settings",
+  },
+];
+
+const DISMISSED_KEY = "omnivox_dismissed_tips";
+
+function getDismissed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function dismissTip(id: string) {
+  const dismissed = getDismissed();
+  dismissed.add(id);
+  localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed]));
+}
+
+function FeatureTip() {
+  const [tip, setTip] = useState<Tip | null>(null);
+  const setPage = useAppStore((s) => s.setPage);
+  const status = useRecordingStore((s) => s.status);
+  const isRecording = status === "recording";
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        const dismissed = getDismissed();
+        const available = TIPS.filter(
+          (t) => !dismissed.has(t.id) && t.shouldShow(s)
+        );
+        if (available.length > 0) {
+          // Pick a random tip so it feels fresh each session
+          setTip(available[Math.floor(Math.random() * available.length)]);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleDismiss = useCallback(() => {
+    if (tip) {
+      dismissTip(tip.id);
+      setTip(null);
+    }
+  }, [tip]);
+
+  const handleNavigate = useCallback(() => {
+    if (tip) {
+      dismissTip(tip.id);
+      setPage(tip.page);
+    }
+  }, [tip, setPage]);
+
+  if (!tip) return null;
+
+  return (
+    <div
+      className={cn(
+        "w-full max-w-lg mt-3 flex items-center gap-2 rounded-lg px-3 py-2",
+        "border transition-colors duration-300 opacity-0 animate-fade-in",
+        isRecording
+          ? "bg-recording-500/5 border-recording-500/20"
+          : "bg-surface-1/60 border-border/50"
+      )}
+      style={{ animationDelay: "400ms", animationFillMode: "forwards" }}
+    >
+      <p
+        className={cn(
+          "flex-1 text-xs transition-colors duration-300",
+          isRecording ? "text-recording-400/80" : "text-text-muted"
+        )}
+      >
+        {tip.text}
+      </p>
+      <button
+        onClick={handleNavigate}
+        className={cn(
+          "shrink-0 p-1 rounded transition-colors",
+          isRecording
+            ? "text-recording-400/60 hover:text-recording-300"
+            : "text-text-muted hover:text-text-secondary"
+        )}
+        title="Go to setting"
+      >
+        <ArrowRight size={13} strokeWidth={2} />
+      </button>
+      <button
+        onClick={handleDismiss}
+        className={cn(
+          "shrink-0 p-1 rounded transition-colors",
+          isRecording
+            ? "text-recording-400/40 hover:text-recording-300"
+            : "text-text-muted/50 hover:text-text-secondary"
+        )}
+        title="Dismiss"
+      >
+        <X size={12} strokeWidth={2} />
+      </button>
+    </div>
+  );
+}
+
+/* ── Stats card ── */
 
 function StatsCard() {
   const [stats, setStats] = useState<DictationStats | null>(null);

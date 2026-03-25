@@ -83,6 +83,7 @@ export interface AppSettings {
   noise_reduction: boolean;
   auto_switch_modes: boolean;
   voice_commands: boolean;
+  command_send: boolean;
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;

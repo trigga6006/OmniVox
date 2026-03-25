@@ -21,20 +21,37 @@ interface ToastState {
 }
 
 let nextId = 0;
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const useToastStore = create<ToastState>((set) => ({
   toasts: [],
   addToast: (toast) => {
+    // Deduplicate: if a toast with the same code already exists, skip it.
+    const state = useToastStore.getState();
+    if (toast.code && state.toasts.some((t) => t.code === toast.code)) {
+      return;
+    }
+
     const id = String(++nextId);
     set((s) => ({ toasts: [...s.toasts.slice(-4), { ...toast, id }] }));
     // Auto-dismiss (default 6s, longer for toasts with actions)
     const duration = toast.duration ?? (toast.action ? 10000 : 6000);
     if (duration > 0) {
-      setTimeout(() => {
-        set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
-      }, duration);
+      timers.set(
+        id,
+        setTimeout(() => {
+          timers.delete(id);
+          set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+        }, duration),
+      );
     }
   },
-  removeToast: (id) =>
-    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  removeToast: (id) => {
+    const timer = timers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timers.delete(id);
+    }
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  },
 }));

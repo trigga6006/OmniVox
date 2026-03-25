@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send } from "lucide-react";
 import {
   getSettings,
   updateSettings,
@@ -407,7 +407,7 @@ export function SettingsPage() {
 
     getPlatformInfo()
       .then(setPlatformInfo)
-      .catch(() => {});
+      .catch((e) => console.error("Failed to load platform info:", e));
 
     // Stay in sync when settings change from the overlay pill (or any window)
     const unlisten = onSettingsChanged((s) => {
@@ -487,6 +487,13 @@ export function SettingsPage() {
   const handleVoiceCommandsToggle = useCallback(() => {
     if (!settings) return;
     const updated = { ...settings, voice_commands: !settings.voice_commands };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleCommandSendToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, command_send: !settings.command_send };
     setSettings(updated);
     updateSettings(updated).catch(console.error);
   }, [settings]);
@@ -876,6 +883,43 @@ export function SettingsPage() {
               View commands
             </button>
           </div>
+
+          {/* ── Command Send sub-toggle ── */}
+          {settings?.voice_commands && (
+            <div
+              className="mt-4 pt-4 border-t border-border/50"
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Send size={12} strokeWidth={2} className="text-text-muted" />
+                <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
+                  Command Send
+                </span>
+              </div>
+              <p className="text-[11px] text-text-muted mb-3 max-w-[400px]">
+                Say "send" at the end of your dictation to press Enter and send
+                the message. Toggle independently from other voice commands.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleCommandSendToggle}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                    settings?.command_send ? "bg-amber-500" : "bg-surface-3"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                      settings?.command_send ? "translate-x-[18px]" : "translate-x-0.5"
+                    )}
+                  />
+                </button>
+                <span className="text-xs text-text-secondary">
+                  {settings?.command_send ? "Enabled" : "Disabled"}
+                </span>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* ── Voice Commands Reference Popup ── */}
@@ -907,6 +951,7 @@ export function SettingsPage() {
                   { phrase: "new line", desc: "Insert a line break" },
                   { phrase: "new paragraph", desc: "Insert a paragraph break" },
                   { phrase: "delete last word", desc: "Remove the previous word" },
+                  { phrase: "send", desc: "Press Enter to send (must be last word)" },
                 ].map((cmd) => (
                   <div
                     key={cmd.phrase}
@@ -1050,9 +1095,28 @@ export function SettingsPage() {
             </span>
           </div>
 
-          <p className="text-sm text-text-primary">OmniVox v0.1.6</p>
-          <p className="text-xs text-text-muted mt-1">
-            Local-first AI dictation
+          <p className="text-sm text-text-primary">OmniVox v0.1.7</p>
+          <p className="text-xs text-text-muted mt-1 flex items-center gap-1.5">
+            <span>Local-first AI dictation</span>
+            <span className="text-text-muted/40 mx-0.5">·</span>
+            <span>Developed by</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 200 200" fill="none" className="inline-block shrink-0">
+              <path d="M 196.52,99.98 C 196.52,46.71 152.83,1.63 99.48,1.63 H 98.56 C 63.42,1.63 37.98,18.76 20.77,43.31 C 9.12,60.21 3.48,77.89 3.48,100.51 C 3.48,151.93 47.02,198.23 97.61,198.23 H 99.16 C 151.91,198.23 196.52,154.55 196.52,99.98 Z M 98.36,147.41 C 71.71,147.41 52.39,125.18 52.39,100.26 C 52.39,73.43 74.39,48.29 101.04,51.81 C 126.03,52.96 147.31,73.92 147.31,100.08 C 147.31,125.28 127.07,147.41 98.36,147.41 Z" fill="url(#oi-grad-1)"/>
+              <path d="M 101.61,1.66 C 66.27,0.61 42.09,15.71 23.04,39.79 C 11.81,54.74 6.31,70.73 6.31,91.81 C 6.31,132.79 41.91,166.39 80.12,166.39 C 114.61,166.39 147.41,141.01 147.41,103.03 L 147.16,103.16 C 145.97,126.15 126.06,146.93 98.36,147.34 C 71.71,147.74 52.39,125.51 52.39,100.59 C 52.39,70.05 76.18,33.75 119.02,33.75 C 157.19,33.75 193.37,65.79 193.37,110.08 C 193.37,126.01 187.32,142.79 178.19,157.01 C 190.72,140.14 196.52,123.08 196.52,100.01 C 196.52,47.58 155.51,3.16 101.61,1.66 Z" fill="url(#oi-grad-2)"/>
+              <defs>
+                <linearGradient id="oi-grad-1" x1="10.0251" y1="18.7862" x2="183.632" y2="181.489" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#3269C7"/>
+                  <stop offset="0.49" stopColor="#244BC6"/>
+                  <stop offset="1" stopColor="#56B6E7"/>
+                </linearGradient>
+                <linearGradient id="oi-grad-2" x1="10.0251" y1="18.7862" x2="183.632" y2="181.489" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#3269C7"/>
+                  <stop offset="0.49" stopColor="#4493D5"/>
+                  <stop offset="1" stopColor="#56B6E7"/>
+                </linearGradient>
+              </defs>
+            </svg>
+            <span>Omni Impact</span>
           </p>
         </section>
       </div>

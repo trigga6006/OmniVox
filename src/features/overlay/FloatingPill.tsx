@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Loader2, Eye, ShieldCheck, Layers, Rocket, Ghost } from "lucide-react";
+import { Loader2, Eye, ShieldCheck, Layers, Rocket, Ghost, Send } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
 import {
@@ -56,7 +56,9 @@ export function FloatingPill() {
   const [noiseReduction, setNoiseReduction] = useState(true);
   const [autoSwitchModes, setAutoSwitchModes] = useState(true);
   const [shipMode, setShipMode] = useState(false);
+  const [commandSend, setCommandSend] = useState(true);
   const [ghostMode, setGhostMode] = useState(false);
+  const [showShipPopup, setShowShipPopup] = useState(false);
 
   // Mode selector state
   const [showModeSelector, setShowModeSelector] = useState(false);
@@ -153,6 +155,7 @@ export function FloatingPill() {
         setNoiseReduction(s.noise_reduction);
         setAutoSwitchModes(s.auto_switch_modes);
         setShipMode(s.ship_mode);
+        setCommandSend(s.command_send);
         setGhostMode(s.ghost_mode);
       })
       .catch(() => {});
@@ -168,6 +171,7 @@ export function FloatingPill() {
       setNoiseReduction(s.noise_reduction);
       setAutoSwitchModes(s.auto_switch_modes);
       setShipMode(s.ship_mode);
+      setCommandSend(s.command_send);
       setGhostMode(s.ghost_mode);
     });
 
@@ -184,13 +188,15 @@ export function FloatingPill() {
     }
   }, [status]);
 
-  // Manage overlay size when mode selector opens/closes
+  // Manage overlay size when mode selector opens/closes.
+  // Always pre-allocate width for the ship popup so toggling it is purely CSS
+  // (no async window resize = no flash or clipping).
+  // Layout math: toggle buttons at 50%+102px, 26px wide, popup 8px gap + 160px.
+  // Popup right edge = 50% + 296px → window needs ≥ 600px so 300px ≥ 296px.
   useEffect(() => {
     if (showModeSelector) {
-      // Expand window to fit selector + pill + side toggle buttons
-      // Menu w-48 (192px) centered + 6px gap + 26px buttons + padding = ~260px
       const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
-      resizeOverlay(260, ACTIVE_H + selectorH + 4);
+      resizeOverlay(600, ACTIVE_H + selectorH + 4);
     } else if (pillState === "idle") {
       resizeOverlay(IDLE_W, IDLE_H);
     }
@@ -240,6 +246,17 @@ export function FloatingPill() {
     }
   }, [shipMode]);
 
+  const handleToggleCommandSend = useCallback(async () => {
+    const next = !commandSend;
+    setCommandSend(next);
+    try {
+      const s = await getSettings();
+      await updateSettings({ ...s, command_send: next });
+    } catch {
+      setCommandSend(!next);
+    }
+  }, [commandSend]);
+
   const handleToggleGhostMode = useCallback(async () => {
     const next = !ghostMode;
     setGhostMode(next);
@@ -287,7 +304,11 @@ export function FloatingPill() {
         exitGhostMode();
       }
       if (pillState === "idle") {
-        setShowModeSelector((prev) => !prev);
+        setShowModeSelector((prev) => {
+          // Close ship popup when toggling mode selector
+          if (!prev) setShowShipPopup(false);
+          return !prev;
+        });
       }
     },
     [pillState, ghostMode, exitGhostMode]
@@ -321,7 +342,10 @@ export function FloatingPill() {
             modes={modes}
             activeId={activeModId}
             onSelect={handleModeSelect}
-            onClose={() => setShowModeSelector(false)}
+            onClose={() => {
+              setShowModeSelector(false);
+              setShowShipPopup(false);
+            }}
           />
           {/* Quick-toggle circles — frosted glass, lower-right of menu */}
           {/* Uses mousedown for toggle action since the overlay is transparent
@@ -387,24 +411,84 @@ export function FloatingPill() {
             >
               <ShieldCheck size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
             </button>
-            <button
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                handleToggleShipMode();
-              }}
-              title={shipMode ? "Ship mode: on" : "Ship mode: off"}
-              className={cn(
-                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
-                "backdrop-blur-md border transition-all duration-150",
-                shipMode
-                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
-                  : "border-transparent opacity-50 hover:opacity-80"
-              )}
-              style={{ backgroundColor: shipMode ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
-            >
-              <Rocket size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
-            </button>
+            <div className="relative">
+              <button
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  // Only toggle ship mode on left-click (button 0)
+                  if (e.button === 0) handleToggleShipMode();
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowShipPopup((prev) => !prev);
+                }}
+                title={shipMode ? "Ship mode: on (right-click for options)" : "Ship mode: off (right-click for options)"}
+                className={cn(
+                  "w-[26px] h-[26px] rounded-full flex items-center justify-center",
+                  "backdrop-blur-md border transition-all duration-150",
+                  shipMode
+                    ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
+                    : "border-transparent opacity-50 hover:opacity-80"
+                )}
+                style={{ backgroundColor: shipMode ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
+              >
+                <Rocket size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+              </button>
+
+              {/* ── Ship button right-click popup ── */}
+              <div
+                className="absolute z-50 backdrop-blur-xl border border-white/10 rounded-lg shadow-2xl pointer-events-none"
+                style={{
+                  left: "calc(100% + 8px)",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  backgroundColor: "rgba(28, 26, 24, 0.92)",
+                  minWidth: 160,
+                  padding: "8px 10px",
+                  opacity: showShipPopup ? 1 : 0,
+                  scale: showShipPopup ? "1" : "0.92",
+                  pointerEvents: showShipPopup ? "auto" : "none",
+                  transition: "opacity 0.15s ease-out, scale 0.15s ease-out",
+                  transformOrigin: "left center",
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Send size={10} strokeWidth={2} className="text-amber-400/80" />
+                  <span className="text-[10px] font-semibold text-amber-400/90 uppercase tracking-wider">
+                    Command Send
+                  </span>
+                </div>
+                <p className="text-[9px] text-white/40 mb-2.5 leading-tight">
+                  Say "send" to submit instead of auto-sending everything
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleToggleCommandSend();
+                    }}
+                    className={cn(
+                      "relative inline-flex h-4 w-7 items-center rounded-full transition-colors",
+                      commandSend ? "bg-amber-500" : "bg-white/15"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "inline-block h-2.5 w-2.5 rounded-full bg-white transition-transform",
+                        commandSend ? "translate-x-[14px]" : "translate-x-0.5"
+                      )}
+                    />
+                  </button>
+                  <span className="text-[10px] text-white/60">
+                    {commandSend ? "On" : "Off"}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
           {/* Divider between toggle buttons and ghost mode */}
           <div
@@ -607,17 +691,18 @@ function IdleWaveform({ color }: { color: string }) {
           className="rounded-full"
           style={{
             width: 2,
-            height: 6,
+            height: 10,
             backgroundColor: color,
             opacity: 0.25,
-            animation: `idle-wave 2s ease-in-out ${i * 0.2}s infinite`,
+            willChange: "transform, opacity",
+            animation: `idle-wave 2.4s ease-in-out ${i * 0.18}s infinite`,
           }}
         />
       ))}
       <style>{`
         @keyframes idle-wave {
-          0%, 100% { height: 4px; opacity: 0.15; }
-          50% { height: 10px; opacity: 0.35; }
+          0%, 100% { transform: scaleY(0.4); opacity: 0.15; }
+          50% { transform: scaleY(1); opacity: 0.35; }
         }
       `}</style>
     </div>

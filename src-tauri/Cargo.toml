@@ -1,6 +1,6 @@
 [package]
 name = "omnivoice"
-version = "0.1.6"
+version = "0.1.7"
 description = "OmniVox - Local AI Dictation"
 authors = ["you"]
 edition = "2021"
@@ -32,9 +32,6 @@ arboard = "3"
 tauri-plugin-single-instance = "2.4.0"
 nnnoiseless = { version = "0.5", default-features = false }
 
-# Cross-platform global keyboard listener for hotkey support
-rdev = "0.5"
-
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -48,11 +45,17 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
 ] }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+# Cross-platform global keyboard listener for hotkey support (macOS & Linux).
+# Windows uses its own WH_KEYBOARD_LL hook via windows-sys.
+rdev = "0.5"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 core-graphics = "0.24"
 core-foundation = "0.10"
 objc = "0.2"
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux support planned — stubs compile without extra deps for now

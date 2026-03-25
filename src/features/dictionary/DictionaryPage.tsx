@@ -385,7 +385,7 @@ function SnippetsTab() {
                   value={editTrigger}
                   onChange={(e) => setEditTrigger(e.target.value)}
                   className="w-32 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
-                  placeholder="Trigger…"
+                  placeholder="Word…"
                 />
                 <ArrowRight size={14} className="text-text-muted shrink-0" />
                 <input
@@ -464,7 +464,7 @@ function SnippetsTab() {
               value={newTrigger}
               onChange={(e) => setNewTrigger(e.target.value)}
               className="w-32 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
-              placeholder="Trigger…"
+              placeholder="Word…"
             />
             <ArrowRight size={14} className="text-text-muted shrink-0" />
             <input

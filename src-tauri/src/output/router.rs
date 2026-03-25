@@ -141,6 +141,13 @@ impl OutputRouter {
                         .key(DELETE_WORD_MODIFIER, Direction::Release)
                         .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
                 }
+                OutputSegment::Command(VoiceCommand::Send) => {
+                    // Small delay to ensure all preceding text has landed.
+                    thread::sleep(Duration::from_millis(100));
+                    enigo
+                        .key(Key::Return, Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
+                }
             }
         }
 

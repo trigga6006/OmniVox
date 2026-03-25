@@ -50,16 +50,20 @@ impl AppError {
     pub fn code(&self) -> ErrorCode {
         match self {
             AppError::Audio(msg) => {
-                let lower = msg.to_lowercase();
-                if lower.contains("permission")
-                    || lower.contains("denied")
-                    || lower.contains("not allowed")
-                    || lower.contains("no default input device")
+                // Case-insensitive substring check without allocating a new String.
+                let bytes = msg.as_bytes();
+                let contains = |needle: &str| -> bool {
+                    bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+                };
+                if contains("permission")
+                    || contains("denied")
+                    || contains("not allowed")
+                    || contains("no default input device")
                 {
                     ErrorCode::MicPermissionDenied
-                } else if lower.contains("not found") {
+                } else if contains("not found") {
                     ErrorCode::AudioDeviceNotFound
-                } else if lower.contains("busy") || lower.contains("exclusive") {
+                } else if contains("busy") || contains("exclusive") {
                     ErrorCode::AudioDeviceBusy
                 } else {
                     ErrorCode::AudioCaptureError

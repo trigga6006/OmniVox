@@ -17,6 +17,8 @@ pub enum VoiceCommand {
     NewParagraph,
     /// Delete the previous word (Ctrl+Backspace).
     DeleteLastWord,
+    /// Send the message (Enter). Only triggers when "send" is the last word.
+    Send,
 }
 
 /// A segment of output: either literal text to type, or a command to execute.
@@ -45,12 +47,24 @@ fn is_word_char(b: u8) -> bool {
 /// Returns a sequence of [`OutputSegment`]s: literal text interleaved with
 /// commands.  Commands are matched case-insensitively at word boundaries.
 ///
+/// When `detect_send` is `false`, the trailing "send" → Enter detection is
+/// skipped entirely.  All other voice commands still fire normally.
+///
 /// **"delete last word" optimization**: when this command follows a text
 /// segment, the parser removes the last word from the preceding text instead
 /// of emitting a `DeleteLastWord` command.  This avoids typing text and then
 /// immediately sending Ctrl+Backspace (race condition).  A `DeleteLastWord`
 /// command is only emitted when there is no preceding text to trim.
 pub fn parse_commands(text: &str) -> Vec<OutputSegment> {
+    parse_commands_inner(text, true)
+}
+
+/// Like [`parse_commands`] but allows the caller to disable "send" detection.
+pub fn parse_commands_with_options(text: &str, detect_send: bool) -> Vec<OutputSegment> {
+    parse_commands_inner(text, detect_send)
+}
+
+fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -140,6 +154,34 @@ pub fn parse_commands(text: &str) -> Vec<OutputSegment> {
         }
     }
 
+    // "send" command — only matches as the very last word to avoid
+    // false positives (since "send" is a common English word).
+    // Skipped entirely when `detect_send` is false.
+    // Check + strip in two phases to satisfy the borrow checker.
+    let is_send_at_end = detect_send && matches!(segments.last(), Some(OutputSegment::Text(t)) if {
+        let last_word = t.trim_end()
+            .rsplit_once(|c: char| c.is_whitespace())
+            .map_or(t.trim_end(), |(_, w)| w);
+        // Strip trailing punctuation Whisper may add ("send." → "send")
+        let core = last_word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+        core.eq_ignore_ascii_case("send")
+    });
+
+    if is_send_at_end {
+        if let Some(OutputSegment::Text(t)) = segments.last_mut() {
+            let trimmed = t.trim_end();
+            if let Some((prefix, _)) = trimmed.rsplit_once(|c: char| c.is_whitespace()) {
+                *t = prefix.trim_end().to_string();
+            } else {
+                *t = String::new();
+            }
+            if t.is_empty() {
+                segments.pop();
+            }
+        }
+        segments.push(OutputSegment::Command(VoiceCommand::Send));
+    }
+
     segments
 }
 
@@ -156,6 +198,7 @@ pub fn segments_to_string(segments: &[OutputSegment]) -> String {
             OutputSegment::Command(VoiceCommand::NewLine) => out.push('\n'),
             OutputSegment::Command(VoiceCommand::NewParagraph) => out.push_str("\n\n"),
             OutputSegment::Command(VoiceCommand::DeleteLastWord) => {}
+            OutputSegment::Command(VoiceCommand::Send) => {} // keystroke-only, omitted in clipboard
         }
     }
     out
@@ -326,6 +369,69 @@ mod tests {
             OutputSegment::Text("hello".to_string()),
             OutputSegment::Command(VoiceCommand::NewLine),
             OutputSegment::Text(".".to_string()),
+        ]);
+    }
+
+    // ── segments_to_string ────────────────────────────────────────
+
+    // ── Send command (end-of-text only) ─────────────────────────
+
+    #[test]
+    fn send_at_end() {
+        let result = parse_commands("hello world send");
+        assert_eq!(result, vec![
+            OutputSegment::Text("hello world".to_string()),
+            OutputSegment::Command(VoiceCommand::Send),
+        ]);
+    }
+
+    #[test]
+    fn send_alone() {
+        let result = parse_commands("send");
+        assert_eq!(result, vec![OutputSegment::Command(VoiceCommand::Send)]);
+    }
+
+    #[test]
+    fn send_case_insensitive() {
+        let result = parse_commands("hello Send");
+        assert_eq!(result, vec![
+            OutputSegment::Text("hello".to_string()),
+            OutputSegment::Command(VoiceCommand::Send),
+        ]);
+    }
+
+    #[test]
+    fn send_with_trailing_period() {
+        // Whisper may add punctuation — "send." should still trigger
+        let result = parse_commands("hello send.");
+        assert_eq!(result, vec![
+            OutputSegment::Text("hello".to_string()),
+            OutputSegment::Command(VoiceCommand::Send),
+        ]);
+    }
+
+    #[test]
+    fn send_mid_text_does_not_trigger() {
+        // "send" in the middle of a sentence should NOT trigger
+        let result = parse_commands("please send the email");
+        assert_eq!(result, vec![OutputSegment::Text("please send the email".to_string())]);
+    }
+
+    #[test]
+    fn send_as_part_of_word_does_not_trigger() {
+        // "sending" should NOT trigger
+        let result = parse_commands("I am sending");
+        assert_eq!(result, vec![OutputSegment::Text("I am sending".to_string())]);
+    }
+
+    #[test]
+    fn send_after_command() {
+        let result = parse_commands("hello new line world send");
+        assert_eq!(result, vec![
+            OutputSegment::Text("hello".to_string()),
+            OutputSegment::Command(VoiceCommand::NewLine),
+            OutputSegment::Text("world".to_string()),
+            OutputSegment::Command(VoiceCommand::Send),
         ]);
     }
 

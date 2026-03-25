@@ -145,9 +145,16 @@ export function ContextModesPage() {
     return (
       <ModeForm
         mode={editing}
-        onSave={async () => {
-          setEditing(null);
-          setCreating(false);
+        onSave={async (createdMode?: ContextMode) => {
+          if (createdMode) {
+            // New mode was just created — switch into edit mode so
+            // dictionary, snippets, and app bindings are available.
+            setCreating(false);
+            setEditing(createdMode);
+          } else {
+            setEditing(null);
+            setCreating(false);
+          }
           load();
         }}
         onCancel={() => {
@@ -161,7 +168,7 @@ export function ContextModesPage() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-10">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-start justify-between gap-4 mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Layers size={18} className="text-amber-400" />
@@ -176,7 +183,7 @@ export function ContextModesPage() {
         </div>
         <button
           onClick={() => setCreating(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
+          className="shrink-0 mt-0.5 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
         >
           <Plus size={14} />
           New Mode
@@ -285,7 +292,7 @@ function ModeForm({
   onCancel,
 }: {
   mode: ContextMode | null;
-  onSave: () => void;
+  onSave: (createdMode?: ContextMode) => void;
   onCancel: () => void;
 }) {
   const isEdit = mode !== null;
@@ -403,10 +410,11 @@ function ModeForm({
     try {
       if (isEdit) {
         await updateContextMode(mode.id, name, description, icon, color, prompt, writingStyle);
+        onSave();
       } else {
-        await createContextMode(name, description, icon, color, prompt, writingStyle);
+        const created = await createContextMode(name, description, icon, color, prompt, writingStyle);
+        onSave(created);
       }
-      onSave();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -593,7 +601,7 @@ function ModeForm({
                 <input
                   value={newPhrase}
                   onChange={(e) => setNewPhrase(e.target.value)}
-                  placeholder="Phrase"
+                  placeholder="Heard as…"
                   className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddDictEntry()}
                 />
@@ -601,7 +609,7 @@ function ModeForm({
                 <input
                   value={newReplacement}
                   onChange={(e) => setNewReplacement(e.target.value)}
-                  placeholder="Replacement"
+                  placeholder="Replace with…"
                   className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddDictEntry()}
                 />
@@ -656,7 +664,7 @@ function ModeForm({
                 <input
                   value={newTrigger}
                   onChange={(e) => setNewTrigger(e.target.value)}
-                  placeholder="Trigger"
+                  placeholder="Word…"
                   className="w-28 shrink-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddSnippet()}
                 />
@@ -754,7 +762,7 @@ function ModeForm({
             )}
           >
             <Check size={14} />
-            {saving ? "Saving..." : isEdit ? "Save Changes" : "Create Mode"}
+            {saving ? "Saving..." : isEdit ? "Save Changes" : "Create & Continue"}
           </button>
           <button
             onClick={onCancel}
@@ -763,6 +771,11 @@ function ModeForm({
             Cancel
           </button>
         </div>
+        {!isEdit && (
+          <p className="text-[11px] text-text-muted">
+            After creating, you'll be able to add custom words, snippets, and app bindings.
+          </p>
+        )}
       </div>
     </div>
   );

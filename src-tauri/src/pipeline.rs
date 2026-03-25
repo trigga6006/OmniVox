@@ -37,17 +37,18 @@ fn capture_foreground_window() -> Option<isize> {
 
 #[cfg(target_os = "macos")]
 fn capture_foreground_window() -> Option<isize> {
-    use std::process::Command;
-    // Use osascript to get the frontmost application's PID.
-    // NSWorkspace.shared.frontmostApplication is the Cocoa way, but going
-    // through osascript avoids objc runtime complexity in the hot path.
-    let output = Command::new("osascript")
-        .args(["-e", r#"tell application "System Events" to unix id of first process whose frontmost is true"#])
-        .output()
-        .ok()?;
-
-    let pid_str = String::from_utf8_lossy(&output.stdout);
-    pid_str.trim().parse::<i32>().ok().map(|pid| pid as isize)
+    // Use NSWorkspace via the objc runtime to get the frontmost app's PID.
+    // This is a direct Cocoa call — no subprocess overhead.
+    unsafe {
+        let cls = objc::runtime::Class::get("NSWorkspace")?;
+        let workspace: *mut objc::runtime::Object = objc::msg_send![cls, sharedWorkspace];
+        let app: *mut objc::runtime::Object = objc::msg_send![workspace, frontmostApplication];
+        if app.is_null() {
+            return None;
+        }
+        let pid: i32 = objc::msg_send![app, processIdentifier];
+        if pid > 0 { Some(pid as isize) } else { None }
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -93,20 +94,16 @@ fn get_process_name_from_hwnd(hwnd: isize) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn get_process_name_from_hwnd(pid: isize) -> Option<String> {
-    use std::process::Command;
-    // Get the executable name for a given PID via ps.
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
-
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if name.is_empty() {
-        None
-    } else {
-        // Extract just the binary name from the path (e.g. "/Applications/Slack.app/Contents/MacOS/Slack" -> "Slack")
-        name.rsplit('/').next().map(|s| s.to_string())
+    // Use proc_pidpath to get the executable path directly — no subprocess overhead.
+    let mut buf = [0u8; 4096]; // PROC_PIDPATHINFO_MAXSIZE
+    let ret = unsafe {
+        libc::proc_pidpath(pid as i32, buf.as_mut_ptr() as *mut _, buf.len() as u32)
+    };
+    if ret <= 0 {
+        return None;
     }
+    let path = std::str::from_utf8(&buf[..ret as usize]).ok()?;
+    path.rsplit('/').next().map(|s| s.to_string())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -188,17 +185,22 @@ fn deselect_after_focus_restore(hwnd: isize) {
 
 #[cfg(target_os = "macos")]
 fn restore_foreground_window(pid: isize) {
-    use std::process::Command;
-    // Activate the application by PID using osascript.
-    // This is equivalent to NSRunningApplication.activate().
-    let script = format!(
-        r#"tell application "System Events"
-            set targetProcess to first process whose unix id is {}
-            set frontmost of targetProcess to true
-        end tell"#,
-        pid
-    );
-    let _ = Command::new("osascript").args(["-e", &script]).output();
+    // Use NSRunningApplication to activate by PID — no subprocess overhead.
+    unsafe {
+        let cls = objc::runtime::Class::get("NSRunningApplication")
+            .expect("NSRunningApplication class");
+        let app: *mut objc::runtime::Object = objc::msg_send![
+            cls,
+            runningApplicationWithProcessIdentifier: pid as i32
+        ];
+        if !app.is_null() {
+            // NSApplicationActivateIgnoringOtherApps = 1 << 1
+            let _: objc::runtime::BOOL = objc::msg_send![
+                app,
+                activateWithOptions: 0x02u64
+            ];
+        }
+    }
     // Give the OS time to process the focus switch.
     std::thread::sleep(std::time::Duration::from_millis(50));
 }
@@ -534,11 +536,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //     Splits text into [Text | Command] segments so the output router can
     //     type text and execute keystrokes (Shift+Enter, Ctrl+Backspace, etc.).
     let voice_segments = {
-        let enabled = crate::storage::settings::get_settings(&state.db)
-            .map(|s| s.voice_commands)
-            .unwrap_or(false);
+        let settings = crate::storage::settings::get_settings(&state.db).ok();
+        let enabled = settings.as_ref().map(|s| s.voice_commands).unwrap_or(false);
         if enabled {
-            Some(crate::postprocess::voice_commands::parse_commands(&final_text))
+            let detect_send = settings.as_ref().map(|s| s.command_send).unwrap_or(true);
+            Some(crate::postprocess::voice_commands::parse_commands_with_options(&final_text, detect_send))
         } else {
             None
         }

@@ -85,6 +85,11 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.voice_commands);
 
+    let command_send = map
+        .get("command_send")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.command_send);
+
     let ship_mode = map
         .get("ship_mode")
         .map(|v| v == "true")
@@ -115,6 +120,7 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         noise_reduction,
         auto_switch_modes,
         voice_commands,
+        command_send,
         ship_mode,
         ghost_mode,
         writing_style,
@@ -193,6 +199,10 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params!["voice_commands", settings.voice_commands.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["command_send", settings.command_send.to_string()],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",

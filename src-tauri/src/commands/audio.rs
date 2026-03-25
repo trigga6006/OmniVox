@@ -19,7 +19,8 @@ pub async fn open_mic_settings() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("ms-settings:privacy-microphone")
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "ms-settings:privacy-microphone"])
             .spawn();
     }
 
