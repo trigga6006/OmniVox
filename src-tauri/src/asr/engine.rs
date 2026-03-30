@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::RwLock;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -21,6 +22,10 @@ pub trait AsrEngine: Send + Sync {
 pub struct WhisperEngine {
     ctx: WhisperContext,
     config: AsrConfig,
+    /// Hot-swappable initial prompt override. When set, takes precedence over
+    /// `config.initial_prompt` for the next transcription call. Updated when
+    /// vocabulary or dictionary entries change, avoiding a full model reload.
+    prompt_override: RwLock<Option<String>>,
 }
 
 // SAFETY: WhisperContext holds read-only model weights after construction.
@@ -50,11 +55,25 @@ impl WhisperEngine {
         let ctx = WhisperContext::new_with_params(path, ctx_params)
             .map_err(|e| AppError::Asr(format!("Failed to load model '{path}': {e}")))?;
 
-        Ok(Self { ctx, config })
+        Ok(Self {
+            ctx,
+            config,
+            prompt_override: RwLock::new(None),
+        })
     }
 }
 
 impl WhisperEngine {
+    /// Update the initial prompt at runtime without reloading the model.
+    ///
+    /// Called when vocabulary or dictionary entries change. The new prompt
+    /// takes effect on the very next `transcribe()` call.
+    pub fn set_initial_prompt(&self, prompt: Option<String>) {
+        if let Ok(mut guard) = self.prompt_override.write() {
+            *guard = prompt;
+        }
+    }
+
     /// Fast greedy transcription for live preview during recording.
     ///
     /// Uses greedy decoding (beam_size=1), no temperature fallback, and
@@ -172,7 +191,16 @@ impl AsrEngine for WhisperEngine {
         // Bias Whisper toward domain-specific vocabulary (e.g. programming
         // terms) so it recognizes them on the first pass rather than relying
         // on dictionary post-processing.
-        if let Some(ref prompt) = self.config.initial_prompt {
+        // Check the hot-swappable override first (updated when vocab/dictionary
+        // entries change), falling back to the config set at model load time.
+        let override_prompt = self
+            .prompt_override
+            .read()
+            .ok()
+            .and_then(|g| g.clone());
+        let effective_prompt = override_prompt
+            .or_else(|| self.config.initial_prompt.clone());
+        if let Some(ref prompt) = effective_prompt {
             params.set_initial_prompt(prompt);
         }
 

@@ -120,11 +120,7 @@ pub fn load_and_activate_model(
 
     // English-only models (.en suffix) force English; multilingual models
     // use auto-detection so users can dictate in any language.
-    let is_multilingual = model_id == "whisper-medium"
-        || model_id == "whisper-large-v3-turbo-multi"
-        || model_id == "whisper-distil-large-v3"
-        || model_id == "whisper-large"
-        || (!model_id.contains("-en") && !model_id.ends_with("-q5"));
+    let is_multilingual = is_model_multilingual(model_id);
     let language = if is_multilingual { None } else { Some("en".into()) };
 
     // Build an initial prompt to bias Whisper's decoder.
@@ -148,7 +144,7 @@ pub fn load_and_activate_model(
     // Load on a thread with a larger stack — whisper.cpp + GGML backends
     // need extra stack space, especially in debug builds on Windows.
     let engine = std::thread::Builder::new()
-        .stack_size(128 * 1024 * 1024) // 128 MB — debug builds have much larger stack frames
+        .stack_size(256 * 1024 * 1024) // 256 MB — debug builds have much larger stack frames (especially with llama.cpp + whisper.cpp)
         .spawn(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 WhisperEngine::load(config)
@@ -200,13 +196,25 @@ GitHub, ChatGPT, GPT, OpenAI, Google, Microsoft, Apple, Amazon, \
 Docker, Linux, Windows, macOS, Android, iOS, \
 OmniVox, Whisper";
 
+/// Check whether a Whisper model supports multiple languages.
+///
+/// English-only models have an `-en` suffix or end with `-q5`.
+/// Everything else (medium, large, turbo variants) is multilingual.
+pub(crate) fn is_model_multilingual(model_id: &str) -> bool {
+    model_id == "whisper-medium"
+        || model_id == "whisper-large-v3-turbo-multi"
+        || model_id == "whisper-distil-large-v3"
+        || model_id == "whisper-large"
+        || (!model_id.contains("-en") && !model_id.ends_with("-q5"))
+}
+
 /// Build a Whisper initial prompt from static vocabulary + dictionary entries.
 ///
 /// - English models get the full English vocab to bias toward correct
 ///   recognition of technical terms and proper nouns.
 /// - Multilingual models get only universal abbreviations + user dictionary
 ///   terms, so the language detector works unbiased for non-English speech.
-fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option<String> {
+pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option<String> {
     let mut terms: Vec<String> = Vec::new();
 
     // Start with the appropriate static vocabulary
@@ -227,7 +235,16 @@ fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option
         }
     }
 
-    // Active mode's dictionary entries
+    // Global vocabulary entries (custom words the user commonly uses)
+    if let Ok(entries) = crate::storage::vocabulary::list_entries(&state.db) {
+        for entry in &entries {
+            if entry.is_enabled && !entry.word.is_empty() {
+                terms.push(entry.word.clone());
+            }
+        }
+    }
+
+    // Active mode's dictionary + vocabulary entries
     if let Ok(guard) = state.active_context_mode_id.lock() {
         if let Some(ref mode_id) = *guard {
             if let Ok(entries) = crate::storage::dictionary::list_entries_for_mode(&state.db, mode_id) {
@@ -237,13 +254,60 @@ fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option
                     }
                 }
             }
+            if let Ok(entries) = crate::storage::vocabulary::list_entries_for_mode(&state.db, mode_id) {
+                for entry in &entries {
+                    if entry.is_enabled && !entry.word.is_empty() {
+                        terms.push(entry.word.clone());
+                    }
+                }
+            }
         }
     }
 
     if terms.is_empty() {
-        None
-    } else {
-        terms.dedup();
-        Some(terms.join(", "))
+        return None;
     }
+
+    terms.dedup();
+    let mut prompt = terms.join(", ");
+
+    // Collect vocabulary words (user's custom words) for reinforcement.
+    // Whisper's initial_prompt uses recency bias — tokens closer to the end
+    // have more influence on decoder output. Repeating vocabulary words in a
+    // sentence-like context at the end of the prompt gives the decoder a much
+    // stronger signal than a single mention in a comma-separated list.
+    let mut vocab_words: Vec<String> = Vec::new();
+    if let Ok(entries) = crate::storage::vocabulary::list_entries(&state.db) {
+        for entry in &entries {
+            if entry.is_enabled && !entry.word.is_empty() {
+                vocab_words.push(entry.word.clone());
+            }
+        }
+    }
+    if let Ok(guard) = state.active_context_mode_id.lock() {
+        if let Some(ref mode_id) = *guard {
+            if let Ok(entries) = crate::storage::vocabulary::list_entries_for_mode(&state.db, mode_id) {
+                for entry in &entries {
+                    if entry.is_enabled && !entry.word.is_empty() {
+                        vocab_words.push(entry.word.clone());
+                    }
+                }
+            }
+        }
+    }
+    if !vocab_words.is_empty() {
+        // Append reinforcement: repeat each vocab word in context to
+        // strongly bias the decoder (e.g. "Claude Code. Claude Code.")
+        let reinforcement = vocab_words
+            .iter()
+            .map(|w| format!("{w}."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        prompt.push_str(". ");
+        prompt.push_str(&reinforcement);
+        prompt.push(' ');
+        prompt.push_str(&reinforcement);
+    }
+
+    Some(prompt)
 }

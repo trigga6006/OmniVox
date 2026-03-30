@@ -23,11 +23,10 @@ pub async fn create_context_mode(
     description: String,
     icon: String,
     color: String,
-    llm_prompt: String,
     writing_style: String,
     state: State<'_, AppState>,
 ) -> Result<ContextMode, String> {
-    crate::storage::context_modes::create_mode(&state.db, &name, &description, &icon, &color, &llm_prompt, &writing_style)
+    crate::storage::context_modes::create_mode(&state.db, &name, &description, &icon, &color, &writing_style)
         .map_err(|e| e.to_string())
 }
 
@@ -38,11 +37,10 @@ pub async fn update_context_mode(
     description: String,
     icon: String,
     color: String,
-    llm_prompt: String,
     writing_style: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    crate::storage::context_modes::update_mode(&state.db, &id, &name, &description, &icon, &color, &llm_prompt, &writing_style)
+    crate::storage::context_modes::update_mode(&state.db, &id, &name, &description, &icon, &color, &writing_style)
         .map_err(|e| e.to_string())?;
 
     Ok(())
@@ -154,6 +152,9 @@ pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<
 
     // Load global + mode-scoped entries into the processor
     super::dictionary::sync_processor(state);
+
+    // Rebuild the Whisper initial prompt to include the new mode's vocabulary
+    super::dictionary::sync_whisper_prompt(state);
 
     Ok(())
 }

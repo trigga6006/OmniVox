@@ -9,7 +9,6 @@ pub struct ContextMode {
     pub description: String,
     pub icon: String,
     pub color: String,
-    pub llm_prompt: String,
     pub sort_order: i32,
     pub is_builtin: bool,
     pub created_at: DateTime<Utc>,
@@ -51,6 +50,16 @@ pub struct Snippet {
     pub trigger: String,
     pub content: String,
     pub description: Option<String>,
+    pub is_enabled: bool,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VocabularyEntry {
+    pub id: Uuid,
+    pub word: String,
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,6 +113,10 @@ pub struct AppSettings {
     pub ghost_mode: bool,
     /// Writing style controls capitalization and punctuation ("formal", "casual", "very_casual").
     pub writing_style: String,
+    /// Lower system volume while recording to reduce background noise pickup.
+    pub audio_ducking: bool,
+    /// How much to reduce volume (0 = no reduction, 100 = full mute). Default 70.
+    pub ducking_amount: u32,
 }
 
 impl Default for AppSettings {
@@ -127,6 +140,8 @@ impl Default for AppSettings {
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),
+            audio_ducking: true,
+            ducking_amount: 70,
         }
     }
 }

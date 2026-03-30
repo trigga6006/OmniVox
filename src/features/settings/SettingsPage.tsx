@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send } from "lucide-react";
 import {
   getSettings,
   updateSettings,
@@ -417,7 +417,9 @@ export function SettingsPage() {
       const style = writingStyles.find((st) => st.id === s.writing_style);
       setActiveStyle(style ? style.id : "formal");
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const handleModeChange = useCallback(
@@ -483,6 +485,23 @@ export function SettingsPage() {
     setSettings(updated);
     updateSettings(updated).catch(console.error);
   }, [settings]);
+
+  const handleAudioDuckingToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, audio_ducking: !settings.audio_ducking };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleDuckingAmountChange = useCallback(
+    (value: number) => {
+      if (!settings) return;
+      const updated = { ...settings, ducking_amount: value };
+      setSettings(updated);
+      updateSettings(updated).catch(console.error);
+    },
+    [settings]
+  );
 
   const handleVoiceCommandsToggle = useCallback(() => {
     if (!settings) return;
@@ -833,6 +852,171 @@ export function SettingsPage() {
           </div>
         </section>
 
+        {/* ── Audio Ducking ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.audio_ducking
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.24s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <VolumeX size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Audio Ducking
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Lower system volume while dictating so other audio doesn't compete
+            with your microphone. Restores volume when recording stops.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleAudioDuckingToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.audio_ducking ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.audio_ducking ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.audio_ducking ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+
+          {settings?.audio_ducking && (
+            <div className="mt-4 pt-4 border-t border-border/50">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-text-muted">Reduction Amount</span>
+                <span className="text-xs font-medium text-text-secondary tabular-nums">
+                  {settings.ducking_amount}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={settings.ducking_amount}
+                onChange={(e) => handleDuckingAmountChange(parseInt(e.target.value, 10))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-surface-3
+                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4
+                  [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full
+                  [&::-webkit-slider-thumb]:bg-amber-500 [&::-webkit-slider-thumb]:shadow-sm
+                  [&::-webkit-slider-thumb]:cursor-pointer"
+              />
+              <div className="flex justify-between mt-1">
+                <span className="text-[10px] text-text-muted">None</span>
+                <span className="text-[10px] text-text-muted">Full mute</span>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ── AI Cleanup ── */}
+        {/* <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            aiStatus?.model_loaded
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.25s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              AI Cleanup
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+            Use a local LLM (Qwen3 0.6B) to clean up transcriptions — removes filler words,
+            fixes grammar, and handles self-corrections. Runs entirely on your device.
+          </p>
+
+          {!aiStatus?.model_downloaded ? (
+            <button
+              onClick={() => {
+                setAiDownloading(true);
+                setAiDownloadPercent(0);
+                downloadLlmModel().catch((e) => {
+                  console.error("LLM download failed:", e);
+                  setAiDownloading(false);
+                });
+              }}
+              disabled={aiDownloading}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/15 transition-colors disabled:opacity-50"
+            >
+              {aiDownloading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  Downloading... {aiDownloadPercent}%
+                </>
+              ) : (
+                <>
+                  <Download size={14} strokeWidth={2} />
+                  Download Model (~400 MB)
+                </>
+              )}
+            </button>
+          ) : (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  if (aiStatus?.model_loaded) {
+                    disableAiCleanup()
+                      .then(() => getAiCleanupStatus())
+                      .then(setAiStatus)
+                      .catch((e) => console.error("Failed to disable AI cleanup:", e));
+                  } else {
+                    setAiLoading(true);
+                    enableAiCleanup()
+                      .then(() => getAiCleanupStatus())
+                      .then(setAiStatus)
+                      .catch((e) => console.error("Failed to enable AI cleanup:", e))
+                      .finally(() => setAiLoading(false));
+                  }
+                }}
+                disabled={aiLoading}
+                className={cn(
+                  "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                  aiStatus?.model_loaded ? "bg-amber-500" : "bg-surface-3"
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                    aiStatus?.model_loaded ? "translate-x-6" : "translate-x-1"
+                  )}
+                />
+              </button>
+              <span className="text-sm text-text-secondary">
+                {aiLoading ? "Loading model..." : aiStatus?.model_loaded ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+          )}
+
+          {aiDownloading && (
+            <div className="mt-3 h-1.5 w-full rounded-full bg-surface-3 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                style={{ width: `${aiDownloadPercent}%` }}
+              />
+            </div>
+          )}
+        */}
+
         {/* ── Voice Commands ── */}
         <section
           className={cn(
@@ -841,7 +1025,7 @@ export function SettingsPage() {
               ? "border-amber-500/20"
               : "border-border hover:border-border-hover"
           )}
-          style={{ opacity: 0, animationDelay: "0.25s", animationFillMode: "forwards" }}
+          style={{ opacity: 0, animationDelay: "0.27s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Mic size={14} strokeWidth={2} className="text-text-muted" />
@@ -982,7 +1166,7 @@ export function SettingsPage() {
               ? "border-amber-500/20"
               : "border-border hover:border-border-hover"
           )}
-          style={{ opacity: 0, animationDelay: "0.25s", animationFillMode: "forwards" }}
+          style={{ opacity: 0, animationDelay: "0.30s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Layers size={14} strokeWidth={2} className="text-text-muted" />
@@ -1026,7 +1210,7 @@ export function SettingsPage() {
               ? "border-amber-500/20"
               : "border-border hover:border-border-hover"
           )}
-          style={{ opacity: 0, animationDelay: "0.28s", animationFillMode: "forwards" }}
+          style={{ opacity: 0, animationDelay: "0.33s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Rocket size={14} strokeWidth={2} className="text-text-muted" />
@@ -1086,7 +1270,7 @@ export function SettingsPage() {
         {/* ── About ── */}
         <section
           className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
-          style={{ opacity: 0, animationDelay: "0.40s", animationFillMode: "forwards" }}
+          style={{ opacity: 0, animationDelay: "0.36s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Info size={14} strokeWidth={2} className="text-text-muted" />

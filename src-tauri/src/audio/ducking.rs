@@ -7,9 +7,9 @@
 //! - **macOS**: CoreAudio `AudioObjectSetPropertyData`
 //! - **Linux**: Stubbed (planned: PulseAudio / PipeWire)
 
-/// How much to reduce volume (0.30 = duck to 30% of current level).
+/// Default duck factor when none is specified (duck to 30% of current level).
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-const DUCK_FACTOR: f32 = 0.30;
+const DEFAULT_DUCK_FACTOR: f32 = 0.30;
 
 // ── Windows implementation ───────────────────────────────────────
 
@@ -39,7 +39,7 @@ mod win {
         }
     }
 
-    pub fn duck() {
+    pub fn duck(factor: f32) {
         let vol = match get_endpoint_volume() {
             Ok(v) => v,
             Err(e) => {
@@ -61,7 +61,7 @@ mod win {
                 *orig = Some(current);
             }
 
-            let ducked = (current * super::DUCK_FACTOR).max(0.0);
+            let ducked = (current * factor).clamp(0.0, 1.0);
             if let Err(e) = vol.SetMasterVolumeLevelScalar(ducked, std::ptr::null()) {
                 eprintln!("Volume duck: failed to set level: {e}");
             }
@@ -216,7 +216,7 @@ mod mac {
         status == 0
     }
 
-    pub fn duck() {
+    pub fn duck(factor: f32) {
         let device_id = match get_default_output_device() {
             Some(id) => id,
             None => {
@@ -237,7 +237,7 @@ mod mac {
             *orig = Some(current);
         }
 
-        let ducked = (current * super::DUCK_FACTOR).max(0.0);
+        let ducked = (current * factor).clamp(0.0, 1.0);
         if !set_volume(device_id, ducked) {
             eprintln!("Volume duck: failed to set volume");
         }
@@ -268,12 +268,17 @@ mod mac {
 // ── Public API ───────────────────────────────────────────────────
 
 /// Lower system volume while recording.
-pub fn duck() {
+///
+/// `factor` is the multiplier applied to the current volume (0.0 = mute, 1.0 = no change).
+/// Pass `None` to use the default factor (0.30).
+pub fn duck(factor: Option<f32>) {
+    let f = factor.unwrap_or(DEFAULT_DUCK_FACTOR);
+
     #[cfg(target_os = "windows")]
-    win::duck();
+    win::duck(f);
 
     #[cfg(target_os = "macos")]
-    mac::duck();
+    mac::duck(f);
 }
 
 /// Restore system volume after recording.

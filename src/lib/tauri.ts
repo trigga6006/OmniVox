@@ -64,6 +64,13 @@ export interface Snippet {
   created_at: string;
 }
 
+export interface VocabularyEntry {
+  id: string;
+  word: string;
+  is_enabled: boolean;
+  created_at: string;
+}
+
 export interface HotkeyConfig {
   keys: number[];
   labels: string[];
@@ -79,6 +86,7 @@ export interface AppSettings {
   active_model_id: string | null;
   hotkey: HotkeyConfig | null;
   gpu_acceleration: boolean;
+  active_context_mode_id: string | null;
   live_preview: boolean;
   noise_reduction: boolean;
   auto_switch_modes: boolean;
@@ -87,6 +95,8 @@ export interface AppSettings {
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
+  audio_ducking: boolean;
+  ducking_amount: number;
 }
 
 export interface AppBinding {
@@ -142,6 +152,16 @@ export const updateSnippet = (id: string, trigger: string, content: string, desc
   invoke<void>("update_snippet", { id, trigger, content, description: description ?? null });
 export const deleteSnippet = (id: string) => invoke<void>("delete_snippet", { id });
 export const listSnippets = () => invoke<Snippet[]>("list_snippets");
+
+// Vocabulary commands
+export const addVocabularyEntry = (word: string) =>
+  invoke<VocabularyEntry>("add_vocabulary_entry", { word });
+export const updateVocabularyEntry = (id: string, word: string) =>
+  invoke<void>("update_vocabulary_entry", { id, word });
+export const deleteVocabularyEntry = (id: string) =>
+  invoke<void>("delete_vocabulary_entry", { id });
+export const listVocabularyEntries = () =>
+  invoke<VocabularyEntry[]>("list_vocabulary_entries");
 
 // History commands
 export interface DictationStats {
@@ -202,7 +222,6 @@ export interface ContextMode {
   description: string;
   icon: string;
   color: string;
-  llm_prompt: string;
   sort_order: number;
   is_builtin: boolean;
   created_at: string;
@@ -218,7 +237,6 @@ export const createContextMode = (
   description: string,
   icon: string,
   color: string,
-  llmPrompt: string,
   writingStyle: string
 ) =>
   invoke<ContextMode>("create_context_mode", {
@@ -226,7 +244,6 @@ export const createContextMode = (
     description,
     icon,
     color,
-    llmPrompt,
     writingStyle,
   });
 export const updateContextMode = (
@@ -235,7 +252,6 @@ export const updateContextMode = (
   description: string,
   icon: string,
   color: string,
-  llmPrompt: string,
   writingStyle: string
 ) =>
   invoke<void>("update_context_mode", {
@@ -244,7 +260,6 @@ export const updateContextMode = (
     description,
     icon,
     color,
-    llmPrompt,
     writingStyle,
   });
 export const deleteContextMode = (id: string) =>
@@ -263,6 +278,12 @@ export const addModeSnippet = (modeId: string, trigger: string, content: string,
   invoke<Snippet>("add_mode_snippet", { modeId, trigger, content, description: description ?? null });
 export const deleteModeSnippet = (id: string) =>
   invoke<void>("delete_mode_snippet", { id });
+export const listModeVocabularyEntries = (modeId: string) =>
+  invoke<VocabularyEntry[]>("list_mode_vocabulary_entries", { modeId });
+export const addModeVocabularyEntry = (modeId: string, word: string) =>
+  invoke<VocabularyEntry>("add_mode_vocabulary_entry", { modeId, word });
+export const deleteModeVocabularyEntry = (id: string) =>
+  invoke<void>("delete_mode_vocabulary_entry", { id });
 export const getActiveContextMode = () =>
   invoke<ContextMode | null>("get_active_context_mode");
 export const setActiveContextMode = (id: string) =>

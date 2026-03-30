@@ -74,6 +74,14 @@ impl Database {
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS vocabulary_entries (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    word TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    mode_id TEXT REFERENCES context_modes(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS context_modes (
                     id TEXT PRIMARY KEY NOT NULL,
                     name TEXT NOT NULL UNIQUE,

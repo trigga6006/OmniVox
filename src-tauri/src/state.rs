@@ -18,7 +18,7 @@ use crate::storage::database::Database;
 pub struct AppState {
     /// Microphone capture engine
     pub audio: Mutex<AudioCapture>,
-    /// Whisper engine — None until a model is loaded.
+    /// Whisper engine. None until a model is loaded.
     /// Wrapped in Arc so transcription can run on a blocking thread without
     /// holding the Mutex for the duration of CPU-bound inference.
     pub engine: Mutex<Option<Arc<crate::asr::engine::WhisperEngine>>>,
@@ -55,11 +55,10 @@ impl AppState {
         let models_dir = data_dir.join("models");
         let db_path = data_dir.join("omnivox.db");
 
-        // Initialize database — create tables on first run
-        let db = Database::init(&db_path)
-            .expect("Failed to initialize database");
+        // Initialize database. Create tables on first run.
+        let db = Database::init(&db_path).expect("Failed to initialize database");
 
-        // Load saved writing style so it persists across restarts
+        // Load saved writing style so it persists across restarts.
         let writing_style = crate::storage::settings::get_settings(&db)
             .map(|s| WritingStyle::from_str(&s.writing_style))
             .unwrap_or_default();

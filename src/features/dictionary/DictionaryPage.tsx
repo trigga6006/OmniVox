@@ -8,6 +8,7 @@ import {
   X,
   ArrowRight,
   FileText,
+  Languages,
 } from "lucide-react";
 import {
   listDictionaryEntries,
@@ -18,13 +19,218 @@ import {
   addSnippet,
   updateSnippet,
   deleteSnippet,
+  listVocabularyEntries,
+  addVocabularyEntry,
+  updateVocabularyEntry,
+  deleteVocabularyEntry,
   type DictionaryEntry,
   type Snippet,
+  type VocabularyEntry,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
-const tabs = ["Words", "Snippets"] as const;
+const tabs = ["Vocabulary", "Words", "Snippets"] as const;
 type Tab = (typeof tabs)[number];
+
+/* ──────────────────────── Vocabulary Tab ──────────────────────── */
+
+function VocabularyTab() {
+  const [entries, setEntries] = useState<VocabularyEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Inline add
+  const [adding, setAdding] = useState(false);
+  const [newWord, setNewWord] = useState("");
+  const wordRef = useRef<HTMLInputElement>(null);
+
+  // Inline edit
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editWord, setEditWord] = useState("");
+
+  const load = useCallback(() => {
+    setLoading(true);
+    listVocabularyEntries()
+      .then(setEntries)
+      .catch((e) => console.error("Failed to load vocabulary:", e))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    if (adding) wordRef.current?.focus();
+  }, [adding]);
+
+  const handleAdd = useCallback(() => {
+    const w = newWord.trim();
+    if (!w) return;
+    addVocabularyEntry(w)
+      .then((entry) => {
+        setEntries((prev) => [...prev, entry]);
+        setNewWord("");
+        setAdding(false);
+      })
+      .catch((e) => console.error("Failed to add vocabulary entry:", e));
+  }, [newWord]);
+
+  const handleUpdate = useCallback(
+    (id: string) => {
+      const w = editWord.trim();
+      if (!w) return;
+      updateVocabularyEntry(id, w)
+        .then(() => {
+          setEntries((prev) =>
+            prev.map((e) => (e.id === id ? { ...e, word: w } : e))
+          );
+          setEditId(null);
+        })
+        .catch((e) => console.error("Failed to update vocabulary entry:", e));
+    },
+    [editWord]
+  );
+
+  const handleDelete = useCallback((id: string) => {
+    deleteVocabularyEntry(id)
+      .then(() => setEntries((prev) => prev.filter((e) => e.id !== id)))
+      .catch((e) => console.error("Failed to delete vocabulary entry:", e));
+  }, []);
+
+  const startEdit = (entry: VocabularyEntry) => {
+    setEditId(entry.id);
+    setEditWord(entry.word);
+  };
+
+  if (!loading && entries.length === 0 && !adding) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-4">
+        <div className="relative flex items-center justify-center">
+          <div className="absolute h-20 w-20 rounded-full bg-amber-500/5 border border-amber-700/20" />
+          <Languages size={40} strokeWidth={1.5} className="relative text-text-muted" />
+        </div>
+        <div className="text-center mt-2">
+          <p className="text-sm font-medium text-text-secondary">
+            No vocabulary words yet
+          </p>
+          <p className="text-xs text-text-muted mt-1 max-w-xs">
+            Add words you commonly use so Whisper recognizes them correctly instead of guessing similar-sounding alternatives
+          </p>
+        </div>
+        <button
+          onClick={() => setAdding(true)}
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/15 transition-colors"
+        >
+          <Plus size={14} strokeWidth={2} />
+          Add first word
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 flex-1 overflow-y-auto pr-1 mt-4">
+      {entries.map((entry) => {
+        const isEditing = editId === entry.id;
+
+        if (isEditing) {
+          return (
+            <div
+              key={entry.id}
+              className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex items-center gap-2"
+            >
+              <input
+                value={editWord}
+                onChange={(e) => setEditWord(e.target.value)}
+                className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+                placeholder="Word or phrase…"
+                onKeyDown={(e) => e.key === "Enter" && handleUpdate(entry.id)}
+                autoFocus
+              />
+              <button
+                onClick={() => handleUpdate(entry.id)}
+                className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
+              >
+                <Check size={14} />
+              </button>
+              <button
+                onClick={() => setEditId(null)}
+                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          );
+        }
+
+        return (
+          <div
+            key={entry.id}
+            className="group bg-surface-1 rounded-lg border border-border hover:border-border-hover p-3 flex items-center gap-3 transition-colors"
+          >
+            <span className="text-sm text-text-primary font-medium flex-1 truncate">
+              {entry.word}
+            </span>
+            <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={() => startEdit(entry)}
+                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-text-secondary transition-colors"
+              >
+                <Pencil size={13} />
+              </button>
+              <button
+                onClick={() => handleDelete(entry.id)}
+                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-recording-400 transition-colors"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Inline add row */}
+      {adding && (
+        <div className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex items-center gap-2">
+          <input
+            ref={wordRef}
+            value={newWord}
+            onChange={(e) => setNewWord(e.target.value)}
+            className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+            placeholder="Word or phrase…"
+            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+          />
+          <button
+            onClick={handleAdd}
+            className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
+          >
+            <Check size={14} />
+          </button>
+          <button
+            onClick={() => {
+              setAdding(false);
+              setNewWord("");
+            }}
+            className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Add button */}
+      {!adding && (
+        <button
+          onClick={() => setAdding(true)}
+          className="flex items-center gap-2 rounded-lg border border-dashed border-border hover:border-amber-500/30 p-3 text-sm text-text-muted hover:text-amber-400 transition-colors"
+        >
+          <Plus size={14} strokeWidth={2} />
+          Add vocabulary word
+        </button>
+      )}
+    </div>
+  );
+}
 
 /* ────────────────────────── Words Tab ────────────────────────── */
 
@@ -517,7 +723,7 @@ function SnippetsTab() {
 /* ────────────────────────── Main Page ────────────────────────── */
 
 export function DictionaryPage() {
-  const [activeTab, setActiveTab] = useState<Tab>("Words");
+  const [activeTab, setActiveTab] = useState<Tab>("Vocabulary");
 
   return (
     <div className="flex h-full flex-col p-6">
@@ -554,7 +760,9 @@ export function DictionaryPage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === "Words" ? <WordsTab /> : <SnippetsTab />}
+      {activeTab === "Vocabulary" && <VocabularyTab />}
+      {activeTab === "Words" && <WordsTab />}
+      {activeTab === "Snippets" && <SnippetsTab />}
     </div>
   );
 }

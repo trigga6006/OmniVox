@@ -253,11 +253,12 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
         *prev = fg;
     }
 
+    // Load settings once — used for auto-switch and audio ducking below.
+    let settings = crate::storage::settings::get_settings(&state.db).ok();
+
     // Auto-switch context mode based on the foreground application.
     if let Some(hwnd) = fg {
-        let auto_switch = crate::storage::settings::get_settings(&state.db)
-            .map(|s| s.auto_switch_modes)
-            .unwrap_or(false);
+        let auto_switch = settings.as_ref().map(|s| s.auto_switch_modes).unwrap_or(false);
 
         if auto_switch {
             if let Some(process_name) = get_process_name_from_hwnd(hwnd) {
@@ -301,7 +302,13 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
     }
 
     // Duck system volume so other audio doesn't compete with the mic.
-    crate::audio::ducking::duck();
+    if settings.as_ref().map(|s| s.audio_ducking).unwrap_or(true) {
+        // Convert ducking_amount (0–100, % reduction) to a volume factor.
+        // 70 → keep 30% of volume (factor 0.30), 100 → mute (factor 0.0).
+        let amount = settings.as_ref().map(|s| s.ducking_amount).unwrap_or(70);
+        let factor = 1.0 - (amount.min(100) as f32 / 100.0);
+        crate::audio::ducking::duck(Some(factor));
+    }
 
     let mut audio = match state.audio.lock() {
         Ok(guard) => guard,

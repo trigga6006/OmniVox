@@ -3,6 +3,7 @@ pub mod database;
 pub mod history;
 pub mod dictionary;
 pub mod snippets;
+pub mod vocabulary;
 pub mod settings;
 pub mod notes;
 pub mod context_modes;

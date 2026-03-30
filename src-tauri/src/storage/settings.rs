@@ -105,6 +105,16 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .cloned()
         .unwrap_or(defaults.writing_style);
 
+    let audio_ducking = map
+        .get("audio_ducking")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.audio_ducking);
+
+    let ducking_amount = map
+        .get("ducking_amount")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(defaults.ducking_amount);
+
     Ok(AppSettings {
         theme,
         language,
@@ -124,6 +134,8 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         ship_mode,
         ghost_mode,
         writing_style,
+        audio_ducking,
+        ducking_amount,
     })
 }
 
@@ -215,6 +227,14 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params!["writing_style", &settings.writing_style],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["audio_ducking", settings.audio_ducking.to_string()],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params!["ducking_amount", settings.ducking_amount.to_string()],
     )?;
 
     tx.commit()?;

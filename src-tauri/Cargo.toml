@@ -1,6 +1,6 @@
 [package]
 name = "omnivoice"
-version = "0.1.7"
+version = "0.1.8"
 description = "OmniVox - Local AI Dictation"
 authors = ["you"]
 edition = "2021"
@@ -74,4 +74,3 @@ custom-protocol = ["tauri/custom-protocol"]
 # on Windows. Compiling them with opt-level 2 shrinks stack frames dramatically.
 [profile.dev.package.whisper-rs-sys]
 opt-level = 2
-

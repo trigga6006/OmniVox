@@ -11,7 +11,6 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
     let description: String = row.get(2)?;
     let icon: String = row.get(3)?;
     let color: String = row.get(4)?;
-    let llm_prompt: String = row.get(5)?;
     let sort_order: i32 = row.get(6)?;
     let is_builtin: bool = row.get(7)?;
     let created_at_str: String = row.get(8)?;
@@ -32,7 +31,6 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
         description,
         icon,
         color,
-        llm_prompt,
         sort_order,
         is_builtin,
         created_at,
@@ -191,7 +189,6 @@ pub fn create_mode(
     description: &str,
     icon: &str,
     color: &str,
-    llm_prompt: &str,
     writing_style: &str,
 ) -> AppResult<ContextMode> {
     let id = Uuid::new_v4();
@@ -206,7 +203,7 @@ pub fn create_mode(
             description,
             icon,
             color,
-            llm_prompt,
+            "",
             0,
             false,
             now.to_rfc3339(),
@@ -221,7 +218,6 @@ pub fn create_mode(
         description: description.to_string(),
         icon: icon.to_string(),
         color: color.to_string(),
-        llm_prompt: llm_prompt.to_string(),
         sort_order: 0,
         is_builtin: false,
         created_at: now,
@@ -237,14 +233,13 @@ pub fn update_mode(
     description: &str,
     icon: &str,
     color: &str,
-    llm_prompt: &str,
     writing_style: &str,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     let conn = db.conn()?;
     conn.execute(
         "UPDATE context_modes SET name=?1, description=?2, icon=?3, color=?4, llm_prompt=?5, updated_at=?6, writing_style=?8 WHERE id=?7",
-        params![name, description, icon, color, llm_prompt, now, id, writing_style],
+        params![name, description, icon, color, "", now, id, writing_style],
     )?;
     Ok(())
 }

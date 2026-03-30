@@ -296,17 +296,19 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Another instance was launched — focus the existing main window.
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-        }))
-        .manage(state::AppState::new())
+        }));
+
+    builder.manage(state::AppState::new())
         .setup(|app| {
             setup_tray(app)?;
 
@@ -420,6 +422,14 @@ pub fn run() {
             commands::list_mode_snippets,
             commands::add_mode_snippet,
             commands::delete_mode_snippet,
+            // Vocabulary commands (7)
+            commands::add_vocabulary_entry,
+            commands::update_vocabulary_entry,
+            commands::delete_vocabulary_entry,
+            commands::list_vocabulary_entries,
+            commands::list_mode_vocabulary_entries,
+            commands::add_mode_vocabulary_entry,
+            commands::delete_mode_vocabulary_entry,
             // Context modes (7)
             commands::list_context_modes,
             commands::get_context_mode,

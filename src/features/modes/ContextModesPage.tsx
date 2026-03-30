@@ -77,7 +77,7 @@ function getColorClass(colorName: string) {
   return COLOR_OPTIONS.find((o) => o.name === colorName)?.class ?? "bg-amber-500";
 }
 
-const DEFAULT_PROMPT = `You are a dictation cleanup assistant. /no_think
+export const DEFAULT_PROMPT = `You are a dictation cleanup assistant. /no_think
 Clean the following transcribed speech:
 - Remove filler words (um, uh, like, you know, so, basically, actually)
 - Fix grammar, spelling, and punctuation
@@ -177,8 +177,8 @@ export function ContextModesPage() {
             </h1>
           </div>
           <p className="text-sm text-text-muted">
-            Switch between profiles that customize how dictation is cleaned up.
-            Each mode has its own AI prompt, dictionary, and snippets.
+            Switch between profiles that customize writing style, dictionary entries,
+            snippets, and app bindings.
           </p>
         </div>
         <button
@@ -301,7 +301,6 @@ function ModeForm({
   const [description, setDescription] = useState(mode?.description ?? "");
   const [icon, setIcon] = useState(mode?.icon ?? "mic");
   const [color, setColor] = useState(mode?.color ?? "amber");
-  const [prompt, setPrompt] = useState(mode?.llm_prompt ?? DEFAULT_PROMPT);
   const [writingStyle, setWritingStyle] = useState(mode?.writing_style ?? "formal");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -409,10 +408,10 @@ function ModeForm({
     setError(null);
     try {
       if (isEdit) {
-        await updateContextMode(mode.id, name, description, icon, color, prompt, writingStyle);
+        await updateContextMode(mode.id, name, description, icon, color, writingStyle);
         onSave();
       } else {
-        const created = await createContextMode(name, description, icon, color, prompt, writingStyle);
+        const created = await createContextMode(name, description, icon, color, writingStyle);
         onSave(created);
       }
     } catch (e) {
@@ -538,7 +537,7 @@ function ModeForm({
           </div>
         </div>
 
-        {/* LLM Prompt */}
+        {/*
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -565,6 +564,7 @@ function ModeForm({
             for domain-specific terminology and formatting.
           </p>
         </div>
+        */}
 
         {/* Mode-scoped Dictionary Entries */}
         {isEdit && (
@@ -623,8 +623,7 @@ function ModeForm({
               </div>
             </div>
             <p className="text-[11px] text-text-muted mt-1">
-              Words and phrases corrected when this mode is active. Applied before
-              AI cleanup.
+              Words and phrases corrected when this mode is active.
             </p>
           </div>
         )}
