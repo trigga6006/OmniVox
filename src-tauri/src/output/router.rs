@@ -106,21 +106,18 @@ impl OutputRouter {
             match seg {
                 OutputSegment::Text(s) => {
                     if !s.is_empty() {
-                        // Handle newlines: split into lines, paste each, Shift+Enter between
-                        let lines: Vec<&str> = s.split('\n').collect();
-                        for (i, line) in lines.iter().enumerate() {
-                            if !line.is_empty() {
-                                clipboard
-                                    .set_text(*line)
-                                    .map_err(|e| AppError::Output(format!("Clipboard failed: {e}")))?;
-                                thread::sleep(Duration::from_millis(20));
-                                Self::paste_keystroke(&mut enigo)?;
-                                thread::sleep(Duration::from_millis(30));
-                            }
-                            if i < lines.len() - 1 {
-                                Self::shift_enter(&mut enigo)?;
-                            }
-                        }
+                        // Paste the entire text block at once (including newlines)
+                        // via the clipboard.  This is critical for terminals: most
+                        // support bracketed-paste mode and will treat the whole
+                        // paste as a single input.  The old approach of splitting
+                        // on '\n' and sending Shift+Enter between lines caused
+                        // terminals to execute each line as a separate command.
+                        clipboard
+                            .set_text(s.as_str())
+                            .map_err(|e| AppError::Output(format!("Clipboard failed: {e}")))?;
+                        thread::sleep(Duration::from_millis(20));
+                        Self::paste_keystroke(&mut enigo)?;
+                        thread::sleep(Duration::from_millis(30));
                     }
                 }
                 OutputSegment::Command(VoiceCommand::NewLine) => {

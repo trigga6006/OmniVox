@@ -143,10 +143,10 @@ fn parse_count(word: &str) -> Option<usize> {
 
 /// Nouns that signal a list is being introduced.
 const COLLECTION_NOUNS: &[&str] = &[
-    "things", "items", "points", "tasks", "reasons", "steps",
-    "ways", "features", "goals", "topics", "parts", "changes",
-    "updates", "issues", "problems", "areas", "aspects", "options",
-    "requirements", "examples", "notes", "priorities",
+    "items", "points", "tasks", "reasons", "steps",
+    "features", "goals", "topics", "changes",
+    "updates", "issues", "problems", "options",
+    "requirements", "examples", "priorities",
 ];
 
 /// Common abbreviations that end with a period but don't end a sentence.
@@ -420,12 +420,17 @@ fn detect_list_header(sentence: &str) -> Option<ListHeader> {
 /// These appear frequently in narrative prose and would cause false-positive
 /// bulleting of ordinary paragraphs.
 const COMMON_PROSE_PREFIXES: &[&str] = &[
-    "i was", "i had", "i am", "i got", "it was", "it is",
+    "i was", "i had", "i am", "i got", "i need", "i want", "i think",
+    "it was", "it is", "it has", "it would", "it could",
     "he was", "he had", "he is", "she was", "she had", "she is",
-    "we had", "we were", "we are", "we went", "we got",
-    "they were", "they had", "they are", "they got",
+    "we had", "we were", "we are", "we went", "we got", "we need", "we can",
+    "they were", "they had", "they are", "they got", "they need",
     "the meeting", "the team", "the project", "the system",
     "there was", "there were", "there is", "there are",
+    "you can", "you need", "you should", "you could",
+    "this is", "this was", "this will", "that is", "that was",
+    "and then", "and i", "and we", "and the",
+    "so i", "so we", "so the", "but i", "but we", "but the",
 ];
 
 /// Check if the sentence at `start` begins a run of 3+ sentences that share
@@ -473,8 +478,8 @@ fn detect_repeated_prefix(sentences: &[String], start: usize) -> Option<usize> {
     }
 
     let count = end - start + 1;
-    // Require 4+ matches to be confident this is actually a list.
-    if count >= 4 {
+    // Require 5+ matches to be confident this is actually a list.
+    if count >= 5 {
         Some(count)
     } else {
         None
@@ -539,14 +544,14 @@ fn detect_inline_list(sentence: &str) -> Option<(String, Vec<String>)> {
     }
     items.push(last_item.to_string());
 
-    if items.len() >= 5 && items.iter().all(|it| !it.is_empty()) {
-        // Only format as bullets if there are many items (5+) — inline
+    if items.len() >= 6 && items.iter().all(|it| !it.is_empty()) {
+        // Only format as bullets if there are many items (6+) — inline
         // comma lists with fewer items read better as prose.
         let avg_words: f64 = items.iter()
             .map(|it| it.split_whitespace().count())
             .sum::<usize>() as f64 / items.len() as f64;
 
-        if avg_words >= 3.0 || items.len() >= 6 {
+        if avg_words >= 3.0 || items.len() >= 7 {
             Some((prefix, items))
         } else {
             None
@@ -639,7 +644,7 @@ fn join_parts(parts: &[String]) -> String {
 
 /// Minimum word count before list detection kicks in.  Short dictations
 /// are almost never lists and shouldn't be reformatted.
-const MIN_WORDS_FOR_LIST: usize = 25;
+const MIN_WORDS_FOR_LIST: usize = 40;
 
 /// Detect list patterns in `text` and format them as bullet lists.
 ///
@@ -666,9 +671,9 @@ pub fn format_lists(text: &str) -> String {
 
     let sentences = split_sentences(text);
 
-    // Need at least 3 sentences to have a meaningful list.
-    // Single-sentence and two-sentence dictations are almost never lists.
-    if sentences.len() < 3 {
+    // Need at least 4 sentences to have a meaningful list.
+    // Short dictations are almost never lists.
+    if sentences.len() < 4 {
         return text.to_string();
     }
 
@@ -686,9 +691,9 @@ pub fn format_lists(text: &str) -> String {
                 // Implicit headers use smart termination: scan forward
                 // until a sentence is too different (much longer) from the
                 // other items, signalling a topic transition / conclusion.
-                // Require 4+ items for implicit headers to avoid false positives
+                // Require 5+ items for implicit headers to avoid false positives
                 // where casual speech like "these things" is followed by prose.
-                ListHeader::Implicit => (find_implicit_list_end(&sentences, i), 4),
+                ListHeader::Implicit => (find_implicit_list_end(&sentences, i), 5),
             };
             if items >= min_items {
                 parts.push(sentences[i].clone());
@@ -701,7 +706,7 @@ pub fn format_lists(text: &str) -> String {
             }
         }
 
-        // Pattern 3: 4+ consecutive ordinal sentences.
+        // Pattern 3: 5+ consecutive ordinal sentences.
         // Strip the ordinal marker when adding dashes to avoid redundant
         // double-markers like "- First, set up the database."
         if starts_with_ordinal(&sentences[i]) {
@@ -710,7 +715,7 @@ pub fn format_lists(text: &str) -> String {
             while end + 1 < sentences.len() && starts_with_ordinal(&sentences[end + 1]) {
                 end += 1;
             }
-            if end - start >= 3 {
+            if end - start >= 4 {
                 for j in start..=end {
                     let content = strip_leading_ordinal(sentences[j].trim());
                     // Capitalize the first letter after stripping the ordinal
@@ -845,17 +850,17 @@ mod tests {
 
     #[test]
     fn count_word_header() {
-        let input = "I'm testing the cleaning ability to format text. \
-                     I want these three things tested. \
-                     I want to test the maximum number of outputs. \
-                     I want to get the token count at least above 500. \
-                     And I want to see how many people are in chat.";
+        let input = "I'm testing the cleaning ability to format text for the project we're building. \
+                     I want these three tasks tested before we ship it. \
+                     I want to test the maximum number of outputs from the API service. \
+                     I want to get the token count at least above 500 for each response. \
+                     And I want to see how many people are in the active chat rooms.";
         let result = format_lists(input);
-        assert!(result.contains("- I want to test the maximum number of outputs."));
-        assert!(result.contains("- I want to get the token count at least above 500."));
-        assert!(result.contains("- I want to see how many people are in chat."));
-        assert!(result.contains("I'm testing the cleaning ability to format text."));
-        assert!(result.contains("I want these three things tested."));
+        assert!(result.contains("- I want to test the maximum number of outputs from the API service."));
+        assert!(result.contains("- I want to get the token count at least above 500 for each response."));
+        assert!(result.contains("- I want to see how many people are in the active chat rooms."));
+        assert!(result.contains("I'm testing the cleaning ability to format text for the project we're building."));
+        assert!(result.contains("I want these three tasks tested before we ship it."));
     }
 
     #[test]
@@ -868,62 +873,69 @@ mod tests {
         assert!(!result.contains("- "), "Short text should not be bulleted: {result}");
     }
 
-    // ── Implicit header (Pattern 2) — requires 4+ items ──────────
+    // ── Implicit header (Pattern 2) — requires 5+ items ──────────
 
     #[test]
     fn implicit_header_no_count() {
-        // "these things" without a number — needs 4+ items and 25+ words.
-        let input = "I want to go over and test these things for the project we are working on. \
-                     Do a Unicode compatibility test on the frontend. \
-                     Do a transformer performance test on all endpoints. \
-                     Check the output format for correctness and accuracy. \
-                     Run the full regression suite against production.";
+        // "these tasks" without a number — needs 5+ items and 40+ words.
+        let input = "I want to go over and test these tasks for the project we are working on. \
+                     Do a Unicode compatibility test on the frontend interfaces. \
+                     Do a transformer performance test on all the API endpoints. \
+                     Check the output format for correctness and accuracy overall. \
+                     Run the full regression suite against the production environment. \
+                     Verify the deployment pipeline works end to end correctly.";
         let result = format_lists(input);
-        assert!(result.contains("- Do a Unicode compatibility test on the frontend."));
-        assert!(result.contains("- Do a transformer performance test on all endpoints."));
-        assert!(result.contains("- Check the output format for correctness and accuracy."));
-        assert!(result.contains("- Run the full regression suite against production."));
+        assert!(result.contains("- Do a Unicode compatibility test on the frontend interfaces."));
+        assert!(result.contains("- Do a transformer performance test on all the API endpoints."));
+        assert!(result.contains("- Check the output format for correctness and accuracy overall."));
+        assert!(result.contains("- Run the full regression suite against the production environment."));
+        assert!(result.contains("- Verify the deployment pipeline works end to end correctly."));
     }
 
     #[test]
-    fn implicit_header_three_items_not_bulleted() {
-        // Implicit header with only 3 items should NOT trigger (threshold is 4).
-        let input = "I want to go ahead and test all of these things for the project. \
-                     Do a Unicode test on the frontend. \
-                     Do a transformer test on the backend. \
-                     Check the output format for correctness.";
+    fn implicit_header_four_items_not_bulleted() {
+        // Implicit header with only 4 items should NOT trigger (threshold is 5).
+        let input = "I want to go ahead and test all of these tasks for the project we are working on today. \
+                     Do a Unicode test on the frontend components. \
+                     Do a transformer test on the backend services. \
+                     Check the output format for correctness and readability. \
+                     Run the full regression suite against staging.";
         let result = format_lists(input);
-        assert!(!result.contains("- "), "3 items after implicit header should not be bulleted: {result}");
+        assert!(!result.contains("- "), "4 items after implicit header should not be bulleted: {result}");
     }
 
     #[test]
     fn signal_phrase_the_following() {
-        // Needs 4+ items and 25+ words to trigger.
-        let input = "For our release next week I need to do the following. \
+        // Needs 5+ items and 40+ words to trigger.
+        let input = "For our release next week I need to do the following tasks and get them done. \
                      Update the database schema with the new migration files. \
                      Fix the integration tests that are currently broken. \
                      Deploy the staging environment to production servers. \
-                     Notify the team about the upcoming downtime window.";
+                     Notify the team about the upcoming downtime window. \
+                     Run a final smoke test against the live environment.";
         let result = format_lists(input);
         assert!(result.contains("- Update the database schema with the new migration files."));
         assert!(result.contains("- Fix the integration tests that are currently broken."));
         assert!(result.contains("- Deploy the staging environment to production servers."));
         assert!(result.contains("- Notify the team about the upcoming downtime window."));
+        assert!(result.contains("- Run a final smoke test against the live environment."));
     }
 
     #[test]
     fn implicit_list_terminates_at_conclusion() {
         // After a run of short list items, a significantly longer sentence
         // should NOT be bulleted — it's a conclusion / topic transition.
-        let input = "Here's the things we added. \
-                     We stripped bullet markers. \
-                     We stripped heading markers. \
-                     We stripped inline bold. \
-                     We rejoined all lines into flowing text. \
-                     The formatting ability is fully preserved and still handles all the smart list detection properly.";
+        // Items use varied phrasing to avoid triggering Pattern 4 (repeated prefix).
+        let input = "Here are the tasks we need to complete for the project launch this quarter. \
+                     Strip all bullet markers from the inputs. \
+                     Remove heading markers from content blocks. \
+                     Clean up inline bold from the text. \
+                     Rejoin all lines into properly flowing text. \
+                     Handle edge cases in the main parser. \
+                     The formatting ability is fully preserved and still handles all the smart list detection properly including the termination heuristic and the implicit list detection logic.";
         let result = format_lists(input);
-        assert!(result.contains("- We stripped bullet markers."), "Items should be bulleted: {result}");
-        assert!(result.contains("- We stripped heading markers."));
+        assert!(result.contains("- Strip all bullet markers from the inputs."), "Items should be bulleted: {result}");
+        assert!(result.contains("- Remove heading markers from content blocks."));
         // The long conclusion should NOT be bulleted.
         assert!(
             !result.contains("- The formatting ability"),
@@ -936,18 +948,20 @@ mod tests {
 
     #[test]
     fn ordinal_sentences_stripped() {
-        // Needs 4+ consecutive ordinals and 25+ words to trigger.
-        let input = "Here is the plan for the upcoming project release we need to deliver. \
+        // Needs 5+ consecutive ordinals and 40+ words to trigger.
+        let input = "Here is the plan for the upcoming project release we need to deliver on time. \
                      First, set up the database with the new schema and run the migration scripts. \
                      Second, write the API endpoints and connect them to the new service layer. \
                      Third, build the frontend components and wire up the data fetching logic. \
-                     Fourth, deploy to the staging environment and verify everything works correctly.";
+                     Fourth, deploy to the staging environment and verify everything works correctly. \
+                     Fifth, notify the team and update the documentation for the release.";
         let result = format_lists(input);
         // Ordinals should be stripped — no redundant "- First,"
         assert!(result.contains("- Set up the database"), "Ordinal should be stripped: {result}");
         assert!(result.contains("- Write the API endpoints"));
         assert!(result.contains("- Build the frontend components"));
         assert!(result.contains("- Deploy to the staging environment"));
+        assert!(result.contains("- Notify the team and update the documentation"));
         assert!(result.starts_with("Here is the plan"));
         assert!(!result.contains("- First,"), "Ordinal should be removed: {result}");
     }
@@ -956,26 +970,29 @@ mod tests {
 
     #[test]
     fn repeated_sentence_starters() {
-        // Needs 4+ repeated prefix matches and 25+ words.
-        let input = "I want to do a full Unicode compatibility test on the frontend. \
-                     I want to do a transformer performance test on the backend service. \
+        // Needs 5+ repeated prefix matches and 40+ words.
+        let input = "I want to do a full Unicode compatibility test on the frontend application. \
+                     I want to do a transformer performance test on the backend service layer. \
                      I want to check the output format for correctness and readability. \
-                     I want to verify the error handling works for all edge cases.";
+                     I want to verify the error handling works for all edge cases. \
+                     I want to run the full integration suite against the staging server.";
         let result = format_lists(input);
         assert!(result.contains("- I want to do a full Unicode"));
         assert!(result.contains("- I want to do a transformer"));
         assert!(result.contains("- I want to check the output"));
         assert!(result.contains("- I want to verify the error"));
+        assert!(result.contains("- I want to run the full integration"));
     }
 
     #[test]
-    fn repeated_starters_three_not_bulleted() {
-        // Only 3 repeated starters should NOT trigger (threshold is 4).
-        let input = "I want to do a full Unicode compatibility test on the application. \
-                     I want to do a transformer performance test on the backend. \
-                     I want to check the output format for correctness.";
+    fn repeated_starters_four_not_bulleted() {
+        // Only 4 repeated starters should NOT trigger (threshold is 5).
+        let input = "I want to do a full Unicode compatibility test on the application frontend. \
+                     I want to do a transformer performance test on the backend service. \
+                     I want to check the output format for correctness and readability. \
+                     I want to verify the error handling works for all edge cases.";
         let result = format_lists(input);
-        assert!(!result.contains("- "), "3 repeated starters should not be bulleted: {result}");
+        assert!(!result.contains("- "), "4 repeated starters should not be bulleted: {result}");
     }
 
     #[test]
@@ -1036,7 +1053,8 @@ mod tests {
 
     #[test]
     fn couple_of_things_with_few_items_not_bulleted() {
-        // Only 2 items after header — not enough to trigger (needs 4+).
+        // "things" removed from COLLECTION_NOUNS — casual speech should not trigger.
+        // Also only 2 items after header — not enough to trigger (needs 5+).
         let input = "I really like where the design is going but there's a couple of things I want to change. \
                      First, we need to move the header down about 3 inches. \
                      Then we need to adjust the desert section and also we need to change where the lens comes in.";
@@ -1056,8 +1074,8 @@ mod tests {
 
     #[test]
     fn header_not_bulleted_couple_things() {
-        // 3 ordinals after header — not enough for 4+ threshold.
-        // Items use varied phrasing to avoid triggering repeated-prefix detection.
+        // "things" removed from COLLECTION_NOUNS, and only 3 ordinals —
+        // not enough for the 5+ threshold.
         let input = "There are a couple things to get done today. \
                      First, check how the LLM removes filters. \
                      Second, fix the punctuation issues. \
