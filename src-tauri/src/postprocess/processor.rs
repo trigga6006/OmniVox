@@ -85,7 +85,10 @@ impl TextProcessor for ProcessorChain {
         }
 
         // Step 1: Dictionary replacements (case-insensitive)
-        // Pre-compute lowercase once and short-circuit entries that can't match.
+        // Pre-compute lowercase ONCE per loop iteration and pass it into the
+        // replacement helper so we don't lowercase the full text twice per
+        // dictionary entry (the original helper did its own to_lowercase()
+        // internally on top of the outer short-circuit lowercase).
         if self.config.apply_dictionary && !self.dictionary.is_empty() {
             let mut lower_result = result.to_lowercase();
             for entry in &self.dictionary {
@@ -96,15 +99,20 @@ impl TextProcessor for ProcessorChain {
                 if !lower_result.contains(&lower_phrase) {
                     continue;
                 }
-                if let Some(replaced) =
-                    replace_case_insensitive(&result, &entry.phrase, &entry.replacement)
-                {
+                if let Some(replaced) = replace_case_insensitive_with_lower(
+                    &result,
+                    &lower_result,
+                    &entry.phrase,
+                    &lower_phrase,
+                    &entry.replacement,
+                ) {
                     corrections.push(Correction {
                         original: entry.phrase.clone(),
                         replacement: entry.replacement.clone(),
                         reason: "dictionary".to_string(),
                     });
                     result = replaced;
+                    // Must rebuild: text changed, so lowercase is stale.
                     lower_result = result.to_lowercase();
                 }
             }
@@ -121,9 +129,13 @@ impl TextProcessor for ProcessorChain {
                 if !lower_result.contains(&lower_trigger) {
                     continue;
                 }
-                if let Some(replaced) =
-                    replace_case_insensitive(&result, &snippet.trigger, &snippet.content)
-                {
+                if let Some(replaced) = replace_case_insensitive_with_lower(
+                    &result,
+                    &lower_result,
+                    &snippet.trigger,
+                    &lower_trigger,
+                    &snippet.content,
+                ) {
                     corrections.push(Correction {
                         original: snippet.trigger.clone(),
                         replacement: snippet.content.clone(),
@@ -176,20 +188,25 @@ fn is_word_char(b: u8) -> bool {
 }
 
 /// Case-insensitive whole-word replacement. Returns `Some(new_string)` if any
-/// replacement was made, `None` if the phrase wasn't found.
-fn replace_case_insensitive(text: &str, phrase: &str, replacement: &str) -> Option<String> {
-    let lower_text = text.to_lowercase();
-    let lower_phrase = phrase.to_lowercase();
-
-    if !lower_text.contains(&lower_phrase) {
-        return None;
-    }
-
-    // Build result by finding all occurrences (case-insensitive)
+/// replacement was made, `None` if nothing was replaced.
+///
+/// Takes precomputed `lower_text` and `lower_phrase` from the caller so we
+/// don't redundantly lowercase the text for every dictionary entry checked.
+/// The caller should already have verified `lower_text.contains(lower_phrase)`
+/// via its own short-circuit — this function still handles not-found gracefully
+/// but assumes the happy path.
+fn replace_case_insensitive_with_lower(
+    text: &str,
+    lower_text: &str,
+    phrase: &str,
+    lower_phrase: &str,
+    replacement: &str,
+) -> Option<String> {
     let mut result = String::with_capacity(text.len());
     let mut search_start = 0;
+    let mut any_replaced = false;
 
-    while let Some(pos) = lower_text[search_start..].find(&lower_phrase) {
+    while let Some(pos) = lower_text[search_start..].find(lower_phrase) {
         let abs_pos = search_start + pos;
 
         // Check word boundaries to avoid replacing inside contractions
@@ -204,19 +221,19 @@ fn replace_case_insensitive(text: &str, phrase: &str, replacement: &str) -> Opti
             result.push_str(&text[search_start..abs_pos]);
             result.push_str(replacement);
             search_start = end_pos;
+            any_replaced = true;
         } else {
             result.push_str(&text[search_start..abs_pos + 1]);
             search_start = abs_pos + 1;
         }
     }
 
-    result.push_str(&text[search_start..]);
-
-    if result == text {
-        None
-    } else {
-        Some(result)
+    if !any_replaced {
+        return None;
     }
+
+    result.push_str(&text[search_start..]);
+    Some(result)
 }
 
 /// Capitalize the first letter of the string and the first letter after
@@ -320,13 +337,13 @@ fn remove_fillers(text: &str) -> String {
 
     let mut result = cleaned.join(" ");
 
-    // 3. Clean up orphaned punctuation left by removals
-    // ", ," → ","   and  ",  ." → "."
+    // 3. Clean up orphaned punctuation left by removals.
+    // ", ," → ","  — handled with a bounded loop (filler-cascades are rare
+    // and the input is short).  The double-space collapse is redundant here
+    // because `normalize_whitespace` (Step 4 in the processor chain) always
+    // runs afterwards and does this in a single pass, so we don't repeat it.
     while result.contains(", ,") {
         result = result.replace(", ,", ",");
-    }
-    while result.contains("  ") {
-        result = result.replace("  ", " ");
     }
     // Remove leading comma after removal
     result = result.trim_start_matches(", ").to_string();
@@ -375,15 +392,21 @@ fn remove_contextual_fillers(text: &str) -> String {
         remainder = &remainder[boundary..];
     }
 
-    // Remove ", like," filler pattern (comma-delimited filler "like")
+    // Remove ", like," filler pattern (comma-delimited filler "like").
+    // One lowercase+find per iteration (the old code called `to_lowercase()`
+    // twice per loop — once in the while condition and once in the body).
     let mut cleaned = result;
     for pattern in &[", like,", ", like ", ",like,", ",like "] {
-        while cleaned.to_lowercase().contains(pattern) {
+        let replacement = if pattern.ends_with(',') { "," } else { " " };
+        loop {
             let lower = cleaned.to_lowercase();
-            if let Some(pos) = lower.find(pattern) {
-                let replacement = if pattern.ends_with(',') { "," } else { " " };
-                cleaned = format!("{}{}{}", &cleaned[..pos], replacement, &cleaned[pos + pattern.len()..]);
-            }
+            let Some(pos) = lower.find(pattern) else { break };
+            cleaned = format!(
+                "{}{}{}",
+                &cleaned[..pos],
+                replacement,
+                &cleaned[pos + pattern.len()..]
+            );
         }
     }
 
@@ -444,27 +467,55 @@ fn dedup_phrases(text: &str) -> String {
 /// Clean up punctuation artifacts from transcription and filler removal.
 ///
 /// - Double periods ("..") → "."  (preserves real ellipsis "...")
+/// - 4+ consecutive periods → "..." (overshooting ellipsis)
 /// - Space before punctuation ("word .") → "word."
 /// - Trailing connectors ("and" / "so" / "but") from interrupted speech → removed
 /// - Formal only: ensures text ends with sentence-ending punctuation (adds "." if missing)
 fn cleanup_punctuation(text: &str, style: WritingStyle) -> String {
-    let mut result = text.to_string();
+    // Two single-pass walks (O(n) total) replace the old code's 6
+    // `replace(" X", "X")` calls + O(n²) while-loop.  Splitting into two
+    // passes is required for correctness: the space-drop step can JOIN
+    // previously non-adjacent dots (e.g. ". ." → "..") which the dot-run
+    // collapser then sees as a single 2-dot run to reduce to ".".  A single
+    // fused walk would miss that cascade.
+    //
+    // The old while-loop had a real bug on 5+ consecutive dots: str::replace
+    // is non-overlapping, so "....." → "...." and the loop couldn't make
+    // progress.  The new run counter handles any count correctly.
 
-    // Space before sentence-ending punctuation
-    result = result.replace(" .", ".");
-    result = result.replace(" ,", ",");
-    result = result.replace(" !", "!");
-    result = result.replace(" ?", "?");
-    result = result.replace(" ;", ";");
-    result = result.replace(" :", ":");
-
-    // Double periods (but preserve real ellipsis "...")
-    // Replace ".." with "." only when it's not part of "..."
-    while result.contains("..") && !result.contains("...") {
-        result = result.replace("..", ".");
+    // Pass 1: drop any space that immediately precedes `. , ! ? ; :`
+    let mut pass1 = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ' ' {
+            if let Some(&next) = chars.peek() {
+                if matches!(next, '.' | ',' | '!' | '?' | ';' | ':') {
+                    continue; // skip space; punctuation follows on next iter
+                }
+            }
+        }
+        pass1.push(c);
     }
-    // Handle "..." followed by extra "." → "..."
-    result = result.replace("....", "...");
+
+    // Pass 2: collapse runs of `.`: 1→1, 2→1 (drop duplicate), 3→3
+    // (preserve ellipsis), 4+→3 (clamp overshoot).
+    let mut result = String::with_capacity(pass1.len());
+    let mut iter = pass1.chars().peekable();
+    while let Some(c) = iter.next() {
+        if c == '.' {
+            let mut run: usize = 1;
+            while let Some(&'.') = iter.peek() {
+                iter.next();
+                run += 1;
+            }
+            let emit = if run >= 3 { 3 } else { 1 };
+            for _ in 0..emit {
+                result.push('.');
+            }
+            continue;
+        }
+        result.push(c);
+    }
 
     // Trailing connectors (from interrupted speech)
     let trimmed = result.trim_end();

@@ -45,15 +45,29 @@ pub fn save_transcription(db: &Database, record: &TranscriptionRecord) -> AppRes
 }
 
 /// Get aggregate dictation statistics (total words, transcriptions, duration).
+///
+/// Word count normalizes whitespace (newlines, tabs, carriage returns) to
+/// single spaces before counting, so transcriptions that use voice commands
+/// like "new line" (which write literal `\n` into history) are counted
+/// correctly.  Without normalization, "hello\nworld" counted as 1 word
+/// instead of 2.  Multiple consecutive spaces are still approximate, but the
+/// processor pipeline's `normalize_whitespace` step collapses those before
+/// save, so they shouldn't appear in practice.
 pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::DictationStats> {
     let conn = db.conn()?;
     let stats = conn.query_row(
-        "SELECT
-            COALESCE(SUM(LENGTH(TRIM(text)) - LENGTH(REPLACE(TRIM(text), ' ', '')) + 1), 0),
+        "WITH normalized AS (
+            SELECT
+                TRIM(REPLACE(REPLACE(REPLACE(text, CHAR(10), ' '), CHAR(13), ' '), CHAR(9), ' ')) AS t,
+                duration_ms
+            FROM transcriptions
+            WHERE TRIM(text) != ''
+        )
+        SELECT
+            COALESCE(SUM(LENGTH(t) - LENGTH(REPLACE(t, ' ', '')) + 1), 0),
             COUNT(*),
             COALESCE(SUM(duration_ms), 0)
-         FROM transcriptions
-         WHERE TRIM(text) != ''",
+         FROM normalized",
         [],
         |row| {
             Ok(crate::storage::types::DictationStats {

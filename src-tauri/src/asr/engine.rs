@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::sync::RwLock;
 
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 use crate::asr::types::{AsrConfig, TranscriptionResult, TranscriptionSegment};
 use crate::error::{AppError, AppResult};
@@ -74,21 +76,39 @@ impl WhisperEngine {
         }
     }
 
-    /// Fast greedy transcription for live preview during recording.
+    /// Allocate a fresh `WhisperState` suitable for live preview transcription.
     ///
-    /// Uses greedy decoding (beam_size=1), no temperature fallback, and
-    /// no initial prompt — optimized for speed over accuracy. Returns only
-    /// the concatenated text, no segments.  Creates its own WhisperState
-    /// so it can run concurrently with other transcription calls.
-    pub fn transcribe_preview(&self, audio: &[f32]) -> AppResult<String> {
+    /// The state holds the decode tensors (~500 MB for medium models) that
+    /// `whisper_full` reuses between calls.  Callers should create ONE state
+    /// at the start of a preview session and reuse it across all subsequent
+    /// `transcribe_preview_with_state` calls — otherwise every preview tick
+    /// re-allocates half a gigabyte, which on 16 GB machines caused user-
+    /// visible memory pressure and allocator stalls.
+    ///
+    /// `WhisperState` owns its context handle via `Arc<WhisperInnerContext>`
+    /// internally, so it's fully self-contained (no lifetime parameter) and
+    /// safely Send + Sync — it can travel across threads freely.
+    pub fn create_preview_state(&self) -> AppResult<WhisperState> {
+        self.ctx
+            .create_state()
+            .map_err(|e| AppError::Asr(format!("Failed to create preview state: {e}")))
+    }
+
+    /// Run greedy transcription using a caller-supplied, reused `WhisperState`.
+    ///
+    /// Uses greedy decoding (beam_size=1), no temperature fallback, no initial
+    /// prompt — optimized for speed over accuracy.  Because `state.full` is
+    /// designed to be called repeatedly on the same state (whisper.cpp resets
+    /// per-call decode buffers internally), reusing the state across
+    /// iterations is both safe and ~10-30× cheaper than recreating it.
+    pub fn transcribe_preview_with_state(
+        &self,
+        state: &mut WhisperState,
+        audio: &[f32],
+    ) -> AppResult<String> {
         if audio.is_empty() {
             return Ok(String::new());
         }
-
-        let mut state = self
-            .ctx
-            .create_state()
-            .map_err(|e| AppError::Asr(format!("Failed to create preview state: {e}")))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 

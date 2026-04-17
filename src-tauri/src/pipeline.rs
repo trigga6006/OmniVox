@@ -352,87 +352,114 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
         }
     });
 
-    // Spawn live preview task — periodically transcribes the last 5s of audio
-    // and emits partial results to the overlay pill.
+    // Spawn live preview task — periodically transcribes the last 5s of
+    // audio and emits partial results to the overlay pill.
     //
-    // IMPORTANT: Only ONE preview inference runs at a time. If a preview takes
-    // longer than the interval, the next one is skipped rather than queued.
-    // This prevents memory accumulation on slower CPUs where Whisper inference
-    // can take 3-5+ seconds per preview window.
-    let live_preview = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.live_preview)
-        .unwrap_or(false);
+    // Architecture: a dedicated std::thread owns a single `WhisperState` for
+    // the entire preview session.  An async task periodically snapshots
+    // audio and forwards it to the worker over a capacity-1 sync channel —
+    // which naturally preserves the "at most one inference in flight"
+    // invariant (if the worker is busy, try_send fails and we drop this
+    // frame rather than queueing it).
+    //
+    // Win over the old design: the old code called `engine.transcribe_preview`
+    // inside `spawn_blocking` every iteration, and each call did
+    // `ctx.create_state()` — allocating ~500 MB of decode buffers that got
+    // freed seconds later.  On 16 GB machines the churn caused visible
+    // pauses and peak memory spikes.  Now the state is allocated ONCE at
+    // recording start and reused across every preview tick until recording
+    // ends.
+    let live_preview = settings.as_ref().map(|s| s.live_preview).unwrap_or(false);
 
     if live_preview {
-        let handle = app_handle.clone();
-        let engine: Option<Arc<crate::asr::engine::WhisperEngine>> = state
+        let engine_opt: Option<Arc<crate::asr::engine::WhisperEngine>> = state
             .engine
             .lock()
             .ok()
             .and_then(|g| g.as_ref().map(Arc::clone));
 
-        if let Some(engine) = engine {
+        if let Some(engine) = engine_opt {
+            // Capacity-1 sync channel: if worker is busy when sender tries
+            // to send, try_send fails fast and we skip this round.
+            let (tx_audio, rx_audio) = std::sync::mpsc::sync_channel::<Vec<f32>>(1);
+
+            // Worker thread — owns the WhisperState for the duration of
+            // this recording session.  Exits when the async task drops its
+            // sender (rx.recv returns Err).
+            let worker_handle = app_handle.clone();
+            let worker_engine = engine.clone();
+            let worker_is_rec = is_recording.clone();
+            let _ = std::thread::Builder::new()
+                .name("omnivox-preview".into())
+                .spawn(move || {
+                    use std::sync::atomic::Ordering;
+                    let mut state = match worker_engine.create_preview_state() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Preview: create_state failed: {e}");
+                            return;
+                        }
+                    };
+                    while let Ok(audio) = rx_audio.recv() {
+                        // Cancellation check — if user stopped recording
+                        // between send and receive, skip inference.
+                        if !worker_is_rec.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        match worker_engine.transcribe_preview_with_state(&mut state, &audio) {
+                            Ok(text) if !text.is_empty() => {
+                                let _ = worker_handle.emit("transcription-preview", &text);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("Preview inference failed: {e}");
+                            }
+                        }
+                    }
+                    // state drops here, freeing decode buffers.
+                });
+
+            // Async snapshot task — samples audio every 3 s, forwards to
+            // worker.  When recording stops it returns, dropping tx_audio
+            // and cleanly terminating the worker thread.
+            let ctrl_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 use std::sync::atomic::Ordering;
-                // 5 seconds of audio at 16 kHz
                 const PREVIEW_SAMPLES: usize = 16_000 * 5;
 
-                // Wait 3s before first preview to accumulate enough audio
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                 loop {
-                    // Check BEFORE doing any work — exit immediately when recording stops
                     if !is_recording.load(Ordering::Relaxed) {
                         break;
                     }
 
-                    // Snapshot the last 5s of audio (brief mutex hold)
                     let samples = {
-                        let state: tauri::State<'_, AppState> = handle.state();
-                        let audio = match state.audio.lock() {
+                        let st: tauri::State<'_, AppState> = ctrl_handle.state();
+                        let audio = match st.audio.lock() {
                             Ok(g) => g,
                             Err(_) => break,
                         };
                         audio.snapshot_tail(PREVIEW_SAMPLES)
                     };
 
-                    if samples.len() < 8_000 {
-                        // Less than 0.5s of audio — skip this round
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                        continue;
-                    }
-
-                    // Run greedy transcription on a blocking thread.
-                    // We AWAIT this before looping — guarantees at most 1 concurrent
-                    // preview inference, preventing memory pile-up on slow CPUs.
-                    let eng = engine.clone();
-                    let is_rec = is_recording.clone();
-                    let mut preview_samples = samples;
-                    crate::audio::normalize::normalize_peak(&mut preview_samples);
-
-                    let result = tokio::task::spawn_blocking(move || {
-                        // Check cancellation before expensive inference
-                        if !is_rec.load(Ordering::Relaxed) {
-                            return Err(crate::error::AppError::Internal("cancelled".into()));
-                        }
-                        eng.transcribe_preview(&preview_samples)
-                    })
-                    .await;
-
-                    // Check recording state again — may have stopped during transcription
-                    if !is_recording.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    if let Ok(Ok(text)) = result {
-                        if !text.is_empty() {
-                            let _ = handle.emit("transcription-preview", &text);
+                    if samples.len() >= 8_000 {
+                        let mut preview_samples = samples;
+                        crate::audio::normalize::normalize_peak(&mut preview_samples);
+                        // try_send drops this frame if the worker is still
+                        // processing the previous one — backpressure without
+                        // queueing.  Err(Disconnected) means worker died; exit.
+                        use std::sync::mpsc::TrySendError;
+                        match tx_audio.try_send(preview_samples) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => { /* worker busy, skip */ }
+                            Err(TrySendError::Disconnected(_)) => break,
                         }
                     }
 
-                    // Interval between preview attempts — gives the CPU breathing room
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
+                // Drop tx_audio → worker rx.recv errors → worker exits.
             });
         }
     }
@@ -444,6 +471,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     crate::audio::ducking::unduck();
 
     let _ = app_handle.emit("recording-state-change", "processing");
+
+    // Snapshot every setting the rest of this function needs in ONE DB read.
+    // Previously this was 3 separate get_settings() calls (noise_reduction,
+    // voice_commands/command_send, ship_mode) — each a full table scan and
+    // HashMap build.  Cache once, reuse everywhere.
+    let settings = crate::storage::settings::get_settings(&state.db).ok();
 
     // 1. Stop capture and get raw audio samples
     let samples = {
@@ -474,9 +507,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
     // 1b. Conditionally denoise audio with RNNoise before Whisper.
     let mut samples = samples;
-    let noise_reduction = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.noise_reduction)
-        .unwrap_or(false);
+    let noise_reduction = settings.as_ref().map(|s| s.noise_reduction).unwrap_or(false);
     if noise_reduction {
         crate::audio::denoise::denoise(&mut samples);
     }
@@ -542,15 +573,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // 4b. Voice command detection (if enabled).
     //     Splits text into [Text | Command] segments so the output router can
     //     type text and execute keystrokes (Shift+Enter, Ctrl+Backspace, etc.).
-    let voice_segments = {
-        let settings = crate::storage::settings::get_settings(&state.db).ok();
-        let enabled = settings.as_ref().map(|s| s.voice_commands).unwrap_or(false);
-        if enabled {
-            let detect_send = settings.as_ref().map(|s| s.command_send).unwrap_or(true);
-            Some(crate::postprocess::voice_commands::parse_commands_with_options(&final_text, detect_send))
-        } else {
-            None
-        }
+    let voice_commands_enabled = settings.as_ref().map(|s| s.voice_commands).unwrap_or(false);
+    let command_send_enabled = settings.as_ref().map(|s| s.command_send).unwrap_or(true);
+    let voice_segments = if voice_commands_enabled {
+        Some(crate::postprocess::voice_commands::parse_commands_with_options(&final_text, command_send_enabled))
+    } else {
+        None
     };
 
     // 5. Kick off focus restoration in parallel with output.
@@ -583,9 +611,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //     Only fires when type simulation was used (clipboard-only can't auto-send).
     //     When Command Send is enabled it overrides Ship Mode — the user controls
     //     sending by saying "send" at the end, so we skip the automatic Enter.
-    let command_send_active = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.voice_commands && s.command_send)
-        .unwrap_or(false);
+    let command_send_active = voice_commands_enabled && command_send_enabled;
     if output_config.ship_mode
         && !command_send_active
         && matches!(

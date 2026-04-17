@@ -208,106 +208,171 @@ pub(crate) fn is_model_multilingual(model_id: &str) -> bool {
         || (!model_id.contains("-en") && !model_id.ends_with("-q5"))
 }
 
+/// Hard cap on the initial prompt length.
+///
+/// Whisper's prompt budget is 224 tokens (~4 chars/token for English, but 1
+/// char/token for rare words).  800 chars keeps us safely under the limit so
+/// we never get silently truncated mid-term, and so early user-priority terms
+/// never get dropped because a mountain of static vocab filled the budget.
+const PROMPT_BUDGET: usize = 800;
+
+/// Budget for end-of-prompt reinforcement (repeated vocab words in sentence
+/// form — leverages Whisper's recency bias).
+const REINFORCEMENT_BUDGET: usize = 200;
+
+/// Collect every vocabulary word the user has enabled, global + active mode.
+fn collect_vocab_words(state: &AppState, active_mode: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = crate::storage::vocabulary::list_entries(&state.db) {
+        out.extend(
+            entries
+                .into_iter()
+                .filter(|e| e.is_enabled && !e.word.is_empty())
+                .map(|e| e.word),
+        );
+    }
+    if let Some(mode_id) = active_mode {
+        if let Ok(entries) = crate::storage::vocabulary::list_entries_for_mode(&state.db, mode_id) {
+            out.extend(
+                entries
+                    .into_iter()
+                    .filter(|e| e.is_enabled && !e.word.is_empty())
+                    .map(|e| e.word),
+            );
+        }
+    }
+    out
+}
+
+/// Collect every dictionary replacement value the user has enabled, global +
+/// active mode.
+fn collect_dict_replacements(state: &AppState, active_mode: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = crate::storage::dictionary::list_entries(&state.db) {
+        out.extend(
+            entries
+                .into_iter()
+                .filter(|e| e.is_enabled && !e.replacement.is_empty())
+                .map(|e| e.replacement),
+        );
+    }
+    if let Some(mode_id) = active_mode {
+        if let Ok(entries) = crate::storage::dictionary::list_entries_for_mode(&state.db, mode_id) {
+            out.extend(
+                entries
+                    .into_iter()
+                    .filter(|e| e.is_enabled && !e.replacement.is_empty())
+                    .map(|e| e.replacement),
+            );
+        }
+    }
+    out
+}
+
 /// Build a Whisper initial prompt from static vocabulary + dictionary entries.
 ///
 /// - English models get the full English vocab to bias toward correct
 ///   recognition of technical terms and proper nouns.
 /// - Multilingual models get only universal abbreviations + user dictionary
 ///   terms, so the language detector works unbiased for non-English speech.
+///
+/// Improvements over the previous version:
+///  - **Case-insensitive dedup** via HashSet instead of `Vec::dedup()` (which
+///    only dropped consecutive duplicates and left most overlap behind).
+///  - **Single lock acquisition** on `active_context_mode_id` (was locked
+///    twice — once for term collection, once for reinforcement collection).
+///  - **Vocabulary collected once**, reused for both term list and
+///    reinforcement (was collected twice).
+///  - **Budget cap** at 800 chars so we never exceed Whisper's 224-token
+///    prompt limit.  Priority: user vocab first, then dictionary, then
+///    static vocab — when we hit the budget, static vocab (lowest priority)
+///    is what gets truncated.
+///  - **Reinforcement appended once**, capped at 200 chars.  The previous
+///    code appended it twice, which on users with large vocab doubled the
+///    reinforcement and pushed everything else past the truncation limit.
 pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option<String> {
-    let mut terms: Vec<String> = Vec::new();
+    use std::collections::HashSet;
 
-    // Start with the appropriate static vocabulary
-    let vocab = if is_multilingual { MULTILINGUAL_VOCAB } else { ENGLISH_VOCAB };
-    for term in vocab.split(", ") {
+    // Snapshot active mode once so we don't hold the lock during DB queries.
+    let active_mode: Option<String> = state
+        .active_context_mode_id
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    let active_mode_ref = active_mode.as_deref();
+
+    let vocab_words = collect_vocab_words(state, active_mode_ref);
+    let dict_terms = collect_dict_replacements(state, active_mode_ref);
+
+    let static_vocab = if is_multilingual { MULTILINGUAL_VOCAB } else { ENGLISH_VOCAB };
+
+    // Dedup case-insensitively, preserving insertion order.  Priority order:
+    // user vocab (first — highest bias value) → user dictionary →
+    // static vocab (lowest — gets truncated first if budget is tight).
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut ordered_terms: Vec<String> = Vec::new();
+    let sources: [&[String]; 2] = [&vocab_words, &dict_terms];
+    for src in sources.iter() {
+        for term in src.iter() {
+            if seen.insert(term.to_lowercase()) {
+                ordered_terms.push(term.clone());
+            }
+        }
+    }
+    for term in static_vocab.split(", ") {
         let trimmed = term.trim();
-        if !trimmed.is_empty() {
-            terms.push(trimmed.to_string());
+        if trimmed.is_empty() { continue; }
+        if seen.insert(trimmed.to_lowercase()) {
+            ordered_terms.push(trimmed.to_string());
         }
     }
 
-    // Global dictionary entries (user-defined, applies to all languages)
-    if let Ok(entries) = crate::storage::dictionary::list_entries(&state.db) {
-        for entry in &entries {
-            if entry.is_enabled && !entry.replacement.is_empty() {
-                terms.push(entry.replacement.clone());
-            }
-        }
-    }
-
-    // Global vocabulary entries (custom words the user commonly uses)
-    if let Ok(entries) = crate::storage::vocabulary::list_entries(&state.db) {
-        for entry in &entries {
-            if entry.is_enabled && !entry.word.is_empty() {
-                terms.push(entry.word.clone());
-            }
-        }
-    }
-
-    // Active mode's dictionary + vocabulary entries
-    if let Ok(guard) = state.active_context_mode_id.lock() {
-        if let Some(ref mode_id) = *guard {
-            if let Ok(entries) = crate::storage::dictionary::list_entries_for_mode(&state.db, mode_id) {
-                for entry in &entries {
-                    if entry.is_enabled && !entry.replacement.is_empty() {
-                        terms.push(entry.replacement.clone());
-                    }
-                }
-            }
-            if let Ok(entries) = crate::storage::vocabulary::list_entries_for_mode(&state.db, mode_id) {
-                for entry in &entries {
-                    if entry.is_enabled && !entry.word.is_empty() {
-                        terms.push(entry.word.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    if terms.is_empty() {
+    if ordered_terms.is_empty() && vocab_words.is_empty() {
         return None;
     }
 
-    terms.dedup();
-    let mut prompt = terms.join(", ");
+    // Build reinforcement first so we can budget the term list around it.
+    // End-of-prompt repetition gives the decoder the strongest signal.
+    let mut reinforcement = String::new();
+    for w in &vocab_words {
+        let chunk_len = w.len() + 2; // "w. "
+        if reinforcement.len() + chunk_len > REINFORCEMENT_BUDGET {
+            break;
+        }
+        reinforcement.push_str(w);
+        reinforcement.push_str(". ");
+    }
+    let reinforcement = reinforcement.trim_end();
 
-    // Collect vocabulary words (user's custom words) for reinforcement.
-    // Whisper's initial_prompt uses recency bias — tokens closer to the end
-    // have more influence on decoder output. Repeating vocabulary words in a
-    // sentence-like context at the end of the prompt gives the decoder a much
-    // stronger signal than a single mention in a comma-separated list.
-    let mut vocab_words: Vec<String> = Vec::new();
-    if let Ok(entries) = crate::storage::vocabulary::list_entries(&state.db) {
-        for entry in &entries {
-            if entry.is_enabled && !entry.word.is_empty() {
-                vocab_words.push(entry.word.clone());
-            }
+    // Term-list budget = total - ". " separator - reinforcement.
+    let suffix_len = if reinforcement.is_empty() { 0 } else { 2 + reinforcement.len() };
+    let term_budget = PROMPT_BUDGET.saturating_sub(suffix_len);
+
+    // Fill the term list up to the budget, stopping at the last term that
+    // fully fits (no mid-term truncation, which would poison Whisper's
+    // tokenization of the following term).
+    let mut prompt = String::new();
+    for term in &ordered_terms {
+        let projected = if prompt.is_empty() {
+            term.len()
+        } else {
+            prompt.len() + 2 + term.len()
+        };
+        if projected > term_budget {
+            break;
         }
-    }
-    if let Ok(guard) = state.active_context_mode_id.lock() {
-        if let Some(ref mode_id) = *guard {
-            if let Ok(entries) = crate::storage::vocabulary::list_entries_for_mode(&state.db, mode_id) {
-                for entry in &entries {
-                    if entry.is_enabled && !entry.word.is_empty() {
-                        vocab_words.push(entry.word.clone());
-                    }
-                }
-            }
+        if !prompt.is_empty() {
+            prompt.push_str(", ");
         }
-    }
-    if !vocab_words.is_empty() {
-        // Append reinforcement: repeat each vocab word in context to
-        // strongly bias the decoder (e.g. "Claude Code. Claude Code.")
-        let reinforcement = vocab_words
-            .iter()
-            .map(|w| format!("{w}."))
-            .collect::<Vec<_>>()
-            .join(" ");
-        prompt.push_str(". ");
-        prompt.push_str(&reinforcement);
-        prompt.push(' ');
-        prompt.push_str(&reinforcement);
+        prompt.push_str(term);
     }
 
-    Some(prompt)
+    if !reinforcement.is_empty() {
+        if !prompt.is_empty() {
+            prompt.push_str(". ");
+        }
+        prompt.push_str(reinforcement);
+    }
+
+    if prompt.is_empty() { None } else { Some(prompt) }
 }

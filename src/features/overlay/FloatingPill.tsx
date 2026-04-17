@@ -14,6 +14,7 @@ import {
   onSettingsChanged,
   getSettings,
   updateSettings,
+  type AppSettings,
   type ContextMode,
 } from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
@@ -65,6 +66,15 @@ export function FloatingPill() {
   const [modes, setModes] = useState<ContextMode[]>([]);
   const [activeModId, setActiveModId] = useState<string | null>(null);
   const [activeColor, setActiveColor] = useState("amber");
+
+  // In-memory mirror of the latest settings so toggles can read+write without
+  // re-fetching from SQLite.  Updated on initial load AND whenever
+  // onSettingsChanged fires (from any window).  The old code did
+  // `const s = await getSettings(); await updateSettings({ ...s, key: next })`
+  // for every toggle — two rapid toggles could race (A reads DB, B reads DB,
+  // A writes { ...old, x:true }, B writes { ...old, y:true } overwriting x).
+  // With a synchronously-updated ref, toggles never see stale data.
+  const settingsRef = useRef<AppSettings | null>(null);
 
   useEffect(() => {
     if (status === "idle" && lastTranscription && pillState === "processing") {
@@ -151,6 +161,7 @@ export function FloatingPill() {
   useEffect(() => {
     getSettings()
       .then((s) => {
+        settingsRef.current = s;
         setLivePreviewEnabled(s.live_preview);
         setNoiseReduction(s.noise_reduction);
         setAutoSwitchModes(s.auto_switch_modes);
@@ -167,6 +178,7 @@ export function FloatingPill() {
 
     // Stay in sync when settings change from the main window (or any window)
     const unlistenSettings = onSettingsChanged((s) => {
+      settingsRef.current = s;
       setLivePreviewEnabled(s.live_preview);
       setNoiseReduction(s.noise_reduction);
       setAutoSwitchModes(s.auto_switch_modes);
@@ -180,6 +192,24 @@ export function FloatingPill() {
       unlistenSettings.then((fn) => fn());
     };
   }, []);
+
+  // Apply a single-field change to the settings ref and push to the DB.
+  // Synchronous ref update means back-to-back toggles never race.
+  // Returns a Promise that rejects on DB failure so callers can revert local state.
+  const applySettingPatch = useCallback(
+    (patch: Partial<AppSettings>): Promise<void> => {
+      const current = settingsRef.current;
+      if (!current) return Promise.reject(new Error("settings not loaded"));
+      const updated: AppSettings = { ...current, ...patch };
+      settingsRef.current = updated;
+      return updateSettings(updated).catch((e) => {
+        // Revert the ref so a subsequent toggle sees consistent state.
+        settingsRef.current = current;
+        throw e;
+      });
+    },
+    []
+  );
 
   // Clear preview text when not recording
   useEffect(() => {
@@ -206,56 +236,51 @@ export function FloatingPill() {
     const next = !autoSwitchModes;
     setAutoSwitchModes(next);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, auto_switch_modes: next });
+      await applySettingPatch({ auto_switch_modes: next });
     } catch {
       setAutoSwitchModes(!next);
     }
-  }, [autoSwitchModes]);
+  }, [autoSwitchModes, applySettingPatch]);
 
   const handleToggleLivePreview = useCallback(async () => {
     const next = !livePreviewEnabled;
     setLivePreviewEnabled(next); // optimistic
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, live_preview: next });
+      await applySettingPatch({ live_preview: next });
     } catch {
       setLivePreviewEnabled(!next); // revert on failure
     }
-  }, [livePreviewEnabled]);
+  }, [livePreviewEnabled, applySettingPatch]);
 
   const handleToggleNoiseReduction = useCallback(async () => {
     const next = !noiseReduction;
     setNoiseReduction(next); // optimistic
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, noise_reduction: next });
+      await applySettingPatch({ noise_reduction: next });
     } catch {
       setNoiseReduction(!next); // revert on failure
     }
-  }, [noiseReduction]);
+  }, [noiseReduction, applySettingPatch]);
 
   const handleToggleShipMode = useCallback(async () => {
     const next = !shipMode;
     setShipMode(next);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, ship_mode: next });
+      await applySettingPatch({ ship_mode: next });
     } catch {
       setShipMode(!next);
     }
-  }, [shipMode]);
+  }, [shipMode, applySettingPatch]);
 
   const handleToggleCommandSend = useCallback(async () => {
     const next = !commandSend;
     setCommandSend(next);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, command_send: next });
+      await applySettingPatch({ command_send: next });
     } catch {
       setCommandSend(!next);
     }
-  }, [commandSend]);
+  }, [commandSend, applySettingPatch]);
 
   const handleToggleGhostMode = useCallback(async () => {
     const next = !ghostMode;
@@ -265,21 +290,19 @@ export function FloatingPill() {
       setShowModeSelector(false);
     }
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, ghost_mode: next });
+      await applySettingPatch({ ghost_mode: next });
     } catch {
       setGhostMode(!next);
     }
-  }, [ghostMode]);
+  }, [ghostMode, applySettingPatch]);
 
   // Exit ghost mode — used when user clicks/right-clicks the invisible pill
   const exitGhostMode = useCallback(async () => {
     setGhostMode(false);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, ghost_mode: false });
+      await applySettingPatch({ ghost_mode: false });
     } catch {}
-  }, []);
+  }, [applySettingPatch]);
 
   const handleClick = useCallback(async () => {
     if (showModeSelector) return; // Don't start recording while selector is open

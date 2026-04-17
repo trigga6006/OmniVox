@@ -81,7 +81,12 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
 
 /// Copy bundled model files from Tauri resources to user directories on first launch.
 /// Does NOT load any models — that's handled by `load_default_model_deferred`.
-fn copy_bundled_resources(app: &tauri::App, state: &state::AppState) {
+///
+/// Called from the deferred background task (not `setup()` directly) so that
+/// a 1.5 GB `fs::copy` of the bundled medium-en model doesn't block the
+/// window from appearing on first launch.  Takes `AppHandle` instead of
+/// `&App` so it can run off the main thread.
+fn copy_bundled_resources(app: &tauri::AppHandle, state: &state::AppState) {
     use models::downloader::model_filename;
     use models::manager::BUNDLED_MODEL_ID;
 
@@ -100,6 +105,10 @@ fn copy_bundled_resources(app: &tauri::App, state: &state::AppState) {
         if source.exists() {
             if std::fs::copy(&source, &target).is_ok() {
                 eprintln!("Bundled Whisper model installed: {BUNDLED_MODEL_ID}");
+                // The cached model list in ModelManager was built before the
+                // copy completed, so it still says the bundled model isn't
+                // downloaded.  Invalidate so the UI reflects reality.
+                state.model_manager.invalidate_cache();
             }
         }
     }
@@ -337,14 +346,29 @@ pub fn run() {
                 commands::dictionary::sync_processor(&state);
             }
 
-            // First-launch: copy bundled models from app resources to user dirs.
-            // Model loading is deferred to a background task so that a slow or
-            // crashing model load never prevents the window from appearing.
-            copy_bundled_resources(app, &state);
+            // First-launch: copy bundled models from app resources to user
+            // dirs.  We do this in the same deferred task as model loading so
+            // the ~1.5 GB fs::copy of the bundled medium-en model doesn't
+            // block setup() from returning — previously this delayed the
+            // window appearing by 3–5 s on first launch.  The copy runs
+            // inside spawn_blocking so the async runtime stays responsive
+            // for tray + window events.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Let the window render first
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+                // Copy bundled resources on a blocking thread (fs::copy on a
+                // multi-GB file blocks for seconds; keep it off the async pool).
+                {
+                    let h = handle.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let st = h.state::<state::AppState>();
+                        copy_bundled_resources(&h, &st);
+                    })
+                    .await;
+                }
+
                 let st = handle.state::<state::AppState>();
                 load_default_model_deferred(&handle, &st);
             });

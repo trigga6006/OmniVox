@@ -95,31 +95,58 @@ mod state_machine {
     }
 
     /// Update the hotkey keys at runtime.
+    ///
+    /// Called from the tauri command thread / startup thread.  Release
+    /// ordering on HOTKEY_PACKED synchronizes with the Acquire load at the
+    /// top of `process_key_event` — so the hook thread, after observing the
+    /// new packed value, also sees the reset KEYS_DOWN / RECORDING /
+    /// TOGGLE_LOCKED that accompany a hotkey change.
     pub fn update_hotkey_keys(key1: u16, key2: u16) {
         let packed = (key2 as u32) << 16 | (key1 as u32);
-        HOTKEY_PACKED.store(packed, Ordering::SeqCst);
-        KEYS_DOWN.store(0, Ordering::SeqCst);
-        RECORDING.store(false, Ordering::SeqCst);
-        TOGGLE_LOCKED.store(false, Ordering::SeqCst);
+        // Release these first so they're visible once PACKED is acquired.
+        KEYS_DOWN.store(0, Ordering::Release);
+        RECORDING.store(false, Ordering::Release);
+        TOGGLE_LOCKED.store(false, Ordering::Release);
+        HOTKEY_PACKED.store(packed, Ordering::Release);
     }
 
     /// Suspend or resume the hotkey hook.
+    ///
+    /// When suspending, also clear the latching state (`KEYS_DOWN`,
+    /// `RECORDING`, `TOGGLE_LOCKED`) so that on resume we don't wake up in a
+    /// stuck "already recording" state.  Without this, if the hotkey was
+    /// active at suspend-time, the next key-combo press would be a no-op
+    /// (hit the `recording && !locked` branch and do nothing) until the user
+    /// happens to release the keys — which they may never do with the new
+    /// combo.  Pipeline-level recording state is tracked separately via
+    /// `AppState.audio.is_recording()`, so this reset is purely for the
+    /// state machine inside the hook.
     pub fn set_suspended(suspended: bool) {
-        HOTKEY_SUSPENDED.store(suspended, Ordering::SeqCst);
+        HOTKEY_SUSPENDED.store(suspended, Ordering::Release);
         if suspended {
-            KEYS_DOWN.store(0, Ordering::SeqCst);
+            KEYS_DOWN.store(0, Ordering::Release);
+            RECORDING.store(false, Ordering::Release);
+            TOGGLE_LOCKED.store(false, Ordering::Release);
         }
     }
 
     /// Process a key event. Returns true if the event should be swallowed.
     ///
     /// `vk` is the virtual key code, `is_down` / `is_up` indicate the event type.
+    ///
+    /// Ordering rationale: this runs on the WH_KEYBOARD_LL hook thread on a
+    /// per-keypress hot path.  We use Acquire loads for the two atomics that
+    /// could be updated cross-thread (SUSPENDED from tauri, PACKED from
+    /// startup/tauri); once we've observed their latest value we can use
+    /// Relaxed for the remaining counters which are logically owned by this
+    /// thread (the matching Release stores in `update_hotkey_keys` /
+    /// `set_suspended` synchronize through the Acquire above).
     pub fn process_key_event(vk: u16, is_down: bool, is_up: bool) -> bool {
-        if HOTKEY_SUSPENDED.load(Ordering::SeqCst) {
+        if HOTKEY_SUSPENDED.load(Ordering::Acquire) {
             return false;
         }
 
-        let packed = HOTKEY_PACKED.load(Ordering::SeqCst);
+        let packed = HOTKEY_PACKED.load(Ordering::Acquire);
         if packed == 0 {
             return false;
         }
@@ -135,39 +162,42 @@ mod state_machine {
             let bit: u8 = if matches_key1 { 0x01 } else { 0x02 };
 
             if is_down {
-                KEYS_DOWN.fetch_or(bit, Ordering::SeqCst);
+                KEYS_DOWN.fetch_or(bit, Ordering::Relaxed);
             } else if is_up {
-                KEYS_DOWN.fetch_and(!bit, Ordering::SeqCst);
+                KEYS_DOWN.fetch_and(!bit, Ordering::Relaxed);
             }
         }
 
-        let keys_down = KEYS_DOWN.load(Ordering::SeqCst);
+        let keys_down = KEYS_DOWN.load(Ordering::Relaxed);
         let all_down = if is_two_key {
             keys_down == 0x03
         } else {
             keys_down == 0x01
         };
 
-        let recording = RECORDING.load(Ordering::SeqCst);
-        let locked = TOGGLE_LOCKED.load(Ordering::SeqCst);
+        let recording = RECORDING.load(Ordering::Relaxed);
+        let locked = TOGGLE_LOCKED.load(Ordering::Relaxed);
 
         // ── Both/all keys just pressed ───────────────────────
         if all_down && is_down {
             if !recording {
                 let now = now_ms();
-                let last = LAST_ACTIVATE_MS.swap(now, Ordering::SeqCst);
+                let last = LAST_ACTIVATE_MS.swap(now, Ordering::Relaxed);
+                // `now >= last` always (swap semantics, monotonic clock), so
+                // the subtraction never underflows.  First activation: last=0
+                // so the diff is large → is_double_tap = false (correct).
                 let is_double_tap = (now - last) <= DOUBLE_TAP_MS;
 
-                RECORDING.store(true, Ordering::SeqCst);
-                TOGGLE_LOCKED.store(is_double_tap, Ordering::SeqCst);
+                RECORDING.store(true, Ordering::Relaxed);
+                TOGGLE_LOCKED.store(is_double_tap, Ordering::Relaxed);
                 fire_start();
 
                 return true; // swallow
             } else if locked {
                 // Toggle-off
-                RECORDING.store(false, Ordering::SeqCst);
-                TOGGLE_LOCKED.store(false, Ordering::SeqCst);
-                LAST_ACTIVATE_MS.store(0, Ordering::SeqCst);
+                RECORDING.store(false, Ordering::Relaxed);
+                TOGGLE_LOCKED.store(false, Ordering::Relaxed);
+                LAST_ACTIVATE_MS.store(0, Ordering::Relaxed);
                 fire_stop();
 
                 return true; // swallow
@@ -176,7 +206,7 @@ mod state_machine {
 
         // ── Key released while hold-recording (non-locked) ──
         if recording && !locked && is_up && (matches_key1 || matches_key2) {
-            RECORDING.store(false, Ordering::SeqCst);
+            RECORDING.store(false, Ordering::Relaxed);
             fire_stop();
         }
 
@@ -221,7 +251,7 @@ mod win {
         state_machine::init_epoch();
 
         // If no hotkey was loaded from settings yet, use the default (Ctrl+LAlt).
-        if state_machine::HOTKEY_PACKED.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        if state_machine::HOTKEY_PACKED.load(std::sync::atomic::Ordering::Acquire) == 0 {
             state_machine::update_hotkey_keys(0xA2, 0xA4); // VK_LCONTROL, VK_LMENU
         }
 
@@ -320,7 +350,7 @@ mod rdev_impl {
         state_machine::init_epoch();
 
         // If no hotkey was loaded from settings yet, use the default (Ctrl+LAlt).
-        if state_machine::HOTKEY_PACKED.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        if state_machine::HOTKEY_PACKED.load(std::sync::atomic::Ordering::Acquire) == 0 {
             state_machine::update_hotkey_keys(0xA2, 0xA4); // LControl + LAlt
         }
 
