@@ -8,6 +8,7 @@ import {
   Ghost,
   Send,
   Sparkles,
+  Mic,
 } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
@@ -74,7 +75,9 @@ export function FloatingPill() {
   const [commandSend, setCommandSend] = useState(true);
   const [ghostMode, setGhostMode] = useState(false);
   const [structuredMode, setStructuredMode] = useState(false);
+  const [structuredVoiceCommand, setStructuredVoiceCommand] = useState(false);
   const [showShipPopup, setShowShipPopup] = useState(false);
+  const [showLeyLinePopup, setShowLeyLinePopup] = useState(false);
 
   // Mode selector state
   const [showModeSelector, setShowModeSelector] = useState(false);
@@ -147,29 +150,74 @@ export function FloatingPill() {
     }
   }, [status, lastTranscription]);
 
-  // Resize window on idle ↔ active transitions with content fade
+  // Consolidated overlay sizing.
+  //
+  // Prior version had TWO effects that both reacted to the same state
+  // transitions and called resizeOverlay independently.  When the user
+  // right-clicked to open the mode selector, effect #1 issued
+  // resizeOverlay(ACTIVE_W, ACTIVE_H) (210×34) and effect #2 issued
+  // resizeOverlay(600, ACTIVE_H+selectorH+4) in the same tick.  Both
+  // go through Tauri IPC; under load the first one could finish AFTER
+  // the second, leaving the overlay at 210×34 with the mode selector
+  // rendered but clipped to a one-line-tall window — "pill expands
+  // horizontally but no menu".  Collapsing into a single effect
+  // guarantees exactly one resize per state transition.
+  //
+  // showContent fade timing (80 ms in / 200 ms out) is preserved but
+  // only triggered on the idle↔expanded boundary, so intra-expanded
+  // transitions (e.g. opening the menu while the pill is already
+  // recording) reshape the window without flashing the content.
+  const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
   useEffect(() => {
-    const expanded =
-      pillState !== "idle" ||
-      !!structuredPayload ||
-      !!structuredDegraded ||
-      showModeSelector;
-    if (expanded !== prevExpandedRef.current) {
-      prevExpandedRef.current = expanded;
-
-      if (expanded) {
-        // idle → active: expand window, then fade content in
-        resizeOverlay(ACTIVE_W, ACTIVE_H);
-        const t = setTimeout(() => setShowContent(true), 80);
-        return () => clearTimeout(t);
-      } else {
-        // active → idle: fade content out, then shrink window
-        setShowContent(false);
-        const t = setTimeout(() => resizeOverlay(IDLE_W, IDLE_H), 200);
-        return () => clearTimeout(t);
-      }
+    let targetW: number;
+    let targetH: number;
+    if (structuredPayload) {
+      // Panel dimensions: 420 wide, up to ~450 tall (preview + raw + actions).
+      targetW = 440;
+      targetH = 480;
+    } else if (structuredDegraded) {
+      // Banner needs a wider + taller window than idle, otherwise it's
+      // clipped by the 56×26 overlay and the user never sees the reason.
+      targetW = 420;
+      targetH = ACTIVE_H + 80;
+    } else if (showModeSelector) {
+      // Popup width math: toggle buttons at 50%+102px, popup 8px+160px →
+      // right edge at 50%+296px, so 600 window gives 4px margin.
+      const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
+      targetW = 600;
+      targetH = ACTIVE_H + selectorH + 4;
+    } else if (pillState !== "idle") {
+      targetW = ACTIVE_W;
+      targetH = ACTIVE_H;
+    } else {
+      targetW = IDLE_W;
+      targetH = IDLE_H;
     }
-  }, [pillState, structuredPayload, structuredDegraded, showModeSelector]);
+
+    const expanded = targetW > IDLE_W || targetH > IDLE_H;
+    const wasExpanded = prevExpandedRef.current;
+    const prev = prevTargetRef.current;
+    const sizeChanged = prev.w !== targetW || prev.h !== targetH;
+    prevExpandedRef.current = expanded;
+    prevTargetRef.current = { w: targetW, h: targetH };
+
+    if (!sizeChanged) return;
+
+    if (expanded && !wasExpanded) {
+      // idle → expanded: resize immediately, fade content in after.
+      resizeOverlay(targetW, targetH);
+      const t = setTimeout(() => setShowContent(true), 80);
+      return () => clearTimeout(t);
+    }
+    if (!expanded && wasExpanded) {
+      // expanded → idle: fade content out, then shrink.
+      setShowContent(false);
+      const t = setTimeout(() => resizeOverlay(targetW, targetH), 200);
+      return () => clearTimeout(t);
+    }
+    // expanded → expanded (size change only): just apply the new size.
+    resizeOverlay(targetW, targetH);
+  }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length]);
 
   // Mount: transparent bg, force dark theme, shrink to idle
   useEffect(() => {
@@ -225,6 +273,7 @@ export function FloatingPill() {
         setCommandSend(s.command_send);
         setGhostMode(s.ghost_mode);
         setStructuredMode(s.structured_mode);
+        setStructuredVoiceCommand(s.structured_voice_command);
       })
       .catch(() => {});
 
@@ -243,6 +292,7 @@ export function FloatingPill() {
       setCommandSend(s.command_send);
       setGhostMode(s.ghost_mode);
       setStructuredMode(s.structured_mode);
+      setStructuredVoiceCommand(s.structured_voice_command);
     });
 
     const unlistenStructured = onStructuredOutputReady((payload) => {
@@ -318,27 +368,8 @@ export function FloatingPill() {
     }
   }, [status]);
 
-  // Manage overlay size when mode selector opens/closes.
-  // Always pre-allocate width for the ship popup so toggling it is purely CSS
-  // (no async window resize = no flash or clipping).
-  // Layout math: toggle buttons at 50%+102px, 26px wide, popup 8px gap + 160px.
-  // Popup right edge = 50% + 296px → window needs ≥ 600px so 300px ≥ 296px.
-  useEffect(() => {
-    if (structuredPayload) {
-      // Panel dimensions: 420 wide, up to ~450 tall (preview + raw + actions).
-      // Leave generous headroom — panel itself caps its own scroll area.
-      resizeOverlay(440, 480);
-    } else if (structuredDegraded) {
-      // Banner needs a wider + taller window than idle, otherwise it's clipped
-      // by the 56×26 overlay and the user never sees the failure reason.
-      resizeOverlay(420, ACTIVE_H + 80);
-    } else if (showModeSelector) {
-      const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
-      resizeOverlay(600, ACTIVE_H + selectorH + 4);
-    } else if (pillState === "idle") {
-      resizeOverlay(IDLE_W, IDLE_H);
-    }
-  }, [showModeSelector, modes.length, structuredPayload, structuredDegraded, pillState]);
+  // (Resize logic unified above — see the "Consolidated overlay sizing"
+  // comment.  This block intentionally left blank after the merge.)
 
   const handleToggleAutoSwitch = useCallback(async () => {
     const next = !autoSwitchModes;
@@ -389,6 +420,16 @@ export function FloatingPill() {
       setStructuredMode(!next);
     }
   }, [structuredMode, applySettingPatch]);
+
+  const handleToggleStructuredVoiceCommand = useCallback(async () => {
+    const next = !structuredVoiceCommand;
+    setStructuredVoiceCommand(next);
+    try {
+      await applySettingPatch({ structured_voice_command: next });
+    } catch {
+      setStructuredVoiceCommand(!next);
+    }
+  }, [structuredVoiceCommand, applySettingPatch]);
 
   const handleToggleCommandSend = useCallback(async () => {
     const next = !commandSend;
@@ -446,8 +487,11 @@ export function FloatingPill() {
       }
       if (pillState === "idle") {
         setShowModeSelector((prev) => {
-          // Close ship popup when toggling mode selector
-          if (!prev) setShowShipPopup(false);
+          // Close nested popups when toggling mode selector
+          if (!prev) {
+            setShowShipPopup(false);
+            setShowLeyLinePopup(false);
+          }
           return !prev;
         });
       }
@@ -546,6 +590,7 @@ export function FloatingPill() {
             onClose={() => {
               setShowModeSelector(false);
               setShowShipPopup(false);
+              setShowLeyLinePopup(false);
             }}
           />
           {/* Right-side controls — Ley Line on top (flagship) then the
@@ -565,10 +610,72 @@ export function FloatingPill() {
               top: "0",
             }}
           >
-            <StructuredModeToggle
-              active={structuredMode}
-              onToggle={handleToggleStructuredMode}
-            />
+            <div className="relative">
+              <StructuredModeToggle
+                active={structuredMode}
+                onToggle={handleToggleStructuredMode}
+                onContextMenu={() => {
+                  setShowLeyLinePopup((prev) => !prev);
+                  setShowShipPopup(false);
+                }}
+              />
+
+              {/* ── Ley Line right-click popup: Voice Command gate ──
+                  Mirrors the ship button's Command-Send popup, including
+                  the same right-side position so it never overlays the
+                  mode selector.  Width math (mirrors the comment on
+                  ".ship-popup"): button ends at 50%+96+6+28 = 50%+130,
+                  popup adds 8 gap + 160 = 50%+298 right edge, fits in
+                  the 600 px window with 2 px margin. */}
+              <div
+                className="ley-line-popup"
+                style={{
+                  left: "calc(100% + 8px)",
+                  // Align the popup's top with the button's top instead of
+                  // centring on the button — the Ley Line is pinned to the
+                  // menu's TOP edge, so a vertically-centred popup extended
+                  // above the window and got clipped.  Top-aligned means the
+                  // popup grows downward from the button into the menu's
+                  // right margin, always fully visible.
+                  top: "0",
+                  transform: `scale(${showLeyLinePopup ? 1 : 0.92})`,
+                  minWidth: 160,
+                  opacity: showLeyLinePopup ? 1 : 0,
+                  pointerEvents: showLeyLinePopup ? "auto" : "none",
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="ley-line-popup-bloom" aria-hidden="true" />
+                <div className="ley-line-popup-ring" aria-hidden="true" />
+                <div className="ley-line-popup-content">
+                  <div className="ley-line-popup-header">
+                    <Mic size={10} strokeWidth={2} className="ley-line-popup-icon" />
+                    <span className="ley-line-popup-kicker">Voice Command</span>
+                  </div>
+                  <p className="ley-line-popup-desc">
+                    Say “Voxify” at the end to structure — otherwise paste plain
+                  </p>
+                  <div className="ley-line-popup-row">
+                    <button
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleToggleStructuredVoiceCommand();
+                      }}
+                      className={cn(
+                        "ley-line-popup-switch",
+                        structuredVoiceCommand && "ley-line-popup-switch--on"
+                      )}
+                    >
+                      <span className="ley-line-popup-knob" />
+                    </button>
+                    <span className="ley-line-popup-state">
+                      {structuredVoiceCommand ? "On" : "Off"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <button
               onMouseDown={(e) => {
                 e.stopPropagation();
@@ -1145,6 +1252,141 @@ export function FloatingPill() {
           transform: translateY(-50%) translateX(12px);
         }
         .ship-popup-state {
+          font-family: var(--font-sans);
+          font-size: 10px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.62);
+          letter-spacing: -0.005em;
+        }
+
+        /* ── Ley Line popup (Structured Mode voice-command gate) ──
+           Violet-themed mirror of the ship popup, anchored to the LEFT
+           of the Ley Line button since the button is already at the
+           window's right edge.  Same surface language (backdrop blur +
+           bloom + top rim-light), swapped palette. */
+        .ley-line-popup {
+          position: absolute;
+          z-index: 50;
+          border-radius: 10px;
+          padding: 0;
+          background: linear-gradient(180deg,
+            rgba(28,26,24,0.96) 0%,
+            rgba(22,20,18,0.96) 100%);
+          border: 1px solid rgba(255,255,255,0.06);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.05),
+            0 1px 2px rgba(0,0,0,0.5),
+            0 8px 18px -4px rgba(0,0,0,0.7),
+            0 16px 32px -12px rgba(0,0,0,0.8),
+            0 0 22px -10px rgba(188,150,236,0.38);
+          backdrop-filter: blur(14px);
+          overflow: hidden;
+          /* Popup opens to the RIGHT of the Ley Line button AND is
+             top-aligned (inline style top:0).  Origin at left-top so the
+             scale-in emerges from the corner adjacent to the button and
+             flows right + down into place. */
+          transform-origin: left top;
+          transition:
+            opacity 160ms ease-out,
+            transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .ley-line-popup-bloom {
+          position: absolute;
+          inset: -60% -20% auto -20%;
+          height: 80px;
+          background: radial-gradient(ellipse at 50% 0%,
+            rgba(186,148,234,0.16) 0%,
+            rgba(160,115,220,0.06) 30%,
+            transparent 65%);
+          pointer-events: none;
+          z-index: 0;
+        }
+        .ley-line-popup-ring {
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent 0%,
+            rgba(210,178,246,0.35) 50%,
+            transparent 100%);
+          pointer-events: none;
+          z-index: 2;
+        }
+        .ley-line-popup-content {
+          position: relative;
+          z-index: 3;
+          padding: 9px 11px 10px;
+        }
+        .ley-line-popup-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 6px;
+        }
+        .ley-line-popup-icon {
+          color: rgba(210,178,246,0.9);
+          filter: drop-shadow(0 0 2px rgba(186,148,234,0.4));
+        }
+        .ley-line-popup-kicker {
+          font-family: var(--font-display);
+          font-size: 9px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.2em;
+          color: rgba(228,206,248,0.95);
+        }
+        .ley-line-popup-desc {
+          margin: 0 0 9px;
+          font-family: var(--font-sans);
+          font-size: 9.5px;
+          line-height: 1.4;
+          color: rgba(255,255,255,0.5);
+          letter-spacing: -0.005em;
+        }
+        .ley-line-popup-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .ley-line-popup-switch {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          width: 26px;
+          height: 14px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.04);
+          cursor: pointer;
+          transition: background 160ms ease, border-color 160ms ease;
+          padding: 0;
+        }
+        .ley-line-popup-switch--on {
+          background: linear-gradient(180deg,
+            rgba(168,124,226,0.95) 0%,
+            rgba(138,98,200,0.9) 100%);
+          border-color: rgba(210,178,246,0.3);
+          box-shadow:
+            inset 0 1px 0 rgba(255,245,255,0.22),
+            0 0 8px -2px rgba(188,150,236,0.55);
+        }
+        .ley-line-popup-knob {
+          display: inline-block;
+          position: absolute;
+          top: 50%;
+          left: 2px;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.92);
+          box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+          transform: translateY(-50%) translateX(0);
+          transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ley-line-popup-switch--on .ley-line-popup-knob {
+          transform: translateY(-50%) translateX(12px);
+        }
+        .ley-line-popup-state {
           font-family: var(--font-sans);
           font-size: 10px;
           font-weight: 500;

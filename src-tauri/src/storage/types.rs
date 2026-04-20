@@ -136,6 +136,13 @@ pub struct AppSettings {
     /// Transcripts shorter than this skip Structured Mode entirely — too
     /// little content to structure meaningfully.
     pub structured_min_chars: u32,
+    /// When true, Structured Mode requires the user to end their dictation
+    /// with the trigger word "Voxify" before the LLM runs.  If the word is
+    /// absent the transcription is output plain, even with `structured_mode`
+    /// on.  Mirrors how `command_send` gates Ship Mode behind the "send"
+    /// voice command — lets the user opt-in per utterance instead of
+    /// structuring every single one.
+    pub structured_voice_command: bool,
 }
 
 impl Default for AppSettings {
@@ -165,6 +172,7 @@ impl Default for AppSettings {
             active_llm_model_id: None,
             llm_timeout_secs: 8,
             structured_min_chars: 40,
+            structured_voice_command: false,
         }
     }
 }

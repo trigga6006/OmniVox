@@ -3,6 +3,12 @@ import { cn } from "@/lib/utils";
 interface Props {
   active: boolean;
   onToggle: () => void;
+  /**
+   * Right-click handler — opens the Voice-Command popup that gates
+   * Structured Mode behind the "Voxify" trigger word.  Mirrors the
+   * Ship button's right-click popup pattern.
+   */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /**
@@ -27,13 +33,23 @@ interface Props {
  * The press itself kicks off the menu-wide transition (amber → violet or
  * reverse) — that choreography lives in `ModeSelector`, not here.
  */
-export function StructuredModeToggle({ active, onToggle }: Props) {
+export function StructuredModeToggle({
+  active,
+  onToggle,
+  onContextMenu,
+}: Props) {
   return (
     <button
       onMouseDown={(e) => {
         e.stopPropagation();
         e.preventDefault();
-        onToggle();
+        // Left-click toggles; right-click opens the voice-command popup.
+        if (e.button === 0) onToggle();
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu?.(e);
       }}
       aria-pressed={active}
       aria-label={
@@ -41,8 +57,8 @@ export function StructuredModeToggle({ active, onToggle }: Props) {
       }
       title={
         active
-          ? "Structured Mode is ON — dictation runs through the LLM"
-          : "Structured Mode is OFF — click to enable"
+          ? "Structured Mode is ON — dictation runs through the LLM (right-click for options)"
+          : "Structured Mode is OFF — click to enable (right-click for options)"
       }
       className={cn("ley-line", active && "ley-line--on")}
     >

@@ -107,6 +107,14 @@ export interface AppSettings {
   llm_timeout_secs: number;
   /** Below this character count, Structured Mode is skipped. */
   structured_min_chars: number;
+  /**
+   * Voice-command gate for Structured Mode.  When true, the user must
+   * end their dictation with the word "Voxify" before the LLM runs —
+   * otherwise the transcription is output plain even with
+   * `structured_mode` on.  Mirrors how `command_send` gates Ship Mode
+   * behind the "send" word.
+   */
+  structured_voice_command: boolean;
 }
 
 export interface AppBinding {

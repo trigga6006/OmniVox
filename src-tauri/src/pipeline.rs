@@ -592,12 +592,45 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // deterministic list formatter and voice-command parser.  Failure modes
     // (no runner loaded, timeout, malformed JSON) degrade gracefully to the
     // plain path — structured mode must never block dictation.
+    //
+    // Voice-command gate: when `structured_voice_command` is on, the user
+    // must end their dictation with the trigger word "Voxify" for the LLM
+    // to run.  If the word is present we strip it from the text (so it
+    // doesn't end up in the user-facing output) and let structuring
+    // proceed.  If it's absent, we fall through to plain output even
+    // though `structured_mode` is on.  Mirrors how `command_send` gates
+    // Ship Mode behind the "send" word.
     let structured_enabled = settings.as_ref().map(|s| s.structured_mode).unwrap_or(false);
+    let voice_command_gate = settings
+        .as_ref()
+        .map(|s| s.structured_voice_command)
+        .unwrap_or(false);
     let min_chars = settings
         .as_ref()
         .map(|s| s.structured_min_chars)
         .unwrap_or(40) as usize;
     let llm_timeout = settings.as_ref().map(|s| s.llm_timeout_secs).unwrap_or(8);
+
+    // Detect and strip the trailing "Voxify" trigger word — but ONLY when
+    // the voice-command gate is armed.  With the gate off, "voxify" is
+    // treated as ordinary dictation content: stripping it unconditionally
+    // would silently corrupt plain output (and would also steal the word
+    // from Structured Mode runs that don't require it).  The gate is the
+    // single signal that promotes the word from content to command.
+    let (processed_text, voxify_said) = if voice_command_gate {
+        crate::llm::voxify::detect_and_strip_trigger(&processed_text)
+    } else {
+        (processed_text, false)
+    };
+    crate::llm::diaglog::log(&format!(
+        "pipeline: voxify_said={} voice_gate={} structured_enabled={}",
+        voxify_said, voice_command_gate, structured_enabled
+    ));
+
+    // Resolve whether the LLM should run for THIS utterance.  With the
+    // gate on, it's an explicit opt-in per utterance.  With the gate off,
+    // the global setting governs (every qualifying transcription runs).
+    let should_structure = structured_enabled && (!voice_command_gate || voxify_said);
 
     let configured_llm_id = settings
         .as_ref()
@@ -612,7 +645,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         })
         .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state));
 
-    let runner_opt = if structured_enabled {
+    let runner_opt = if should_structure {
         let existing = state.llm_runner.lock().ok().and_then(|g| g.clone());
         if existing.is_some() {
             crate::llm::diaglog::log("runner: using existing loaded runner");
@@ -652,7 +685,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     };
 
     let structured: Option<(String, SlotExtraction)> =
-        if structured_enabled && processed_text.chars().count() >= min_chars {
+        if should_structure && processed_text.chars().count() >= min_chars {
             if let Some(runner) = runner_opt {
                 let _ = app_handle.emit("recording-state-change", "structuring");
                 let t0 = std::time::Instant::now();
@@ -698,7 +731,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 );
                 None
             }
-        } else if structured_enabled {
+        } else if should_structure {
             crate::llm::diaglog::log(&format!(
                 "pipeline: SKIPPED (input too short {} < {} chars)",
                 processed_text.chars().count(),

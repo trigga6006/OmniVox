@@ -135,6 +135,11 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(defaults.structured_min_chars);
 
+    let structured_voice_command = map
+        .get("structured_voice_command")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.structured_voice_command);
+
     Ok(AppSettings {
         theme,
         language,
@@ -160,6 +165,7 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         active_llm_model_id,
         llm_timeout_secs,
         structured_min_chars,
+        structured_voice_command,
     })
 }
 
@@ -191,7 +197,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     let llm_timeout_str = settings.llm_timeout_secs.to_string();
     let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 23] = [
+    let pairs: [(&str, &str); 24] = [
         ("theme", settings.theme.as_str()),
         ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
@@ -215,6 +221,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("active_llm_model_id", settings.active_llm_model_id.as_deref().unwrap_or("")),
         ("llm_timeout_secs", llm_timeout_str.as_str()),
         ("structured_min_chars", structured_min_chars_str.as_str()),
+        ("structured_voice_command", b(settings.structured_voice_command)),
     ];
 
     let conn = db.conn()?;
