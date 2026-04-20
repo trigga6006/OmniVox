@@ -31,6 +31,14 @@ pub struct TranscriptionRecord {
     pub duration_ms: u64,
     pub model_name: String,
     pub created_at: DateTime<Utc>,
+    /// Original dictation before Structured Mode post-processing.
+    ///
+    /// `None` for pre-migration rows and for plain dictations (where `text`
+    /// and the raw transcript are the same).  The "View raw" disclosure in
+    /// the Structured panel surfaces this so the user can always recover the
+    /// words they actually spoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_transcript: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +125,17 @@ pub struct AppSettings {
     pub audio_ducking: bool,
     /// How much to reduce volume (0 = no reduction, 100 = full mute). Default 70.
     pub ducking_amount: u32,
+    /// Structured Mode: run dictation through a local LLM and output a slot-
+    /// filled Markdown prompt instead of plain prose.
+    pub structured_mode: bool,
+    /// ID of the LLM catalog entry to use for slot extraction.
+    pub active_llm_model_id: Option<String>,
+    /// Hard timeout (seconds) for a single LLM extraction.  On timeout, the
+    /// pipeline falls back to plain-text output and emits `structured-mode-degraded`.
+    pub llm_timeout_secs: u32,
+    /// Transcripts shorter than this skip Structured Mode entirely — too
+    /// little content to structure meaningfully.
+    pub structured_min_chars: u32,
 }
 
 impl Default for AppSettings {
@@ -142,6 +161,10 @@ impl Default for AppSettings {
             writing_style: "formal".to_string(),
             audio_ducking: true,
             ducking_amount: 70,
+            structured_mode: false,
+            active_llm_model_id: None,
+            llm_timeout_secs: 8,
+            structured_min_chars: 40,
         }
     }
 }

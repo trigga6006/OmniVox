@@ -115,6 +115,26 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(defaults.ducking_amount);
 
+    let structured_mode = map
+        .get("structured_mode")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.structured_mode);
+
+    let active_llm_model_id = map
+        .get("active_llm_model_id")
+        .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+        .or(defaults.active_llm_model_id);
+
+    let llm_timeout_secs = map
+        .get("llm_timeout_secs")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(defaults.llm_timeout_secs);
+
+    let structured_min_chars = map
+        .get("structured_min_chars")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(defaults.structured_min_chars);
+
     Ok(AppSettings {
         theme,
         language,
@@ -136,6 +156,10 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         writing_style,
         audio_ducking,
         ducking_amount,
+        structured_mode,
+        active_llm_model_id,
+        llm_timeout_secs,
+        structured_min_chars,
     })
 }
 
@@ -164,8 +188,10 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     let hotkey_json = serde_json::to_string(&settings.hotkey).unwrap_or_default();
     let sample_rate_str = settings.sample_rate.to_string();
     let ducking_amount_str = settings.ducking_amount.to_string();
+    let llm_timeout_str = settings.llm_timeout_secs.to_string();
+    let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 19] = [
+    let pairs: [(&str, &str); 23] = [
         ("theme", settings.theme.as_str()),
         ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
@@ -185,6 +211,10 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("writing_style", settings.writing_style.as_str()),
         ("audio_ducking", b(settings.audio_ducking)),
         ("ducking_amount", ducking_amount_str.as_str()),
+        ("structured_mode", b(settings.structured_mode)),
+        ("active_llm_model_id", settings.active_llm_model_id.as_deref().unwrap_or("")),
+        ("llm_timeout_secs", llm_timeout_str.as_str()),
+        ("structured_min_chars", structured_min_chars_str.as_str()),
     ];
 
     let conn = db.conn()?;

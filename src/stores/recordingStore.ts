@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-export type RecordingStatus = "idle" | "recording" | "processing" | "error";
+export type RecordingStatus =
+  | "idle"
+  | "recording"
+  | "processing"
+  | "structuring"
+  | "error";
 
 interface RecordingState {
   status: RecordingStatus;

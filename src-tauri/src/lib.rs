@@ -3,6 +3,8 @@ pub mod asr;
 pub mod commands;
 pub mod error;
 pub mod hotkey;
+pub mod llm;
+pub mod llm_models;
 pub mod models;
 pub mod output;
 pub mod pipeline;
@@ -169,6 +171,43 @@ fn load_default_model_deferred(app_handle: &tauri::AppHandle, state: &state::App
     }
 }
 
+/// If Structured Mode was left enabled with a persisted LLM id, load that
+/// model in the background so the first dictation after restart doesn't
+/// silently degrade to plain output.  Failures are logged and non-fatal:
+/// the pipeline's fallback path handles the "no runner" case cleanly.
+fn load_default_llm_deferred(app_handle: &tauri::AppHandle, state: &state::AppState) {
+    use tauri::Emitter;
+
+    let Ok(settings) = crate::storage::settings::get_settings(&state.db) else {
+        return;
+    };
+    if !settings.structured_mode {
+        return;
+    }
+    let Some(model_id) = settings.active_llm_model_id else {
+        return;
+    };
+
+    // Skip if the file isn't actually on disk — avoids a guaranteed failure
+    // and keeps the degraded banner from firing on first post-startup dictation.
+    if state.llm_model_manager.model_path(&model_id).is_none() {
+        eprintln!("Persisted LLM '{model_id}' not on disk — skipping deferred load");
+        return;
+    }
+
+    eprintln!("Loading LLM model in background...");
+    match commands::llm::load_and_activate_llm(&model_id, state) {
+        Ok(()) => {
+            eprintln!("LLM model loaded successfully");
+            let _ = app_handle.emit("llm-model-loaded", &model_id);
+        }
+        Err(e) => {
+            eprintln!("Failed to load LLM (Structured Mode will degrade): {e}");
+            let _ = app_handle.emit("structured-mode-degraded", &e);
+        }
+    }
+}
+
 /// Load persisted settings from SQLite and apply them to in-memory state.
 fn apply_persisted_settings(state: &state::AppState) {
     if let Ok(settings) = crate::storage::settings::get_settings(&state.db) {
@@ -187,6 +226,16 @@ fn apply_persisted_settings(state: &state::AppState) {
             let key1 = hk.keys.first().copied().unwrap_or(0);
             let key2 = hk.keys.get(1).copied().unwrap_or(0);
             hotkey::update_hotkey_keys(key1, key2);
+        }
+
+        // Hydrate the in-memory active-LLM id.  The actual runner load
+        // happens later (see `load_default_llm_deferred`) so setup() stays
+        // fast, but the id is cheap to stash now so any early get_active
+        // queries from the UI return the right value.
+        if let Some(ref id) = settings.active_llm_model_id {
+            if let Ok(mut guard) = state.active_llm_model_id.lock() {
+                *guard = Some(id.clone());
+            }
         }
     }
 
@@ -324,6 +373,7 @@ pub fn run() {
             // Ensure data directories exist
             let state = app.state::<state::AppState>();
             let _ = std::fs::create_dir_all(&state.models_dir);
+            let _ = std::fs::create_dir_all(&state.llm_models_dir);
             let _ = std::fs::create_dir_all(&state.data_dir);
 
             // Clean up orphaned .part files from interrupted downloads
@@ -371,6 +421,11 @@ pub fn run() {
 
                 let st = handle.state::<state::AppState>();
                 load_default_model_deferred(&handle, &st);
+
+                // Restore Structured Mode if it was on at last shutdown.
+                // Runs after the Whisper model so it doesn't compete with
+                // that load for the background pool's first slot.
+                load_default_llm_deferred(&handle, &st);
             });
 
             // Create the floating overlay pill — always-on-top, transparent,
@@ -466,6 +521,14 @@ pub fn run() {
             commands::list_app_bindings,
             commands::add_app_binding,
             commands::delete_app_binding,
+            // LLM / Structured Mode commands (7)
+            commands::list_llm_models,
+            commands::download_llm_model,
+            commands::delete_llm_model,
+            commands::get_active_llm_model,
+            commands::set_active_llm_model,
+            commands::llm_test_extract,
+            commands::paste_structured_output,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

@@ -1,11 +1,23 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::{Emitter, Manager};
 
 use crate::asr::engine::AsrEngine;
 use crate::error::ErrorCode;
+use crate::llm::schema::SlotExtraction;
+use crate::llm::template::render_markdown;
 use crate::postprocess::processor::TextProcessor;
 use crate::state::AppState;
+
+/// Payload emitted on `structured-output-ready` so the overlay can render the
+/// panel and offer Paste / Copy / Edit / Dismiss actions.
+#[derive(Clone, serde::Serialize)]
+struct StructuredOutputPayload {
+    markdown: String,
+    slots: SlotExtraction,
+    raw_transcript: String,
+}
 
 /// Payload emitted with `recording-state-change` when the state is "error".
 #[derive(Clone, serde::Serialize)]
@@ -207,6 +219,13 @@ fn restore_foreground_window(pid: isize) {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn restore_foreground_window(_hwnd: isize) {}
+
+/// Public wrapper for commands that need to restore focus (e.g. the Structured
+/// panel's Paste button).  Keeps the internal helper private while allowing
+/// reuse.
+pub fn restore_foreground_window_public(hwnd: isize) {
+    restore_foreground_window(hwnd);
+}
 
 /// Toggle recording on/off. Called by the frontend start/stop commands.
 pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
@@ -566,53 +585,204 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
+    // 3b. Structured Mode branch.
+    //
+    // When the user has Structured Mode enabled, we divert to the local LLM
+    // to produce a slot-filled Markdown prompt instead of running the
+    // deterministic list formatter and voice-command parser.  Failure modes
+    // (no runner loaded, timeout, malformed JSON) degrade gracefully to the
+    // plain path — structured mode must never block dictation.
+    let structured_enabled = settings.as_ref().map(|s| s.structured_mode).unwrap_or(false);
+    let min_chars = settings
+        .as_ref()
+        .map(|s| s.structured_min_chars)
+        .unwrap_or(40) as usize;
+    let llm_timeout = settings.as_ref().map(|s| s.llm_timeout_secs).unwrap_or(8);
+
+    let configured_llm_id = settings
+        .as_ref()
+        .and_then(|s| s.active_llm_model_id.clone())
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            state
+                .active_llm_model_id
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+        })
+        .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state));
+
+    let runner_opt = if structured_enabled {
+        let existing = state.llm_runner.lock().ok().and_then(|g| g.clone());
+        if existing.is_some() {
+            crate::llm::diaglog::log("runner: using existing loaded runner");
+            existing
+        } else if let Some(model_id) = configured_llm_id.clone() {
+            crate::llm::diaglog::log(&format!("runner: lazy-loading '{model_id}'"));
+            match crate::commands::llm::load_and_activate_llm(&model_id, state) {
+                Ok(()) => {
+                    crate::llm::diaglog::log("runner: lazy-load ok");
+                    state.llm_runner.lock().ok().and_then(|g| g.clone())
+                }
+                Err(e) => {
+                    crate::llm::diaglog::log(&format!("runner: lazy-load FAILED: {e}"));
+                    let _ = app_handle.emit("structured-mode-degraded", &format!("Load failed: {e}"));
+                    None
+                }
+            }
+        } else {
+            crate::llm::diaglog::log("runner: structured_mode=true but no configured model_id");
+            None
+        }
+    } else {
+        None
+    };
+
+    const STRUCTURED_INPUT_CHAR_CAP: usize = 1600;
+    let structured_input = if processed_text.chars().count() > STRUCTURED_INPUT_CHAR_CAP {
+        let clipped: String = processed_text.chars().take(STRUCTURED_INPUT_CHAR_CAP).collect();
+        crate::llm::diaglog::log(&format!(
+            "pipeline: truncating structured input from {} to {} chars",
+            processed_text.chars().count(),
+            STRUCTURED_INPUT_CHAR_CAP
+        ));
+        clipped
+    } else {
+        processed_text.clone()
+    };
+
+    let structured: Option<(String, SlotExtraction)> =
+        if structured_enabled && processed_text.chars().count() >= min_chars {
+            if let Some(runner) = runner_opt {
+                let _ = app_handle.emit("recording-state-change", "structuring");
+                let t0 = std::time::Instant::now();
+                crate::llm::diaglog::log(&format!(
+                    "pipeline: starting extraction input_chars={} llm_input_chars={} timeout={}s min_chars={}",
+                    processed_text.chars().count(),
+                    structured_input.chars().count(),
+                    llm_timeout,
+                    min_chars
+                ));
+                match runner
+                    .extract_with_timeout(
+                        structured_input.clone(),
+                        Duration::from_secs(llm_timeout as u64),
+                    )
+                    .await
+                {
+                    Ok(slots) => {
+                        crate::llm::diaglog::log(&format!(
+                            "pipeline: extraction OK in {}ms slots={:?}",
+                            t0.elapsed().as_millis(),
+                            slots
+                        ));
+                        let md = render_markdown(&slots);
+                        Some((md, slots))
+                    }
+                    Err(e) => {
+                        crate::llm::diaglog::log(&format!(
+                            "pipeline: extraction FAILED after {}ms: {e}",
+                            t0.elapsed().as_millis()
+                        ));
+                        let _ = app_handle.emit(
+                            "structured-mode-degraded",
+                            &format!("Extraction failed: {e}"),
+                        );
+                        None
+                    }
+                }
+            } else {
+                let _ = app_handle.emit(
+                    "structured-mode-degraded",
+                    "No LLM model available for Structured Mode. Using plain dictation.",
+                );
+                None
+            }
+        } else if structured_enabled {
+            crate::llm::diaglog::log(&format!(
+                "pipeline: SKIPPED (input too short {} < {} chars)",
+                processed_text.chars().count(),
+                min_chars
+            ));
+            let _ = app_handle.emit(
+                "structured-mode-degraded",
+                &format!(
+                    "Dictation too short ({} chars) — need at least {}. Using plain output.",
+                    processed_text.chars().count(),
+                    min_chars
+                ),
+            );
+            None
+        } else {
+            None
+        };
+
     // 4. Apply deterministic list formatting (bullet lists for enumerated
     //     items).  Structural formatting is handled here at zero cost.
-    let final_text = crate::postprocess::formatter::format_lists(&processed_text);
+    //     When Structured Mode is active the LLM is the sole formatter —
+    //     skip list formatting so we don't double-handle.
+    let final_text = if let Some((md, _)) = &structured {
+        md.clone()
+    } else {
+        crate::postprocess::formatter::format_lists(&processed_text)
+    };
 
     // 4b. Voice command detection (if enabled).
     //     Splits text into [Text | Command] segments so the output router can
     //     type text and execute keystrokes (Shift+Enter, Ctrl+Backspace, etc.).
+    //     Disabled while Structured Mode is active — the LLM already decided
+    //     on the output shape and voice commands would break it.
     let voice_commands_enabled = settings.as_ref().map(|s| s.voice_commands).unwrap_or(false);
     let command_send_enabled = settings.as_ref().map(|s| s.command_send).unwrap_or(true);
-    let voice_segments = if voice_commands_enabled {
+    let voice_segments = if voice_commands_enabled && structured.is_none() {
         Some(crate::postprocess::voice_commands::parse_commands_with_options(&final_text, command_send_enabled))
     } else {
         None
     };
 
     // 5. Kick off focus restoration in parallel with output.
+    //     Skipped for Structured Mode since the panel handles pasting.
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
-    let focus_task = prev_hwnd.map(|hwnd| {
-        tokio::task::spawn_blocking(move || restore_foreground_window(hwnd))
-    });
+    let focus_task = if structured.is_none() {
+        prev_hwnd.map(|hwnd| tokio::task::spawn_blocking(move || restore_foreground_window(hwnd)))
+    } else {
+        None
+    };
 
     // Wait for focus restoration to complete before outputting text.
     if let Some(task) = focus_task {
         let _ = task.await;
     }
 
-    // 6. Output to the focused application
+    // 6. Output to the focused application.
+    //     When Structured Mode produced a result we skip auto-paste entirely —
+    //     the Structured panel becomes the commit point (Paste / Copy / Edit /
+    //     Dismiss).  The Markdown still reaches the UI via
+    //     `structured-output-ready`, and history still records it.
     let output_config = match state.output_config.lock() {
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
-    let output_result = if let Some(ref segments) = voice_segments {
-        state.output.send_segments(segments, &output_config)
-    } else {
-        state.output.send(&final_text, &output_config)
-    };
-    if let Err(e) = output_result {
-        eprintln!("Output failed: {e}");
-        emit_error(app_handle, e.code(), format!("Output failed: {e}"));
+    if structured.is_none() {
+        let output_result = if let Some(ref segments) = voice_segments {
+            state.output.send_segments(segments, &output_config)
+        } else {
+            state.output.send(&final_text, &output_config)
+        };
+        if let Err(e) = output_result {
+            eprintln!("Output failed: {e}");
+            emit_error(app_handle, e.code(), format!("Output failed: {e}"));
+        }
     }
 
     // 6b. Ship Mode — automatically press Enter to send the message.
     //     Only fires when type simulation was used (clipboard-only can't auto-send).
     //     When Command Send is enabled it overrides Ship Mode — the user controls
     //     sending by saying "send" at the end, so we skip the automatic Enter.
+    //     Also skipped in Structured Mode — pasting is user-driven from the panel.
     let command_send_active = voice_commands_enabled && command_send_enabled;
-    if output_config.ship_mode
+    if structured.is_none()
+        && output_config.ship_mode
         && !command_send_active
         && matches!(
             output_config.mode,
@@ -634,16 +804,46 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         .await;
     }
 
-    // 7. Notify frontend (before moving final_text into history)
+    // 7. Notify frontend of the result.
+    //
+    //    `transcription-result` always fires — History auto-refresh, the
+    //    global last-transcription store, and Notes-append all listen for
+    //    it, so skipping it on the Structured path would silently break
+    //    those flows.  For Structured Mode we also emit the rich payload
+    //    so the overlay can render the preview panel.
     let _ = app_handle.emit("transcription-result", &final_text);
+    if let Some((md, slots)) = &structured {
+        let _ = app_handle.emit(
+            "structured-output-ready",
+            &StructuredOutputPayload {
+                markdown: md.clone(),
+                slots: slots.clone(),
+                // Use the pre-processor ASR output so "View raw transcript"
+                // actually shows what the user said — processed_text has
+                // already been through filler removal, dictionary, and
+                // capitalization, which would mask the original words.
+                raw_transcript: transcription.text.clone(),
+            },
+        );
+    }
 
-    // 8. Save to history — move final_text to avoid an extra clone
+    // 8. Save to history.
+    //     `text` is the final paste-ready string (Markdown in Structured
+    //     Mode, plain text otherwise).  `raw_transcript` stores the
+    //     pre-processor ASR text so the Structured panel's "View raw"
+    //     disclosure always reflects what the user actually spoke.
+    let raw_transcript = if structured.is_some() {
+        Some(transcription.text.clone())
+    } else {
+        None
+    };
     let record = crate::storage::types::TranscriptionRecord {
         id: uuid::Uuid::new_v4(),
         text: final_text,
         duration_ms: transcription.duration_ms,
         model_name: transcription.model_name,
         created_at: chrono::Utc::now(),
+        raw_transcript,
     };
     if let Err(e) = crate::storage::history::save_transcription(&state.db, &record) {
         eprintln!("Failed to save transcription to history: {e}");

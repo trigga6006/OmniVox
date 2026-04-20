@@ -45,6 +45,8 @@ export interface TranscriptionRecord {
   duration_ms: number;
   model_name: string;
   created_at: string;
+  /** Original dictation before Structured Mode post-processing. */
+  raw_transcript?: string | null;
 }
 
 export interface DictionaryEntry {
@@ -97,6 +99,14 @@ export interface AppSettings {
   writing_style: string;
   audio_ducking: boolean;
   ducking_amount: number;
+  /** Send dictation through a local LLM and output a structured Markdown prompt. */
+  structured_mode: boolean;
+  /** Active LLM catalog ID for Structured Mode. */
+  active_llm_model_id: string | null;
+  /** Max seconds to wait for LLM inference before falling back to plain output. */
+  llm_timeout_secs: number;
+  /** Below this character count, Structured Mode is skipped. */
+  structured_min_chars: number;
 }
 
 export interface AppBinding {
@@ -301,6 +311,99 @@ export const deleteAppBinding = (id: string) =>
 export const resizeOverlay = (width: number, height: number) =>
   invoke<void>("resize_overlay", { width, height });
 export const showMainWindow = () => invoke<void>("show_main_window");
+
+// ── Structured Mode / LLM ────────────────────────────────────────────────
+export interface LlmModelInfo {
+  id: string;
+  name: string;
+  size_bytes: number;
+  quantization: string;
+  context_length: number;
+  description: string;
+  huggingface_repo: string;
+  huggingface_file: string;
+  is_downloaded: boolean;
+  path: string | null;
+  is_default: boolean;
+}
+
+export interface LlmDownloadProgress {
+  model_id: string;
+  downloaded_bytes: number;
+  total_bytes: number;
+  progress_percent: number;
+  status: "downloading" | "completed" | "cancelled" | "failed";
+}
+
+export type Urgency = "low" | "normal" | "high";
+
+export interface SlotExtraction {
+  goal: string;
+  constraints: string[];
+  files: string[];
+  urgency?: Urgency | null;
+  /**
+   * Positive user-flow / acceptance-criteria statements describing how the
+   * end experience should work.  Renders as `## Expected Behavior`.
+   * Populated mainly for IMPLEMENTATION intents.
+   */
+  expected_behavior: string[];
+  /**
+   * Open questions the user wants explored / investigated / answered.
+   * Renders as `## Open Questions`.  Populated for EXPLORATION / research
+   * intents where the dictation isn't asking for an immediate build.
+   */
+  questions: string[];
+  /**
+   * Alternatives the user is weighing or comparing.  Renders as
+   * `## Options`.  Populated for ADVICE / decision intents.
+   */
+  options: string[];
+}
+
+export interface StructuredOutputPayload {
+  markdown: string;
+  slots: SlotExtraction;
+  raw_transcript: string;
+}
+
+export const listLlmModels = () => invoke<LlmModelInfo[]>("list_llm_models");
+export const downloadLlmModel = (modelId: string) =>
+  invoke<void>("download_llm_model", { modelId });
+export const deleteLlmModel = (modelId: string) =>
+  invoke<void>("delete_llm_model", { modelId });
+export const getActiveLlmModel = () =>
+  invoke<LlmModelInfo | null>("get_active_llm_model");
+export const setActiveLlmModel = (modelId: string) =>
+  invoke<void>("set_active_llm_model", { modelId });
+export const llmTestExtract = (text?: string) =>
+  invoke<string>("llm_test_extract", { text: text ?? null });
+export const pasteStructuredOutput = (markdown: string) =>
+  invoke<void>("paste_structured_output", { markdown });
+
+export const onLlmDownloadProgress = (
+  callback: (progress: LlmDownloadProgress) => void
+): Promise<UnlistenFn> =>
+  listen<LlmDownloadProgress>("llm-download-progress", (e) =>
+    callback(e.payload)
+  );
+
+export const onLlmModelLoaded = (
+  callback: (modelId: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("llm-model-loaded", (e) => callback(e.payload));
+
+export const onStructuredOutputReady = (
+  callback: (payload: StructuredOutputPayload) => void
+): Promise<UnlistenFn> =>
+  listen<StructuredOutputPayload>("structured-output-ready", (e) =>
+    callback(e.payload)
+  );
+
+export const onStructuredModeDegraded = (
+  callback: (reason: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("structured-mode-degraded", (e) => callback(e.payload));
 
 // Event listeners
 export const onRecordingStateChange = (

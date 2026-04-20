@@ -115,11 +115,64 @@ pub async fn get_settings(
 #[tauri::command]
 pub async fn update_settings(
     app: tauri::AppHandle,
-    settings: AppSettings,
+    mut settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Snapshot previous structured_mode before we overwrite so we can tell
+    // if the user just turned it off.  Structured Mode off → drop the loaded
+    // LLM to reclaim ~180 MB cleanly (the plan's "users who disable should
+    // reclaim RAM cleanly" rule).
+    let prev_structured = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.structured_mode)
+        .unwrap_or(false);
+
+    // If Structured Mode is being enabled without an explicit active model,
+    // auto-pick the best downloaded one so the app never enters a misleading
+    // "structured on, but guaranteed to degrade" state.
+    if settings.structured_mode
+        && settings
+            .active_llm_model_id
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+    {
+        settings.active_llm_model_id =
+            crate::commands::llm::preferred_downloaded_llm_id(state.inner());
+    }
+
     // Persist to SQLite
     crate::storage::settings::update_settings(&state.db, &settings).map_err(|e| e.to_string())?;
+
+    if prev_structured && !settings.structured_mode {
+        if let Ok(mut guard) = state.llm_runner.lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = state.active_llm_model_id.lock() {
+            *guard = None;
+        }
+    }
+
+    // Structured Mode just turned on AND a model is chosen but not loaded →
+    // load it eagerly so the first dictation doesn't eat the load time.
+    if !prev_structured && settings.structured_mode {
+        if let Some(model_id) = settings.active_llm_model_id.clone() {
+            if let Ok(mut guard) = state.active_llm_model_id.lock() {
+                *guard = Some(model_id.clone());
+            }
+            let runner_loaded = state
+                .llm_runner
+                .lock()
+                .ok()
+                .map(|g| g.is_some())
+                .unwrap_or(false);
+            if !runner_loaded {
+                let state_inner = state.inner();
+                if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, state_inner) {
+                    eprintln!("Eager LLM load on toggle failed: {e}");
+                }
+            }
+        }
+    }
 
     // Sync output mode to in-memory state so the pipeline uses it immediately
     let mode = match settings.output_mode.as_str() {

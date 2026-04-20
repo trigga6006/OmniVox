@@ -71,13 +71,15 @@ Structured Mode flow (when `settings.structured_mode == true` AND an LLM engine 
 ```
 stop → denoise → normalize → whisper.transcribe → processor.process →
   [emit "structuring"] → llm.extract_slots(text, system_prompt, grammar) →
-  template::render(slots) → output.send(markdown) →
+  template::render(slots) →
   [emit "structured-output-ready"] → history.save(markdown, raw=text)
 ```
 
 Skips `format_lists` and voice command detection entirely — the LLM is doing the structuring; deterministic list formatting and voice commands would double-handle.
 
-Fallback: if `llm.extract_slots` errors OR exceeds timeout, fall back to the existing path (`format_lists` + voice commands + output) using the already-processed text. The user is **never blocked** by LLM failure — worst case Structured Mode silently degrades to normal dictation for that utterance, and we emit a `structured-mode-degraded` event so the panel can say "LLM unavailable — pasted plain text".
+Important product decision for v1: **Structured Mode is panel-first, not auto-paste**. The success path stops at `structured-output-ready`; the user can review / edit / paste from the panel. That keeps Structured Mode aligned with the UX described in Section 7 and avoids a confusing "already pasted, but also editable" split-brain flow.
+
+Fallback: if `llm.extract_slots` errors OR exceeds timeout, fall back to the existing path (`format_lists` + voice commands + output) using the already-processed text. The user is **never blocked** by LLM failure — worst case Structured Mode degrades to normal dictation for that utterance, and we emit a `structured-mode-degraded` event so the UI can say "LLM unavailable - used plain text".
 
 ### 1.4 AppState additions
 
@@ -102,15 +104,23 @@ pub struct AppState {
 
 ### 1.5 Concurrency
 
-`LlamaEngine::extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction>` is CPU-bound (or GPU-bound via Vulkan) and blocking inside llama.cpp's native loop. Call site in `pipeline::stop_and_transcribe`:
+`LlamaEngine::extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction>` is CPU-bound (or GPU-bound via Vulkan) and blocking inside llama.cpp's native loop. One important correction to the first draft: **do not call it directly via `spawn_blocking` and wrap that in `tokio::time::timeout`**. Timing out the future does not cancel the native llama.cpp loop; the work would keep running in the background, and repeated timeouts could stack up hidden in the blocking pool.
+
+Use a dedicated one-flight worker instead:
 
 ```rust
-let extraction = tokio::task::spawn_blocking(move || {
-    engine.extract_slots(&processed_text)
-}).await
+struct LlmRequest {
+    text: String,
+    reply_tx: tokio::sync::oneshot::Sender<AppResult<SlotExtraction>>,
+}
 ```
 
-with an outer `tokio::time::timeout(Duration::from_secs(settings.llm_timeout_secs.unwrap_or(8)), ...)` to enforce the user-configured ceiling.
+- Spawn one dedicated `std::thread` that owns the loaded `LlamaEngine`.
+- Feed it through a `sync_channel(1)` (or equivalent bounded queue).
+- `pipeline::stop_and_transcribe` sends exactly one request and awaits the oneshot reply with a timeout.
+- If the queue is full, immediately degrade to plain dictation instead of queueing more inference.
+- If the timeout elapses, drop the reply receiver, emit `structured-mode-degraded`, and continue with plain output.
+- The worker is still allowed to finish its in-flight extraction, but because the queue is bounded to one and the response receiver is dropped, timed-out work cannot pile up or surface stale results later.
 
 The model is loaded (like Whisper) on a dedicated `std::thread::Builder::new().stack_size(256 MB)` thread — llama.cpp has the same huge-stack-frame problem in debug builds.
 
@@ -390,37 +400,35 @@ After the existing `processed_text` assignment, insert:
 ```rust
 // --- Structured Mode branch ------------------------------------------------
 let structured_enabled = settings.as_ref().map(|s| s.structured_mode).unwrap_or(false);
-let llm_engine_opt = if structured_enabled {
-    state.llm_engine.lock().ok().and_then(|g| g.as_ref().map(Arc::clone))
-} else { None };
-
 let min_chars = settings.as_ref().map(|s| s.structured_min_chars).unwrap_or(40) as usize;
 let llm_timeout = settings.as_ref().map(|s| s.llm_timeout_secs).unwrap_or(8);
 
-let structured_markdown: Option<String> = if let Some(engine) = llm_engine_opt {
-    if processed_text.chars().count() >= min_chars {
+let structured_markdown: Option<String> =
+    if structured_enabled && processed_text.chars().count() >= min_chars {
         let _ = app_handle.emit("recording-state-change", "structuring");
-        let text_for_llm = processed_text.clone();
-        let fut = tokio::task::spawn_blocking(move || engine.extract_slots(&text_for_llm));
-        match tokio::time::timeout(Duration::from_secs(llm_timeout as u64), fut).await {
-            Ok(Ok(Ok(slots))) => {
+        match state
+            .llm_runner
+            .extract_with_timeout(processed_text.clone(), Duration::from_secs(llm_timeout as u64))
+            .await
+        {
+            Ok(slots) => {
                 let md = crate::llm::template::render_markdown(&slots);
                 let _ = app_handle.emit("structured-output-ready", &StructuredOutputPayload {
                     markdown: md.clone(),
-                    slots: slots.clone(),
+                    slots,
                     raw_transcript: processed_text.clone(),
                 });
                 Some(md)
             }
-            Ok(Ok(Err(e))) => { eprintln!("LLM extract failed: {e}");
-                let _ = app_handle.emit("structured-mode-degraded", &e.to_string()); None }
-            Ok(Err(e)) => { eprintln!("LLM task panicked: {e}");
-                let _ = app_handle.emit("structured-mode-degraded", "llm panicked"); None }
-            Err(_) => { eprintln!("LLM timed out after {llm_timeout}s");
-                let _ = app_handle.emit("structured-mode-degraded", "timeout"); None }
+            Err(e) => {
+                eprintln!("LLM structured extraction failed: {e}");
+                let _ = app_handle.emit("structured-mode-degraded", &e.to_string());
+                None
+            }
         }
-    } else { None }
-} else { None };
+    } else {
+        None
+    };
 // --- end Structured Mode branch -------------------------------------------
 ```
 
@@ -428,15 +436,19 @@ Then branch:
 
 ```rust
 let final_text = if let Some(md) = structured_markdown {
-    md // skip format_lists + voice commands — LLM output is authoritative
+    md
 } else {
     let formatted = crate::postprocess::formatter::format_lists(&processed_text);
-    // existing voice_commands handling + output routing unchanged
     formatted
 };
 ```
 
 Voice command segmentation becomes: `let voice_segments = if voice_commands_enabled && structured_markdown.is_none() { ... } else { None };`
+
+Output routing rule:
+- If `structured_markdown.is_none()`, keep the existing output path unchanged.
+- If `structured_markdown.is_some()`, **do not auto-call `output.send` in v1**. The panel is now the commit point for Paste / Copy / Edit / Dismiss.
+- History still saves the structured Markdown immediately so the result is not lost if the panel is dismissed.
 
 ### 6.3 New events
 
@@ -448,7 +460,12 @@ Voice command segmentation becomes: `let voice_segments = if voice_commands_enab
 | `llm-download-progress` | `LlmDownloadProgress` | `LlmModelDownloader` |
 | `llm-model-loaded` | `modelId` | `set_active_llm_model` command |
 
-History saves `final_text` (the Markdown if structured, plain otherwise) AND a new `raw_transcript` column so the user can always recover the original dictation. This needs a migration — see §11.
+History saves `final_text` (the Markdown if structured, plain otherwise) AND a new `raw_transcript` column so the user can always recover the original dictation.
+
+Migration detail to make this safe on existing installs:
+- Add `raw_transcript TEXT NULL` first; do **not** make it `NOT NULL` in the initial migration.
+- For pre-migration rows, treat `raw_transcript IS NULL` as "same as `text`" in the read path.
+- Only tighten the constraint later if we ever do an explicit backfill migration.
 
 ---
 
@@ -463,6 +480,8 @@ In `FloatingPill.tsx`, add branch in the status-to-visual map: same pill dimensi
 ### 7.2 Structured output panel
 
 Triggered by `structured-output-ready` event. New component `src/features/overlay/StructuredPanel.tsx`.
+
+This panel is the only success-path output surface for Structured Mode v1. The pipeline does not auto-paste structured Markdown before the panel appears.
 
 Dimensions:
 - Width: 420 px (vs 210 px active pill)

@@ -31,6 +31,13 @@ enigo = "0.2"
 arboard = "3"
 tauri-plugin-single-instance = "2.4.0"
 nnnoiseless = { version = "0.5", default-features = false }
+# Local LLM inference (llama.cpp bindings) for Structured Mode slot extraction.
+# `default-features = false` disables openmp + android-shared-stdcxx so GPU backends
+# are added explicitly via the top-level `cuda` / `vulkan` features below.
+llama-cpp-2 = { version = "0.1.143", default-features = false }
+# Transitive of llama-cpp-2 — pinned directly so `token_to_piece` can be fed a
+# stateful UTF-8 decoder (multi-byte characters can span token boundaries).
+encoding_rs = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -62,15 +69,22 @@ libc = "0.2"
 
 [features]
 default = []
-cuda = ["whisper-rs/cuda"]
+# GPU acceleration for both Whisper and the Structured Mode LLM.  We bind them
+# under a single flag so OmniVox ships one GPU build, not two — the installer
+# already requires the Vulkan SDK, and llama.cpp's Vulkan backend is mature
+# enough to get the same ~3–5× speedup.
+cuda = ["whisper-rs/cuda", "llama-cpp-2/cuda"]
 # Vulkan provides GPU acceleration for both AMD and NVIDIA GPUs.
 # Install the Vulkan SDK, then build with: cargo build --features vulkan
 # The Settings UI toggle controls runtime GPU use once compiled with this feature.
-vulkan = ["whisper-rs/vulkan"]
+vulkan = ["whisper-rs/vulkan", "llama-cpp-2/vulkan"]
 custom-protocol = ["tauri/custom-protocol"]
 
 # Optimize heavy C/C++ deps even in debug builds — whisper.cpp and llama.cpp
 # allocate huge stack frames in debug mode that cause STATUS_STACK_BUFFER_OVERRUN
 # on Windows. Compiling them with opt-level 2 shrinks stack frames dramatically.
 [profile.dev.package.whisper-rs-sys]
+opt-level = 2
+
+[profile.dev.package.llama-cpp-sys-2]
 opt-level = 2

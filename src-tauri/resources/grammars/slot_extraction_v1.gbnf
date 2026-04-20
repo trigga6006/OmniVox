@@ -1,0 +1,18 @@
+root ::= "{" goal-kv ("," context-kv)? ("," constraints-kv)? ("," files-kv)? ("," urgency-kv)? ("," behavior-kv)? ("," questions-kv)? ("," options-kv)? "}"
+
+goal-kv ::= "\"goal\":" bounded-string
+context-kv ::= "\"context\":" string-array
+constraints-kv ::= "\"constraints\":" string-array
+files-kv ::= "\"files\":" string-array
+urgency-kv ::= "\"urgency\":" urgency-value
+behavior-kv ::= "\"expected_behavior\":" string-array
+questions-kv ::= "\"questions\":" string-array
+options-kv ::= "\"options\":" string-array
+
+string-array ::= "[" bounded-string ("," bounded-string){0,8} "]"
+urgency-value ::= "\"low\"" | "\"normal\"" | "\"high\""
+
+bounded-string ::= "\"" char{1,520} "\""
+char ::= [^"\\\x00-\x1F] | "\\" escape
+escape ::= ["\\/bfnrt] | "u" hex{4}
+hex ::= [0-9a-fA-F]

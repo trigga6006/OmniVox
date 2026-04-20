@@ -23,6 +23,10 @@ pub enum ErrorCode {
     KeystrokeError,
     // Storage
     DatabaseError,
+    // LLM (Structured Mode)
+    LlmUnavailable,
+    LlmTimeout,
+    LlmInferenceFailed,
     // General
     InternalError,
 }
@@ -39,6 +43,8 @@ pub enum AppError {
     Output(String),
     #[error("Storage error: {0}")]
     Storage(String),
+    #[error("LLM error: {0}")]
+    Llm(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Internal error: {0}")]
@@ -73,6 +79,19 @@ impl AppError {
             AppError::Model(_) => ErrorCode::ModelLoadFailed,
             AppError::Output(_) => ErrorCode::KeystrokeError,
             AppError::Storage(_) => ErrorCode::DatabaseError,
+            AppError::Llm(msg) => {
+                let bytes = msg.as_bytes();
+                let contains = |needle: &str| -> bool {
+                    bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+                };
+                if contains("timed out") || contains("timeout") {
+                    ErrorCode::LlmTimeout
+                } else if contains("not found") || contains("no model") || contains("worker has stopped") {
+                    ErrorCode::LlmUnavailable
+                } else {
+                    ErrorCode::LlmInferenceFailed
+                }
+            }
             AppError::Io(_) => ErrorCode::InternalError,
             AppError::Internal(_) => ErrorCode::InternalError,
         }
