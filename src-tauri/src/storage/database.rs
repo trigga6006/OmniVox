@@ -132,6 +132,9 @@ impl Database {
         // Migration: add writing_style column to context_modes if missing
         self.migrate_add_writing_style()?;
 
+        // Migration: add raw_transcript column to transcriptions if missing
+        self.migrate_add_raw_transcript()?;
+
         Ok(())
     }
 
@@ -181,6 +184,33 @@ impl Database {
         if !has_col {
             conn.execute_batch(
                 "ALTER TABLE context_modes ADD COLUMN writing_style TEXT NOT NULL DEFAULT 'formal';"
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Add `raw_transcript` column to transcriptions if missing.
+    ///
+    /// Stored nullable — pre-migration rows stay NULL and the read path
+    /// treats NULL as "same as `text`".  Keeps the migration safe on
+    /// upgrade: no rewrite of existing history, no UI surprises.
+    fn migrate_add_raw_transcript(&self) -> AppResult<()> {
+        let conn = self.conn()?;
+        let has_col: bool = conn
+            .prepare("PRAGMA table_info(transcriptions)")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(1))
+                    .map(|rows| {
+                        rows.filter_map(|r| r.ok())
+                            .any(|name| name == "raw_transcript")
+                    })
+            })
+            .unwrap_or(false);
+
+        if !has_col {
+            conn.execute_batch(
+                "ALTER TABLE transcriptions ADD COLUMN raw_transcript TEXT;"
             )?;
         }
 

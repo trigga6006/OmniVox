@@ -6,12 +6,17 @@ use rusqlite::params;
 use uuid::Uuid;
 
 /// Map a rusqlite row to a TranscriptionRecord.
+///
+/// SELECT column order: id, text, duration_ms, model_name, created_at, raw_transcript
+/// (the raw_transcript column was added in a later migration and may be NULL
+/// for pre-migration rows).
 fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
     let id_str: String = row.get(0)?;
     let text: String = row.get(1)?;
     let duration_ms: u64 = row.get(2)?;
     let model_name: String = row.get(3)?;
     let created_at_str: String = row.get(4)?;
+    let raw_transcript: Option<String> = row.get(5).ok().flatten();
 
     let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -24,6 +29,7 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
         duration_ms,
         model_name,
         created_at,
+        raw_transcript,
     })
 }
 
@@ -31,29 +37,44 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
 pub fn save_transcription(db: &Database, record: &TranscriptionRecord) -> AppResult<()> {
     let conn = db.conn()?;
     conn.execute(
-        "INSERT OR REPLACE INTO transcriptions (id, text, duration_ms, model_name, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR REPLACE INTO transcriptions (id, text, duration_ms, model_name, created_at, raw_transcript)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             record.id.to_string(),
             record.text,
             record.duration_ms,
             record.model_name,
             record.created_at.to_rfc3339(),
+            record.raw_transcript,
         ],
     )?;
     Ok(())
 }
 
 /// Get aggregate dictation statistics (total words, transcriptions, duration).
+///
+/// Word count normalizes whitespace (newlines, tabs, carriage returns) to
+/// single spaces before counting, so transcriptions that use voice commands
+/// like "new line" (which write literal `\n` into history) are counted
+/// correctly.  Without normalization, "hello\nworld" counted as 1 word
+/// instead of 2.  Multiple consecutive spaces are still approximate, but the
+/// processor pipeline's `normalize_whitespace` step collapses those before
+/// save, so they shouldn't appear in practice.
 pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::DictationStats> {
     let conn = db.conn()?;
     let stats = conn.query_row(
-        "SELECT
-            COALESCE(SUM(LENGTH(TRIM(text)) - LENGTH(REPLACE(TRIM(text), ' ', '')) + 1), 0),
+        "WITH normalized AS (
+            SELECT
+                TRIM(REPLACE(REPLACE(REPLACE(text, CHAR(10), ' '), CHAR(13), ' '), CHAR(9), ' ')) AS t,
+                duration_ms
+            FROM transcriptions
+            WHERE TRIM(text) != ''
+        )
+        SELECT
+            COALESCE(SUM(LENGTH(t) - LENGTH(REPLACE(t, ' ', '')) + 1), 0),
             COUNT(*),
             COALESCE(SUM(duration_ms), 0)
-         FROM transcriptions
-         WHERE TRIM(text) != ''",
+         FROM normalized",
         [],
         |row| {
             Ok(crate::storage::types::DictationStats {
@@ -76,7 +97,7 @@ pub fn search_history(
     let conn = db.conn()?;
     let like_pattern = format!("%{}%", query);
     let mut stmt = conn.prepare(
-        "SELECT id, text, duration_ms, model_name, created_at
+        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript
          FROM transcriptions
          WHERE text LIKE ?1
          ORDER BY created_at DESC
@@ -96,7 +117,7 @@ pub fn recent_history(
 ) -> AppResult<Vec<TranscriptionRecord>> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare(
-        "SELECT id, text, duration_ms, model_name, created_at
+        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript
          FROM transcriptions
          ORDER BY created_at DESC
          LIMIT ?1 OFFSET ?2",
@@ -121,7 +142,7 @@ pub fn delete_record(db: &Database, id: &str) -> AppResult<()> {
 pub fn export_history(db: &Database, format: &str) -> AppResult<String> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare(
-        "SELECT id, text, duration_ms, model_name, created_at
+        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript
          FROM transcriptions
          ORDER BY created_at DESC",
     )?;

@@ -21,6 +21,8 @@ import {
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { StructuredModeSection } from "./StructuredModeSection";
+import { LlmModelsPage } from "./LlmModelsPage";
 
 const outputModes = [
   { id: "clipboard", label: "Clipboard", icon: Clipboard },
@@ -385,6 +387,7 @@ export function SettingsPage() {
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const [showVoiceCommands, setShowVoiceCommands] = useState(false);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const [showLlmModelsPage, setShowLlmModelsPage] = useState(false);
 
   useEffect(() => {
     getSettings()
@@ -531,6 +534,19 @@ export function SettingsPage() {
     updateSettings(updated).catch(console.error);
   }, [settings]);
 
+  /** Single-field patch helper used by the Structured Mode section.  Mirrors
+   *  the existing per-field handlers but avoids the manual `{ ...settings, ... }`
+   *  incantation for every individual setting. */
+  const applyPatch = useCallback(
+    async (patch: Partial<AppSettings>): Promise<void> => {
+      if (!settings) return;
+      const updated: AppSettings = { ...settings, ...patch };
+      setSettings(updated);
+      await updateSettings(updated);
+    },
+    [settings]
+  );
+
   const currentTheme = settings?.theme ?? "dark";
   const handleThemeChange = useCallback(
     (theme: string) => {
@@ -542,6 +558,11 @@ export function SettingsPage() {
     },
     [settings]
   );
+
+  // LLM models subpage — swaps the whole Settings view when active.
+  if (showLlmModelsPage) {
+    return <LlmModelsPage onBack={() => setShowLlmModelsPage(false)} />;
+  }
 
   return (
     <div className="flex h-full flex-col p-6 overflow-y-auto">
@@ -1267,6 +1288,13 @@ export function SettingsPage() {
           onSaved={handleHotkeySaved}
         />
 
+        {/* ── Structured Mode ── */}
+        <StructuredModeSection
+          settings={settings}
+          onPatch={applyPatch}
+          onOpenLlmModels={() => setShowLlmModelsPage(true)}
+        />
+
         {/* ── About ── */}
         <section
           className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
@@ -1279,7 +1307,7 @@ export function SettingsPage() {
             </span>
           </div>
 
-          <p className="text-sm text-text-primary">OmniVox v0.1.7</p>
+          <p className="text-sm text-text-primary">OmniVox v0.1.9</p>
           <p className="text-xs text-text-muted mt-1 flex items-center gap-1.5">
             <span>Local-first AI dictation</span>
             <span className="text-text-muted/40 mx-0.5">·</span>

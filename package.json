@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:release": "powershell -ExecutionPolicy Bypass -File ./scripts/start-release-dev.ps1",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioConfig;
+use crate::llm::runner::LlmRunner;
+use crate::llm_models::downloader::LlmModelDownloader;
+use crate::llm_models::manager::LlmModelManager;
 use crate::models::downloader::ModelDownloader;
 use crate::models::manager::ModelManager;
 use crate::output::router::OutputRouter;
@@ -45,6 +48,19 @@ pub struct AppState {
     pub prev_foreground: Mutex<Option<isize>>,
     /// Active context mode ID.
     pub active_context_mode_id: Mutex<Option<String>>,
+
+    // ── Structured Mode / LLM side ────────────────────────────────────────
+    /// Dedicated llama.cpp worker.  None until the first model is loaded.
+    /// Wrapped in Arc so async extraction calls don't pin the mutex.
+    pub llm_runner: Mutex<Option<Arc<LlmRunner>>>,
+    /// ID of the currently active LLM model.
+    pub active_llm_model_id: Mutex<Option<String>>,
+    /// LLM model catalog.
+    pub llm_model_manager: LlmModelManager,
+    /// Streaming LLM downloader (sibling of `downloader` but on its own event channel).
+    pub llm_downloader: LlmModelDownloader,
+    /// Directory where GGUF LLM files live (sibling of `models_dir`).
+    pub llm_models_dir: PathBuf,
 }
 
 impl AppState {
@@ -53,6 +69,7 @@ impl AppState {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("omnivox");
         let models_dir = data_dir.join("models");
+        let llm_models_dir = data_dir.join("llm_models");
         let db_path = data_dir.join("omnivox.db");
 
         // Initialize database. Create tables on first run.
@@ -81,6 +98,11 @@ impl AppState {
             models_dir,
             prev_foreground: Mutex::new(None),
             active_context_mode_id: Mutex::new(None),
+            llm_runner: Mutex::new(None),
+            active_llm_model_id: Mutex::new(None),
+            llm_model_manager: LlmModelManager::new(llm_models_dir.clone()),
+            llm_downloader: LlmModelDownloader::new(llm_models_dir.clone()),
+            llm_models_dir,
         }
     }
 }

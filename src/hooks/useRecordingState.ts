@@ -5,8 +5,13 @@ import { onRecordingStateChange, onAudioLevel } from "@/lib/tauri";
 import type { RecordingStatus } from "@/stores/recordingStore";
 
 export function useRecordingState() {
-  const { setStatus, setDuration, setAudioLevel } =
-    useRecordingStore();
+  // Select each setter individually. Zustand setters are stable references,
+  // so these selectors never cause re-renders — a plain `useRecordingStore()`
+  // destructure would subscribe to the whole store and re-render on every
+  // audio-level / duration tick (~17 Hz during recording).
+  const setStatus = useRecordingStore((s) => s.setStatus);
+  const setDuration = useRecordingStore((s) => s.setDuration);
+  const setAudioLevel = useRecordingStore((s) => s.setAudioLevel);
 
   // --- Tauri event handlers ---
   // Note: transcription-result is handled globally in App.tsx via

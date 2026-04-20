@@ -1,5 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Loader2, Eye, ShieldCheck, Layers, Rocket, Ghost, Send } from "lucide-react";
+import {
+  Loader2,
+  Eye,
+  ShieldCheck,
+  Layers,
+  Rocket,
+  Ghost,
+  Send,
+  Sparkles,
+  Mic,
+} from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
 import {
@@ -12,13 +22,19 @@ import {
   onContextModeChanged,
   onTranscriptionPreview,
   onSettingsChanged,
+  onStructuredOutputReady,
+  onStructuredModeDegraded,
   getSettings,
   updateSettings,
+  type AppSettings,
   type ContextMode,
+  type StructuredOutputPayload,
 } from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
 import { PillWaveform } from "./PillWaveform";
 import { ModeSelector } from "./ModeSelector";
+import { StructuredPanel } from "./StructuredPanel";
+import { StructuredModeToggle } from "./StructuredModeToggle";
 
 type PillState = RecordingStatus | "success";
 
@@ -58,13 +74,62 @@ export function FloatingPill() {
   const [shipMode, setShipMode] = useState(false);
   const [commandSend, setCommandSend] = useState(true);
   const [ghostMode, setGhostMode] = useState(false);
+  const [structuredMode, setStructuredMode] = useState(false);
+  const [structuredVoiceCommand, setStructuredVoiceCommand] = useState(false);
   const [showShipPopup, setShowShipPopup] = useState(false);
+  const [showLeyLinePopup, setShowLeyLinePopup] = useState(false);
 
   // Mode selector state
   const [showModeSelector, setShowModeSelector] = useState(false);
   const [modes, setModes] = useState<ContextMode[]>([]);
   const [activeModId, setActiveModId] = useState<string | null>(null);
   const [activeColor, setActiveColor] = useState("amber");
+
+  // Structured Mode panel state — populated when the pipeline emits
+  // `structured-output-ready`.  Cleared on dismiss / paste / new recording.
+  const [structuredPayload, setStructuredPayload] =
+    useState<StructuredOutputPayload | null>(null);
+  const [structuredDegraded, setStructuredDegraded] = useState<string | null>(
+    null
+  );
+
+  // True while the user is dictating *into the StructuredPanel's textarea*.
+  // When set, (a) a fresh recording must NOT close the current panel, and
+  // (b) any resulting `structured-output-ready` event must be ignored — the
+  // dictation pass only exists to append raw text to the existing preview.
+  //
+  // The `false` flip is delayed by a grace period: pipeline.rs emits
+  // `transcription-result` (line 800) and `structured-output-ready`
+  // (line 802) back-to-back.  Without the delay, the panel's dictation
+  // handler can flip isDictating→false after consuming the first event
+  // and before the parent sees the second, letting structured-output-ready
+  // clobber the in-progress panel.  600ms is comfortably longer than any
+  // realistic gap between two adjacent Tauri event emits.
+  const dictatingInPanelRef = useRef(false);
+  const dictatingGraceTimerRef = useRef<number | null>(null);
+  const handleDictatingChange = useCallback((active: boolean) => {
+    if (dictatingGraceTimerRef.current !== null) {
+      window.clearTimeout(dictatingGraceTimerRef.current);
+      dictatingGraceTimerRef.current = null;
+    }
+    if (active) {
+      dictatingInPanelRef.current = true;
+    } else {
+      dictatingGraceTimerRef.current = window.setTimeout(() => {
+        dictatingInPanelRef.current = false;
+        dictatingGraceTimerRef.current = null;
+      }, 600);
+    }
+  }, []);
+
+  // In-memory mirror of the latest settings so toggles can read+write without
+  // re-fetching from SQLite.  Updated on initial load AND whenever
+  // onSettingsChanged fires (from any window).  The old code did
+  // `const s = await getSettings(); await updateSettings({ ...s, key: next })`
+  // for every toggle — two rapid toggles could race (A reads DB, B reads DB,
+  // A writes { ...old, x:true }, B writes { ...old, y:true } overwriting x).
+  // With a synchronously-updated ref, toggles never see stale data.
+  const settingsRef = useRef<AppSettings | null>(null);
 
   useEffect(() => {
     if (status === "idle" && lastTranscription && pillState === "processing") {
@@ -85,25 +150,74 @@ export function FloatingPill() {
     }
   }, [status, lastTranscription]);
 
-  // Resize window on idle ↔ active transitions with content fade
+  // Consolidated overlay sizing.
+  //
+  // Prior version had TWO effects that both reacted to the same state
+  // transitions and called resizeOverlay independently.  When the user
+  // right-clicked to open the mode selector, effect #1 issued
+  // resizeOverlay(ACTIVE_W, ACTIVE_H) (210×34) and effect #2 issued
+  // resizeOverlay(600, ACTIVE_H+selectorH+4) in the same tick.  Both
+  // go through Tauri IPC; under load the first one could finish AFTER
+  // the second, leaving the overlay at 210×34 with the mode selector
+  // rendered but clipped to a one-line-tall window — "pill expands
+  // horizontally but no menu".  Collapsing into a single effect
+  // guarantees exactly one resize per state transition.
+  //
+  // showContent fade timing (80 ms in / 200 ms out) is preserved but
+  // only triggered on the idle↔expanded boundary, so intra-expanded
+  // transitions (e.g. opening the menu while the pill is already
+  // recording) reshape the window without flashing the content.
+  const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
   useEffect(() => {
-    const expanded = pillState !== "idle";
-    if (expanded !== prevExpandedRef.current) {
-      prevExpandedRef.current = expanded;
-
-      if (expanded) {
-        // idle → active: expand window, then fade content in
-        resizeOverlay(ACTIVE_W, ACTIVE_H);
-        const t = setTimeout(() => setShowContent(true), 80);
-        return () => clearTimeout(t);
-      } else {
-        // active → idle: fade content out, then shrink window
-        setShowContent(false);
-        const t = setTimeout(() => resizeOverlay(IDLE_W, IDLE_H), 200);
-        return () => clearTimeout(t);
-      }
+    let targetW: number;
+    let targetH: number;
+    if (structuredPayload) {
+      // Panel dimensions: 420 wide, up to ~450 tall (preview + raw + actions).
+      targetW = 440;
+      targetH = 480;
+    } else if (structuredDegraded) {
+      // Banner needs a wider + taller window than idle, otherwise it's
+      // clipped by the 56×26 overlay and the user never sees the reason.
+      targetW = 420;
+      targetH = ACTIVE_H + 80;
+    } else if (showModeSelector) {
+      // Popup width math: toggle buttons at 50%+102px, popup 8px+160px →
+      // right edge at 50%+296px, so 600 window gives 4px margin.
+      const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
+      targetW = 600;
+      targetH = ACTIVE_H + selectorH + 4;
+    } else if (pillState !== "idle") {
+      targetW = ACTIVE_W;
+      targetH = ACTIVE_H;
+    } else {
+      targetW = IDLE_W;
+      targetH = IDLE_H;
     }
-  }, [pillState]);
+
+    const expanded = targetW > IDLE_W || targetH > IDLE_H;
+    const wasExpanded = prevExpandedRef.current;
+    const prev = prevTargetRef.current;
+    const sizeChanged = prev.w !== targetW || prev.h !== targetH;
+    prevExpandedRef.current = expanded;
+    prevTargetRef.current = { w: targetW, h: targetH };
+
+    if (!sizeChanged) return;
+
+    if (expanded && !wasExpanded) {
+      // idle → expanded: resize immediately, fade content in after.
+      resizeOverlay(targetW, targetH);
+      const t = setTimeout(() => setShowContent(true), 80);
+      return () => clearTimeout(t);
+    }
+    if (!expanded && wasExpanded) {
+      // expanded → idle: fade content out, then shrink.
+      setShowContent(false);
+      const t = setTimeout(() => resizeOverlay(targetW, targetH), 200);
+      return () => clearTimeout(t);
+    }
+    // expanded → expanded (size change only): just apply the new size.
+    resizeOverlay(targetW, targetH);
+  }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length]);
 
   // Mount: transparent bg, force dark theme, shrink to idle
   useEffect(() => {
@@ -151,12 +265,15 @@ export function FloatingPill() {
   useEffect(() => {
     getSettings()
       .then((s) => {
+        settingsRef.current = s;
         setLivePreviewEnabled(s.live_preview);
         setNoiseReduction(s.noise_reduction);
         setAutoSwitchModes(s.auto_switch_modes);
         setShipMode(s.ship_mode);
         setCommandSend(s.command_send);
         setGhostMode(s.ghost_mode);
+        setStructuredMode(s.structured_mode);
+        setStructuredVoiceCommand(s.structured_voice_command);
       })
       .catch(() => {});
 
@@ -167,19 +284,82 @@ export function FloatingPill() {
 
     // Stay in sync when settings change from the main window (or any window)
     const unlistenSettings = onSettingsChanged((s) => {
+      settingsRef.current = s;
       setLivePreviewEnabled(s.live_preview);
       setNoiseReduction(s.noise_reduction);
       setAutoSwitchModes(s.auto_switch_modes);
       setShipMode(s.ship_mode);
       setCommandSend(s.command_send);
       setGhostMode(s.ghost_mode);
+      setStructuredMode(s.structured_mode);
+      setStructuredVoiceCommand(s.structured_voice_command);
+    });
+
+    const unlistenStructured = onStructuredOutputReady((payload) => {
+      // If the user is dictating into the existing panel's textarea, this
+      // event is the by-product of that dictation run — drop it so we don't
+      // clobber their in-progress edits.  History still records it.
+      if (dictatingInPanelRef.current) {
+        return;
+      }
+      // Close any other floating UI — the panel takes priority.
+      setShowModeSelector(false);
+      setShowShipPopup(false);
+      setStructuredDegraded(null);
+      // Respect ghost mode: if the user has hidden the pill, they explicitly
+      // don't want UI popping up.  History still records the structured
+      // output; they can review it later.
+      if (settingsRef.current?.ghost_mode) {
+        return;
+      }
+      setStructuredPayload(payload);
+    });
+
+    const unlistenDegraded = onStructuredModeDegraded((reason) => {
+      console.warn("[structured-mode] degraded:", reason);
+      setStructuredDegraded(reason);
+      // Keep the banner visible long enough to actually be read.
+      window.setTimeout(() => setStructuredDegraded(null), 15000);
     });
 
     return () => {
       unlistenPreview.then((fn) => fn());
       unlistenSettings.then((fn) => fn());
+      unlistenStructured.then((fn) => fn());
+      unlistenDegraded.then((fn) => fn());
     };
   }, []);
+
+  // Close the structured panel if the user starts a new recording — unless
+  // the recording is the panel's own in-place dictation, in which case we
+  // keep the panel mounted so the appended text can land in the textarea.
+  useEffect(() => {
+    if (
+      status === "recording" &&
+      structuredPayload &&
+      !dictatingInPanelRef.current
+    ) {
+      setStructuredPayload(null);
+    }
+  }, [status, structuredPayload]);
+
+  // Apply a single-field change to the settings ref and push to the DB.
+  // Synchronous ref update means back-to-back toggles never race.
+  // Returns a Promise that rejects on DB failure so callers can revert local state.
+  const applySettingPatch = useCallback(
+    (patch: Partial<AppSettings>): Promise<void> => {
+      const current = settingsRef.current;
+      if (!current) return Promise.reject(new Error("settings not loaded"));
+      const updated: AppSettings = { ...current, ...patch };
+      settingsRef.current = updated;
+      return updateSettings(updated).catch((e) => {
+        // Revert the ref so a subsequent toggle sees consistent state.
+        settingsRef.current = current;
+        throw e;
+      });
+    },
+    []
+  );
 
   // Clear preview text when not recording
   useEffect(() => {
@@ -188,74 +368,78 @@ export function FloatingPill() {
     }
   }, [status]);
 
-  // Manage overlay size when mode selector opens/closes.
-  // Always pre-allocate width for the ship popup so toggling it is purely CSS
-  // (no async window resize = no flash or clipping).
-  // Layout math: toggle buttons at 50%+102px, 26px wide, popup 8px gap + 160px.
-  // Popup right edge = 50% + 296px → window needs ≥ 600px so 300px ≥ 296px.
-  useEffect(() => {
-    if (showModeSelector) {
-      const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
-      resizeOverlay(600, ACTIVE_H + selectorH + 4);
-    } else if (pillState === "idle") {
-      resizeOverlay(IDLE_W, IDLE_H);
-    }
-  }, [showModeSelector, modes.length]);
+  // (Resize logic unified above — see the "Consolidated overlay sizing"
+  // comment.  This block intentionally left blank after the merge.)
 
   const handleToggleAutoSwitch = useCallback(async () => {
     const next = !autoSwitchModes;
     setAutoSwitchModes(next);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, auto_switch_modes: next });
+      await applySettingPatch({ auto_switch_modes: next });
     } catch {
       setAutoSwitchModes(!next);
     }
-  }, [autoSwitchModes]);
+  }, [autoSwitchModes, applySettingPatch]);
 
   const handleToggleLivePreview = useCallback(async () => {
     const next = !livePreviewEnabled;
     setLivePreviewEnabled(next); // optimistic
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, live_preview: next });
+      await applySettingPatch({ live_preview: next });
     } catch {
       setLivePreviewEnabled(!next); // revert on failure
     }
-  }, [livePreviewEnabled]);
+  }, [livePreviewEnabled, applySettingPatch]);
 
   const handleToggleNoiseReduction = useCallback(async () => {
     const next = !noiseReduction;
     setNoiseReduction(next); // optimistic
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, noise_reduction: next });
+      await applySettingPatch({ noise_reduction: next });
     } catch {
       setNoiseReduction(!next); // revert on failure
     }
-  }, [noiseReduction]);
+  }, [noiseReduction, applySettingPatch]);
 
   const handleToggleShipMode = useCallback(async () => {
     const next = !shipMode;
     setShipMode(next);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, ship_mode: next });
+      await applySettingPatch({ ship_mode: next });
     } catch {
       setShipMode(!next);
     }
-  }, [shipMode]);
+  }, [shipMode, applySettingPatch]);
+
+  const handleToggleStructuredMode = useCallback(async () => {
+    const next = !structuredMode;
+    setStructuredMode(next); // optimistic — UI transitions immediately
+    try {
+      await applySettingPatch({ structured_mode: next });
+    } catch {
+      setStructuredMode(!next);
+    }
+  }, [structuredMode, applySettingPatch]);
+
+  const handleToggleStructuredVoiceCommand = useCallback(async () => {
+    const next = !structuredVoiceCommand;
+    setStructuredVoiceCommand(next);
+    try {
+      await applySettingPatch({ structured_voice_command: next });
+    } catch {
+      setStructuredVoiceCommand(!next);
+    }
+  }, [structuredVoiceCommand, applySettingPatch]);
 
   const handleToggleCommandSend = useCallback(async () => {
     const next = !commandSend;
     setCommandSend(next);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, command_send: next });
+      await applySettingPatch({ command_send: next });
     } catch {
       setCommandSend(!next);
     }
-  }, [commandSend]);
+  }, [commandSend, applySettingPatch]);
 
   const handleToggleGhostMode = useCallback(async () => {
     const next = !ghostMode;
@@ -265,21 +449,19 @@ export function FloatingPill() {
       setShowModeSelector(false);
     }
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, ghost_mode: next });
+      await applySettingPatch({ ghost_mode: next });
     } catch {
       setGhostMode(!next);
     }
-  }, [ghostMode]);
+  }, [ghostMode, applySettingPatch]);
 
   // Exit ghost mode — used when user clicks/right-clicks the invisible pill
   const exitGhostMode = useCallback(async () => {
     setGhostMode(false);
     try {
-      const s = await getSettings();
-      await updateSettings({ ...s, ghost_mode: false });
+      await applySettingPatch({ ghost_mode: false });
     } catch {}
-  }, []);
+  }, [applySettingPatch]);
 
   const handleClick = useCallback(async () => {
     if (showModeSelector) return; // Don't start recording while selector is open
@@ -305,8 +487,11 @@ export function FloatingPill() {
       }
       if (pillState === "idle") {
         setShowModeSelector((prev) => {
-          // Close ship popup when toggling mode selector
-          if (!prev) setShowShipPopup(false);
+          // Close nested popups when toggling mode selector
+          if (!prev) {
+            setShowShipPopup(false);
+            setShowLeyLinePopup(false);
+          }
           return !prev;
         });
       }
@@ -328,6 +513,7 @@ export function FloatingPill() {
   const isIdle = pillState === "idle";
   const isRecording = pillState === "recording";
   const isProcessing = pillState === "processing";
+  const isStructuring = pillState === "structuring";
   const isSuccess = pillState === "success";
   const isError = pillState === "error";
 
@@ -335,6 +521,65 @@ export function FloatingPill() {
 
   return (
     <div className="w-screen h-screen flex flex-col justify-end items-center">
+      {/* Structured Mode panel — sits flush on top of the pill, forming a
+          single unified surface.  Zero bottom margin is deliberate (the
+          "reverse Dynamic Island" expansion effect): the panel's flat
+          bottom merges visually into the pill's rounded top so they read
+          as one connected shape instead of two floating bubbles. */}
+      {structuredPayload && !ghostMode && (
+        <div className="shrink-0">
+          <StructuredPanel
+            payload={structuredPayload}
+            onClose={() => setStructuredPayload(null)}
+            onDictatingChange={handleDictatingChange}
+          />
+        </div>
+      )}
+
+      {/* Transient degraded banner — LLM timed out / not loaded */}
+      {structuredDegraded && !structuredPayload && !ghostMode && (
+        <div
+          className="mb-1.5 shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-[380px] cursor-pointer group"
+          onClick={() => setStructuredDegraded(null)}
+          title="Click to dismiss"
+          style={{
+            background:
+              "linear-gradient(180deg, rgba(60,42,22,0.92) 0%, rgba(42,30,18,0.92) 100%)",
+            border: "1px solid rgba(232,180,95,0.28)",
+            boxShadow:
+              "inset 0 1px 0 rgba(255,225,175,0.08), 0 6px 18px -6px rgba(0,0,0,0.7), 0 0 20px -8px rgba(232,180,95,0.3)",
+            animation: "sp-in 220ms cubic-bezier(0.16,1,0.3,1) both",
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="h-1.5 w-1.5 rounded-full shrink-0"
+            style={{
+              backgroundColor: "rgba(244,190,110,0.95)",
+              boxShadow: "0 0 6px rgba(244,190,110,0.7)",
+            }}
+          />
+          <span
+            className="text-[9px] font-semibold uppercase tracking-[0.18em] shrink-0"
+            style={{
+              fontFamily: "var(--font-display)",
+              color: "rgba(244,200,130,0.9)",
+            }}
+          >
+            Structured
+          </span>
+          <span
+            className="text-[10px] leading-snug truncate"
+            style={{
+              color: "rgba(248,215,170,0.88)",
+              letterSpacing: "-0.005em",
+            }}
+          >
+            {structuredDegraded}
+          </span>
+        </div>
+      )}
+
       {/* Mode selector dropdown — centered above the pill */}
       {showModeSelector && modes.length > 0 && (
         <div className="relative shrink-0 flex justify-center w-full">
@@ -345,18 +590,92 @@ export function FloatingPill() {
             onClose={() => {
               setShowModeSelector(false);
               setShowShipPopup(false);
+              setShowLeyLinePopup(false);
             }}
           />
-          {/* Quick-toggle circles — frosted glass, lower-right of menu */}
-          {/* Uses mousedown for toggle action since the overlay is transparent
-              and click events can be swallowed at window edges in WebView2 */}
+          {/* Right-side controls — Ley Line on top (flagship) then the
+              quick-toggle settings circles, all in one flex column so the
+              same `gap-1.5` (6 px) spacing rule applies between every
+              pair.  Pinned at `top: 0` so the Ley Line's top edge is
+              always flush with the ModeSelector's top; the column's
+              bottom floats based on content which keeps spacing uniform.
+              `items-center` centres the 28 px Ley Line against the 26 px
+              circles below it.  Uses mousedown for toggle action since
+              the overlay is transparent and click events can be
+              swallowed at window edges in WebView2. */}
           <div
-            className="absolute flex flex-col gap-1.5"
+            className="absolute flex flex-col items-center gap-1.5"
             style={{
               left: "calc(50% + 96px + 6px)",
-              bottom: "46px",
+              top: "0",
             }}
           >
+            <div className="relative">
+              <StructuredModeToggle
+                active={structuredMode}
+                onToggle={handleToggleStructuredMode}
+                onContextMenu={() => {
+                  setShowLeyLinePopup((prev) => !prev);
+                  setShowShipPopup(false);
+                }}
+              />
+
+              {/* ── Ley Line right-click popup: Voice Command gate ──
+                  Mirrors the ship button's Command-Send popup, including
+                  the same right-side position so it never overlays the
+                  mode selector.  Width math (mirrors the comment on
+                  ".ship-popup"): button ends at 50%+96+6+28 = 50%+130,
+                  popup adds 8 gap + 160 = 50%+298 right edge, fits in
+                  the 600 px window with 2 px margin. */}
+              <div
+                className="ley-line-popup"
+                style={{
+                  left: "calc(100% + 8px)",
+                  // Align the popup's top with the button's top instead of
+                  // centring on the button — the Ley Line is pinned to the
+                  // menu's TOP edge, so a vertically-centred popup extended
+                  // above the window and got clipped.  Top-aligned means the
+                  // popup grows downward from the button into the menu's
+                  // right margin, always fully visible.
+                  top: "0",
+                  transform: `scale(${showLeyLinePopup ? 1 : 0.92})`,
+                  minWidth: 160,
+                  opacity: showLeyLinePopup ? 1 : 0,
+                  pointerEvents: showLeyLinePopup ? "auto" : "none",
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="ley-line-popup-bloom" aria-hidden="true" />
+                <div className="ley-line-popup-ring" aria-hidden="true" />
+                <div className="ley-line-popup-content">
+                  <div className="ley-line-popup-header">
+                    <Mic size={10} strokeWidth={2} className="ley-line-popup-icon" />
+                    <span className="ley-line-popup-kicker">Voice Command</span>
+                  </div>
+                  <p className="ley-line-popup-desc">
+                    Say “Voxify” at the end to structure — otherwise paste plain
+                  </p>
+                  <div className="ley-line-popup-row">
+                    <button
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleToggleStructuredVoiceCommand();
+                      }}
+                      className={cn(
+                        "ley-line-popup-switch",
+                        structuredVoiceCommand && "ley-line-popup-switch--on"
+                      )}
+                    >
+                      <span className="ley-line-popup-knob" />
+                    </button>
+                    <span className="ley-line-popup-state">
+                      {structuredVoiceCommand ? "On" : "Off"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <button
               onMouseDown={(e) => {
                 e.stopPropagation();
@@ -365,15 +684,11 @@ export function FloatingPill() {
               }}
               title={autoSwitchModes ? "Auto context switch: on" : "Auto context switch: off"}
               className={cn(
-                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
-                "backdrop-blur-md border transition-all duration-150",
-                autoSwitchModes
-                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
-                  : "border-transparent opacity-50 hover:opacity-80"
+                "quick-toggle",
+                autoSwitchModes && "quick-toggle--on"
               )}
-              style={{ backgroundColor: autoSwitchModes ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
-              <Layers size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+              <Layers size={12} strokeWidth={2} className="quick-toggle-icon" />
             </button>
             <button
               onMouseDown={(e) => {
@@ -383,15 +698,11 @@ export function FloatingPill() {
               }}
               title={livePreviewEnabled ? "Live preview: on" : "Live preview: off"}
               className={cn(
-                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
-                "backdrop-blur-md border transition-all duration-150",
-                livePreviewEnabled
-                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
-                  : "border-transparent opacity-50 hover:opacity-80"
+                "quick-toggle",
+                livePreviewEnabled && "quick-toggle--on"
               )}
-              style={{ backgroundColor: livePreviewEnabled ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
-              <Eye size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+              <Eye size={12} strokeWidth={2} className="quick-toggle-icon" />
             </button>
             <button
               onMouseDown={(e) => {
@@ -401,15 +712,11 @@ export function FloatingPill() {
               }}
               title={noiseReduction ? "Noise suppression: on" : "Noise suppression: off"}
               className={cn(
-                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
-                "backdrop-blur-md border transition-all duration-150",
-                noiseReduction
-                  ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
-                  : "border-transparent opacity-50 hover:opacity-80"
+                "quick-toggle",
+                noiseReduction && "quick-toggle--on"
               )}
-              style={{ backgroundColor: noiseReduction ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
             >
-              <ShieldCheck size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+              <ShieldCheck size={12} strokeWidth={2} className="quick-toggle-icon" />
             </button>
             <div className="relative">
               <button
@@ -426,66 +733,54 @@ export function FloatingPill() {
                 }}
                 title={shipMode ? "Ship mode: on (right-click for options)" : "Ship mode: off (right-click for options)"}
                 className={cn(
-                  "w-[26px] h-[26px] rounded-full flex items-center justify-center",
-                  "backdrop-blur-md border transition-all duration-150",
-                  shipMode
-                    ? "border-amber-500/20 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
-                    : "border-transparent opacity-50 hover:opacity-80"
+                  "quick-toggle",
+                  shipMode && "quick-toggle--on"
                 )}
-                style={{ backgroundColor: shipMode ? "rgba(180,120,20,0.75)" : "rgba(180,120,20,0.25)" }}
               >
-                <Rocket size={12} strokeWidth={2} className="text-white drop-shadow-sm" />
+                <Rocket size={12} strokeWidth={2} className="quick-toggle-icon" />
               </button>
 
               {/* ── Ship button right-click popup ── */}
               <div
-                className="absolute z-50 backdrop-blur-xl border border-white/10 rounded-lg shadow-2xl pointer-events-none"
+                className="ship-popup"
                 style={{
                   left: "calc(100% + 8px)",
                   top: "50%",
-                  transform: "translateY(-50%)",
-                  backgroundColor: "rgba(28, 26, 24, 0.92)",
-                  minWidth: 160,
-                  padding: "8px 10px",
+                  transform: `translateY(-50%) scale(${showShipPopup ? 1 : 0.92})`,
+                  minWidth: 168,
                   opacity: showShipPopup ? 1 : 0,
-                  scale: showShipPopup ? "1" : "0.92",
                   pointerEvents: showShipPopup ? "auto" : "none",
-                  transition: "opacity 0.15s ease-out, scale 0.15s ease-out",
-                  transformOrigin: "left center",
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center gap-1.5 mb-2">
-                  <Send size={10} strokeWidth={2} className="text-amber-400/80" />
-                  <span className="text-[10px] font-semibold text-amber-400/90 uppercase tracking-wider">
-                    Command Send
-                  </span>
-                </div>
-                <p className="text-[9px] text-white/40 mb-2.5 leading-tight">
-                  Say "send" to submit instead of auto-sending everything
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      handleToggleCommandSend();
-                    }}
-                    className={cn(
-                      "relative inline-flex h-4 w-7 items-center rounded-full transition-colors",
-                      commandSend ? "bg-amber-500" : "bg-white/15"
-                    )}
-                  >
-                    <span
+                <div className="ship-popup-bloom" aria-hidden="true" />
+                <div className="ship-popup-ring" aria-hidden="true" />
+                <div className="ship-popup-content">
+                  <div className="ship-popup-header">
+                    <Send size={10} strokeWidth={2} className="ship-popup-icon" />
+                    <span className="ship-popup-kicker">Command Send</span>
+                  </div>
+                  <p className="ship-popup-desc">
+                    Say "send" to submit instead of auto-sending everything
+                  </p>
+                  <div className="ship-popup-row">
+                    <button
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleToggleCommandSend();
+                      }}
                       className={cn(
-                        "inline-block h-2.5 w-2.5 rounded-full bg-white transition-transform",
-                        commandSend ? "translate-x-[14px]" : "translate-x-0.5"
+                        "ship-popup-switch",
+                        commandSend && "ship-popup-switch--on"
                       )}
-                    />
-                  </button>
-                  <span className="text-[10px] text-white/60">
-                    {commandSend ? "On" : "Off"}
-                  </span>
+                    >
+                      <span className="ship-popup-knob" />
+                    </button>
+                    <span className="ship-popup-state">
+                      {commandSend ? "On" : "Off"}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -498,7 +793,8 @@ export function FloatingPill() {
               bottom: "38px",
               width: 22,
               height: 1,
-              backgroundColor: "rgba(255,255,255,0.15)",
+              background:
+                "linear-gradient(90deg, rgba(255,235,200,0) 0%, rgba(255,235,200,0.18) 50%, rgba(255,235,200,0) 100%)",
               borderRadius: 1,
             }}
           />
@@ -517,16 +813,9 @@ export function FloatingPill() {
                 handleToggleGhostMode();
               }}
               title={ghostMode ? "Ghost mode: on — pill hidden" : "Ghost mode: off"}
-              className={cn(
-                "w-[26px] h-[26px] rounded-full flex items-center justify-center",
-                "backdrop-blur-md border transition-all duration-150",
-                ghostMode
-                  ? "border-white/10 shadow-[0_0_8px_rgba(0,0,0,0.15)]"
-                  : "border-transparent opacity-50 hover:opacity-80"
-              )}
-              style={{ backgroundColor: "var(--color-pill-bg)" }}
+              className={cn("quick-toggle quick-toggle--ghost", ghostMode && "quick-toggle--ghost-on")}
             >
-              <Ghost size={12} strokeWidth={2} className="text-white/50 drop-shadow-sm" />
+              <Ghost size={12} strokeWidth={2} className="quick-toggle-icon" />
             </button>
           </div>
         </div>
@@ -555,6 +844,9 @@ export function FloatingPill() {
 
         // Processing
         isProcessing && "bg-[var(--color-pill-bg)] border border-amber-500/25 rounded-full gap-2.5 px-3.5",
+
+        // Structuring (Structured Mode — LLM slot extraction in flight)
+        isStructuring && "bg-[var(--color-pill-bg)] border border-violet-400/30 rounded-full gap-2.5 px-3.5",
 
         // Success
         isSuccess && "bg-[var(--color-pill-bg)] border border-success/30 rounded-full gap-2.5 px-3.5",
@@ -605,6 +897,29 @@ export function FloatingPill() {
                 strokeWidth={2.5}
               />
             )}
+            {isStructuring && (
+              <span className="relative flex items-center justify-center">
+                <span
+                  aria-hidden="true"
+                  className="absolute h-[18px] w-[18px] rounded-full"
+                  style={{
+                    background:
+                      "radial-gradient(circle, rgba(186,148,234,0.35) 0%, rgba(186,148,234,0) 70%)",
+                    animation: "structuring-halo 1.8s ease-in-out infinite",
+                  }}
+                />
+                <Sparkles
+                  size={12}
+                  className="relative text-violet-300"
+                  strokeWidth={2.5}
+                  style={{
+                    animation: "structuring-spark 2.2s ease-in-out infinite",
+                    filter:
+                      "drop-shadow(0 0 3px rgba(186,148,234,0.5))",
+                  }}
+                />
+              </span>
+            )}
             {isSuccess && (
               <svg
                 width="12" height="12" viewBox="0 0 16 16"
@@ -635,6 +950,56 @@ export function FloatingPill() {
                 Transcribing…
               </span>
             )}
+            {isStructuring && (
+              <span
+                className="text-[10px] font-medium tracking-[0.14em] uppercase truncate"
+                style={{
+                  fontFamily: "var(--font-display)",
+                  background:
+                    "linear-gradient(90deg, rgba(186,148,234,0.35) 0%, rgba(218,195,244,0.95) 50%, rgba(186,148,234,0.35) 100%)",
+                  backgroundSize: "220% 100%",
+                  WebkitBackgroundClip: "text",
+                  WebkitTextFillColor: "transparent",
+                  animation: "structuring-shimmer 2.4s linear infinite",
+                }}
+              >
+                Structuring
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: "inline-block",
+                    width: "1.2em",
+                    textAlign: "left",
+                    marginLeft: "1px",
+                  }}
+                >
+                  <span
+                    style={{
+                      animation: "structuring-dot 1.4s ease-in-out infinite",
+                      animationDelay: "0s",
+                    }}
+                  >
+                    ·
+                  </span>
+                  <span
+                    style={{
+                      animation: "structuring-dot 1.4s ease-in-out infinite",
+                      animationDelay: "0.2s",
+                    }}
+                  >
+                    ·
+                  </span>
+                  <span
+                    style={{
+                      animation: "structuring-dot 1.4s ease-in-out infinite",
+                      animationDelay: "0.4s",
+                    }}
+                  >
+                    ·
+                  </span>
+                </span>
+              </span>
+            )}
             {isSuccess && flashText && (
               <span className="text-[10px] text-text-secondary/70 truncate">
                 {flashText}
@@ -661,6 +1026,26 @@ export function FloatingPill() {
             {isProcessing && (
               <div className="h-1.5 w-1.5 rounded-full bg-amber-500/40" />
             )}
+            {isStructuring && (
+              <div className="relative flex items-center justify-center">
+                <span
+                  className="absolute h-3 w-3 rounded-full"
+                  style={{
+                    background:
+                      "radial-gradient(circle, rgba(186,148,234,0.35) 0%, rgba(186,148,234,0) 70%)",
+                    animation: "structuring-halo 1.8s ease-in-out infinite",
+                  }}
+                />
+                <span
+                  className="relative h-1.5 w-1.5 rounded-full"
+                  style={{
+                    backgroundColor: "rgb(186,148,234)",
+                    boxShadow: "0 0 6px rgba(186,148,234,0.6)",
+                    animation: "structuring-pulse 2s ease-in-out infinite",
+                  }}
+                />
+              </div>
+            )}
             {isSuccess && (
               <div className="h-1.5 w-1.5 rounded-full bg-success/40" />
             )}
@@ -669,9 +1054,375 @@ export function FloatingPill() {
       )}
 
       <style>{`
+        /* ── Quick-toggle circles ── */
+        .quick-toggle {
+          width: 26px;
+          height: 26px;
+          border-radius: 999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          backdrop-filter: blur(10px);
+          background: linear-gradient(180deg,
+            rgba(148,98,18,0.28) 0%,
+            rgba(130,84,14,0.22) 100%);
+          border: 1px solid transparent;
+          cursor: pointer;
+          opacity: 0.55;
+          transition:
+            background 180ms ease,
+            border-color 180ms ease,
+            box-shadow 220ms ease,
+            opacity 160ms ease,
+            transform 140ms ease;
+        }
+        .quick-toggle:hover {
+          opacity: 0.88;
+          background: linear-gradient(180deg,
+            rgba(164,112,26,0.36) 0%,
+            rgba(144,94,18,0.28) 100%);
+        }
+        .quick-toggle:active { transform: scale(0.92); }
+        .quick-toggle--on {
+          opacity: 1;
+          background: linear-gradient(180deg,
+            rgba(200,142,36,0.86) 0%,
+            rgba(168,112,22,0.78) 100%);
+          border-color: rgba(255,220,160,0.22);
+          box-shadow:
+            inset 0 1px 0 rgba(255,230,190,0.18),
+            inset 0 -1px 0 rgba(0,0,0,0.12),
+            0 0 10px -2px rgba(232,180,95,0.5),
+            0 2px 8px -4px rgba(0,0,0,0.55);
+        }
+        .quick-toggle--on:hover {
+          background: linear-gradient(180deg,
+            rgba(214,152,44,0.94) 0%,
+            rgba(180,120,26,0.84) 100%);
+          box-shadow:
+            inset 0 1px 0 rgba(255,230,190,0.22),
+            inset 0 -1px 0 rgba(0,0,0,0.12),
+            0 0 14px -2px rgba(232,180,95,0.65),
+            0 2px 10px -4px rgba(0,0,0,0.6);
+        }
+        .quick-toggle-icon {
+          color: rgba(255,255,255,0.9);
+          filter: drop-shadow(0 0 2px rgba(0,0,0,0.35));
+        }
+        .quick-toggle--ghost {
+          background: linear-gradient(180deg,
+            rgba(40,38,36,0.92) 0%,
+            rgba(28,26,24,0.92) 100%);
+          border: 1px solid rgba(255,255,255,0.04);
+        }
+        .quick-toggle--ghost:hover {
+          background: linear-gradient(180deg,
+            rgba(54,50,46,0.95) 0%,
+            rgba(38,34,32,0.95) 100%);
+          border-color: rgba(255,255,255,0.08);
+        }
+        .quick-toggle--ghost-on {
+          opacity: 1;
+          border-color: rgba(255,255,255,0.14);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.05),
+            0 2px 8px -3px rgba(0,0,0,0.6);
+        }
+        .quick-toggle--ghost .quick-toggle-icon {
+          color: rgba(255,255,255,0.5);
+        }
+
+        /* ── Ship popup ── */
+        .ship-popup {
+          position: absolute;
+          z-index: 50;
+          border-radius: 10px;
+          padding: 0;
+          background: linear-gradient(180deg,
+            rgba(28,26,24,0.96) 0%,
+            rgba(22,20,18,0.96) 100%);
+          border: 1px solid rgba(255,255,255,0.06);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.05),
+            0 1px 2px rgba(0,0,0,0.5),
+            0 8px 18px -4px rgba(0,0,0,0.7),
+            0 16px 32px -12px rgba(0,0,0,0.8);
+          backdrop-filter: blur(14px);
+          overflow: hidden;
+          transform-origin: left center;
+          transition:
+            opacity 160ms ease-out,
+            transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .ship-popup-bloom {
+          position: absolute;
+          inset: -60% -20% auto -20%;
+          height: 80px;
+          background: radial-gradient(ellipse at 50% 0%,
+            rgba(255,230,180,0.06) 0%,
+            rgba(255,220,160,0.02) 30%,
+            transparent 65%);
+          pointer-events: none;
+          z-index: 0;
+        }
+        .ship-popup-ring {
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent 0%,
+            rgba(255,230,190,0.18) 50%,
+            transparent 100%);
+          pointer-events: none;
+          z-index: 2;
+        }
+        .ship-popup-content {
+          position: relative;
+          z-index: 3;
+          padding: 9px 11px 10px;
+        }
+        .ship-popup-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 6px;
+        }
+        .ship-popup-icon {
+          color: rgba(244,190,110,0.9);
+          filter: drop-shadow(0 0 2px rgba(244,190,110,0.35));
+        }
+        .ship-popup-kicker {
+          font-family: var(--font-display);
+          font-size: 9px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.2em;
+          color: rgba(240,218,182,0.92);
+        }
+        .ship-popup-desc {
+          margin: 0 0 9px;
+          font-family: var(--font-sans);
+          font-size: 9.5px;
+          line-height: 1.4;
+          color: rgba(255,255,255,0.42);
+          letter-spacing: -0.005em;
+        }
+        .ship-popup-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .ship-popup-switch {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          width: 26px;
+          height: 14px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.04);
+          cursor: pointer;
+          transition: background 160ms ease, border-color 160ms ease;
+          padding: 0;
+        }
+        .ship-popup-switch--on {
+          background: linear-gradient(180deg,
+            rgba(208,148,40,0.95) 0%,
+            rgba(176,118,22,0.9) 100%);
+          border-color: rgba(255,220,160,0.28);
+          box-shadow:
+            inset 0 1px 0 rgba(255,230,190,0.2),
+            0 0 8px -2px rgba(232,180,95,0.55);
+        }
+        .ship-popup-knob {
+          display: inline-block;
+          position: absolute;
+          top: 50%;
+          left: 2px;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.92);
+          box-shadow:
+            0 1px 2px rgba(0,0,0,0.3);
+          transform: translateY(-50%) translateX(0);
+          transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ship-popup-switch--on .ship-popup-knob {
+          transform: translateY(-50%) translateX(12px);
+        }
+        .ship-popup-state {
+          font-family: var(--font-sans);
+          font-size: 10px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.62);
+          letter-spacing: -0.005em;
+        }
+
+        /* ── Ley Line popup (Structured Mode voice-command gate) ──
+           Violet-themed mirror of the ship popup, anchored to the LEFT
+           of the Ley Line button since the button is already at the
+           window's right edge.  Same surface language (backdrop blur +
+           bloom + top rim-light), swapped palette. */
+        .ley-line-popup {
+          position: absolute;
+          z-index: 50;
+          border-radius: 10px;
+          padding: 0;
+          background: linear-gradient(180deg,
+            rgba(28,26,24,0.96) 0%,
+            rgba(22,20,18,0.96) 100%);
+          border: 1px solid rgba(255,255,255,0.06);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.05),
+            0 1px 2px rgba(0,0,0,0.5),
+            0 8px 18px -4px rgba(0,0,0,0.7),
+            0 16px 32px -12px rgba(0,0,0,0.8),
+            0 0 22px -10px rgba(188,150,236,0.38);
+          backdrop-filter: blur(14px);
+          overflow: hidden;
+          /* Popup opens to the RIGHT of the Ley Line button AND is
+             top-aligned (inline style top:0).  Origin at left-top so the
+             scale-in emerges from the corner adjacent to the button and
+             flows right + down into place. */
+          transform-origin: left top;
+          transition:
+            opacity 160ms ease-out,
+            transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .ley-line-popup-bloom {
+          position: absolute;
+          inset: -60% -20% auto -20%;
+          height: 80px;
+          background: radial-gradient(ellipse at 50% 0%,
+            rgba(186,148,234,0.16) 0%,
+            rgba(160,115,220,0.06) 30%,
+            transparent 65%);
+          pointer-events: none;
+          z-index: 0;
+        }
+        .ley-line-popup-ring {
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent 0%,
+            rgba(210,178,246,0.35) 50%,
+            transparent 100%);
+          pointer-events: none;
+          z-index: 2;
+        }
+        .ley-line-popup-content {
+          position: relative;
+          z-index: 3;
+          padding: 9px 11px 10px;
+        }
+        .ley-line-popup-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 6px;
+        }
+        .ley-line-popup-icon {
+          color: rgba(210,178,246,0.9);
+          filter: drop-shadow(0 0 2px rgba(186,148,234,0.4));
+        }
+        .ley-line-popup-kicker {
+          font-family: var(--font-display);
+          font-size: 9px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.2em;
+          color: rgba(228,206,248,0.95);
+        }
+        .ley-line-popup-desc {
+          margin: 0 0 9px;
+          font-family: var(--font-sans);
+          font-size: 9.5px;
+          line-height: 1.4;
+          color: rgba(255,255,255,0.5);
+          letter-spacing: -0.005em;
+        }
+        .ley-line-popup-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .ley-line-popup-switch {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          width: 26px;
+          height: 14px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.04);
+          cursor: pointer;
+          transition: background 160ms ease, border-color 160ms ease;
+          padding: 0;
+        }
+        .ley-line-popup-switch--on {
+          background: linear-gradient(180deg,
+            rgba(168,124,226,0.95) 0%,
+            rgba(138,98,200,0.9) 100%);
+          border-color: rgba(210,178,246,0.3);
+          box-shadow:
+            inset 0 1px 0 rgba(255,245,255,0.22),
+            0 0 8px -2px rgba(188,150,236,0.55);
+        }
+        .ley-line-popup-knob {
+          display: inline-block;
+          position: absolute;
+          top: 50%;
+          left: 2px;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.92);
+          box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+          transform: translateY(-50%) translateX(0);
+          transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ley-line-popup-switch--on .ley-line-popup-knob {
+          transform: translateY(-50%) translateX(12px);
+        }
+        .ley-line-popup-state {
+          font-family: var(--font-sans);
+          font-size: 10px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.62);
+          letter-spacing: -0.005em;
+        }
+
         @keyframes shimmer {
           0% { transform: translateX(-100%); }
           100% { transform: translateX(200%); }
+        }
+        @keyframes structuring-halo {
+          0%, 100% { transform: scale(0.85); opacity: 0.5; }
+          50% { transform: scale(1.15); opacity: 1; }
+        }
+        @keyframes structuring-pulse {
+          0%, 100% {
+            transform: scale(0.92);
+            box-shadow: 0 0 4px rgba(186,148,234,0.45);
+          }
+          50% {
+            transform: scale(1.08);
+            box-shadow: 0 0 10px rgba(186,148,234,0.8);
+          }
+        }
+        @keyframes structuring-spark {
+          0%, 100% { transform: scale(0.94) rotate(-6deg); opacity: 0.85; }
+          50% { transform: scale(1.08) rotate(6deg); opacity: 1; }
+        }
+        @keyframes structuring-shimmer {
+          0% { background-position: 220% 0; }
+          100% { background-position: -220% 0; }
+        }
+        @keyframes structuring-dot {
+          0%, 100% { opacity: 0.25; }
+          50% { opacity: 1; }
         }
       `}</style>
     </button>

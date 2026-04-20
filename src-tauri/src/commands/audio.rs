@@ -96,12 +96,13 @@ pub async fn set_audio_device(
     device_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // Validate device exists before accepting it
-    let devices = AudioCapture::enumerate_devices().map_err(|e| e.to_string())?;
-    if !devices.iter().any(|d| d.id == device_id) {
-        return Err(format!("Audio device '{}' not found", device_id));
-    }
-
+    // Skip pre-validation: the UI only lets users pick devices that came from
+    // a fresh `get_audio_devices()` call, and the cpal backend will return a
+    // clear error at `start()` time if the device is gone (e.g. unplugged).
+    // The old enumerate-on-every-change pattern cost up to 3 seconds (device
+    // enumeration timeout) every time the user selected a mic — on Windows
+    // enumerating WASAPI devices can hang briefly, which made the Settings
+    // dropdown feel laggy.
     let mut audio = match state.audio.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),

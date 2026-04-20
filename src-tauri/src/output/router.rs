@@ -148,6 +148,12 @@ impl OutputRouter {
             }
         }
 
+        // Give the target app time to finish processing the last paste before
+        // we restore the user's original clipboard.  See paste_with_restore for
+        // why — same race applies here (and more so, since we paste multiple
+        // text segments).
+        thread::sleep(Duration::from_millis(150));
+
         // Restore previous clipboard contents
         if let Some(prev) = previous {
             let _ = clipboard.set_text(&prev);
@@ -173,8 +179,13 @@ impl OutputRouter {
 
         self.send_paste_keystroke()?;
 
-        // Give the target application time to process the paste event
-        thread::sleep(Duration::from_millis(50));
+        // Give the target application time to process the paste event before
+        // we overwrite the clipboard.  Some apps (Slack, Notion, Electron-based
+        // chat apps) read the clipboard on a deferred tick after Ctrl+V — if
+        // we restore too fast, their paste handler sees our restored text and
+        // either leaks the user's previous clipboard into the message or the
+        // paste fails entirely.  150 ms is empirically safe across tested apps.
+        thread::sleep(Duration::from_millis(150));
 
         // Restore original clipboard contents
         if let Some(prev) = previous {
