@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1
+
+### Bug Fixes
+
+- **Windows release build fixed** — CI was using the Visual Studio / MSBuild generator which races on `llama-cpp-sys-2`'s `vulkan-shaders-gen` subproject (install step runs before build completes). The release workflow now uses the Ninja generator to match local dev, and explicitly sets up the MSVC environment and installs Ninja. Also meaningfully faster.
+
 ## v0.2.0
 
 ### New Features
