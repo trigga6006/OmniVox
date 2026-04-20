@@ -13,6 +13,13 @@ env:
   # MSBuild FileTracker ignores the long-path registry setting, and
   # whisper-rs-sys's Vulkan shader build creates deeply nested paths.
   CARGO_TARGET_DIR: C:\b
+  # Force Ninja instead of Visual Studio / MSBuild.  MSBuild in parallel
+  # mode races on llama-cpp-sys-2's `vulkan-shaders-gen` subproject —
+  # the install step gets scheduled before the build step completes and
+  # fails with "Not a file: .../cmake_install.cmake".  Ninja handles the
+  # inter-target dependency correctly AND is meaningfully faster.
+  # Local dev (scripts/start-release-dev.ps1) already sets this.
+  CMAKE_GENERATOR: Ninja
 
 jobs:
   build-windows:
@@ -27,6 +34,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # Ninja drives `cl.exe` / `link.exe` directly instead of going
+      # through MSBuild, so the MSVC toolchain paths need to be on PATH
+      # and the usual VS env vars (INCLUDE, LIB, LIBPATH) exported.
+      # `ilammy/msvc-dev-cmd` runs `vcvarsall.bat x64` and persists the
+      # result to $GITHUB_ENV for subsequent steps.
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
 
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1
