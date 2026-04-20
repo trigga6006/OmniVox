@@ -1307,7 +1307,7 @@ export function SettingsPage() {
             </span>
           </div>
 
-          <p className="text-sm text-text-primary">OmniVox v0.1.9</p>
+          <p className="text-sm text-text-primary">OmniVox v0.2.0</p>
           <p className="text-xs text-text-muted mt-1 flex items-center gap-1.5">
             <span>Local-first AI dictation</span>
             <span className="text-text-muted/40 mx-0.5">·</span>

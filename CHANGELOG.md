@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.2.0
+
+### New Features
+
+- **Structured Mode** — Optional local-LLM pipeline that takes raw dictation and turns it into a slot-filled Markdown prompt tuned for agentic coding agents (Claude Code, Codex). Runs via llama.cpp with a GBNF grammar so the output is always shape-valid JSON. Degrades gracefully to plain output on timeout, missing model, or parse failure.
+- **Structured Mode is intent-aware** — Three intent shapes recognised: implementation (goal / context / constraints / files / urgency / expected behavior), exploration (goal / context / questions), and advice (goal / context / options / constraints). The model picks the slots that fit the dictation instead of padding every field.
+- **Structured preview panel** — After a structured run, a premium 420 px panel flows out of the pill showing the Markdown preview with metadata chips (urgency, file count), Edit / Paste (⌘↵) / Copy / Dismiss actions, a collapsible Raw Transcript drawer, and a built-in mic for dictating appends into the panel.
+- **In-panel dictation** — Mic button on the preview panel lets you speak additions that get appended to the preview. Hotkey-triggered recordings while the panel is open also route into the textarea automatically.
+- **The Ley Line toggle** — Vertical capsule button at the top-right of the pill's right-click menu that toggles Structured Mode on/off. Off state is a latent amber rune; on state is a quietly-lit violet conduit.
+- **Voice-command gate ("Voxify")** — Right-click the Ley Line to open a Voice Command popup. When enabled, Structured Mode only runs if you end your dictation with the trigger word "Voxify" (or any of seven phonetic aliases — foxify, boxify, poxify, woxify, vexify, vaxify, oxify — so Whisper misreads still trigger). Otherwise the transcript stays plain.
+- **LLM model manager** — Settings → LLM Models page for downloading Qwen3 Structured Mode models from HuggingFace with SHA-256-verified streaming and per-model on-disk tracking.
+- **Fabrication defenses** — Raw-input grounding, files-must-appear-in-dictation check, short-input content-word guard, cross-slot dedupe, third-person-to-first-person rewrite, and strict no-padding rules in the prompt keep the LLM from inventing features, filenames, or constraints.
+- **Context-mode menu stays open when switching** — Clicking between context modes in the pill menu now keeps the menu open; it only closes on click-outside or Esc.
+
+### Improvements
+
+- **Premium pill-overlay redesign** — Warm charcoal surfaces, atmospheric bloom + rim light + grain overlays, Archivo display typography for kickers, refined hover/active states across the ModeSelector, quick-toggle circles, and ship-send popup.
+- **Unified pill-to-panel transition** — The structured panel sits flush above the pill with 4 px gap (matching the right-click menu spacing) and reveals via a clip-path morph from capsule → rounded rectangle, reading as the panel flowing out of the pill.
+- **Overlay resize race fixed** — Right-clicking the pill occasionally expanded it horizontally without showing the menu. Consolidated the two competing resize effects into one that calls resizeOverlay exactly once per transition.
+- **"Expected Behavior" slot** — Replaces the old Follow-up list with outcome-framed acceptance criteria ("I should be able to X", "X should always Y") better suited to coding-agent prompts.
+- **Google Fonts loaded in the overlay** — Archivo / Outfit / IBM Plex Mono now render in the overlay window; previously fell back to system-ui.
+- **CSP widened for data: URIs and Google Fonts** — Allows the panel grain textures and the font set without triggering browser policy errors.
+
+### Bug Fixes
+
+- **Trailing "voxify" no longer strips from plain output** — The trigger word is only removed when the voice-command gate is armed; without the gate it's treated as ordinary content.
+- **Structured panel no longer clips when Raw Transcript opens** — Body max-height shrinks to keep total panel height inside the 480 px overlay window; full content still scrolls.
+- **About panel shows the correct version** — Was hardcoded to v0.1.7, now matches release metadata.
+- **Bundle identifier no longer ends with `.app`** — Changed from `com.omnivox.app` to `com.omnivox.desktop` to avoid macOS bundle-extension collision.
+
 ## v0.1.7
 
 ### New Features
