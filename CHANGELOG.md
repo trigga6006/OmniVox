@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.4
+
+### Bug Fixes
+
+- **Structured panel and paste stuck after LLM finishes** — v0.2.3 gated `StructuredPanel` (and the degraded banner) on `showContent` to cover a WebView2 composition race. That coupled the panel's mount to the resize effect's 80 ms timer, which the effect released via its cleanup function. Because `pipeline.rs` emits `structured-output-ready` and `recording-state-change: idle` back-to-back, the effect ran twice: the first run scheduled the `setShowContent(true)` timer; the second run's cleanup cancelled it, and its body returned early (`sizeChanged === false`) without rescheduling. Result: `showContent` stayed `false` forever, the panel never mounted, and since auto-paste is skipped whenever `structured.is_some()`, nothing landed in the focused app. The timer now lives in a ref that incidental re-runs leave alone; a dedicated unmount effect clears it.
+- **Overlay reposition race** — Added the Windows-specific `SetWindowPos` atomic size+position apply that was intended for v0.2.3 but didn't make it into that commit. Without it, the fallback path runs `set_size` then `set_position` as two separate IPC calls and the overlay briefly exists at the old position with the new (much larger) size.
+
+### Improvements
+
+- **More Voxify aliases** — Added no-`i` variants (`voxfy`, `foxfy`, `boxfy`, `poxfy`, `woxfy`, `vexfy`, `vaxfy`, `oxfy`) to the trigger list. Whisper collapses the `/i/` between `/f/` and `/aɪ/` to a schwa when the user says "Voxify" quickly, and the no-`i` spelling is what lands in the transcript. All still non-lexical, so no false activations.
+
 ## v0.2.3
 
 ### Bug Fixes
