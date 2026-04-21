@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.3
+
+### Bug Fixes
+
+- **Right-click flicker on primary monitor** — Opening the context menu briefly flashed the pill/menu at the top-left of the newly-expanded region. `SetWindowPos` resizes the overlay atomically on the Windows thread, but WebView2 can paint the pre-resize React layout into the new window bounds for a single frame before re-laying-out. The `ModeSelector` / `StructuredPanel` / degraded banner are now gated on the existing `showContent` flag, which resets on every size change and flips back to true 80 ms later — long enough for WebView2 to settle.
+- **Degraded banner no longer clips the context menu** — When the "dictation too short" banner was up and the user right-clicked the pill, the banner stayed and cut off the menu. Right-clicking now dismisses the banner and opens the menu. The menu is also allowed from the transient `success` / `error` pill states (not just `idle`), since the banner commonly shows while the pill is still in `success`.
+
 ## v0.2.2
 
 ### Bug Fixes
