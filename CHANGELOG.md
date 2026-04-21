@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.2
+
+### Bug Fixes
+
+- **Windows release build fixed (take 2)** — CI was invoking `cargo tauri build` under `shell: bash`, which prepends Git Bash's `/usr/bin` to PATH. That shadowed MSVC's `link.exe` with GNU coreutils' `link` (a hardlink utility), producing `"/usr/bin/link: extra operand ..."` errors on every build-script link (proc-macro2, serde_core, zerocopy, …). The build step now runs under `pwsh` so the MSVC toolchain set up by `ilammy/msvc-dev-cmd` stays first on PATH.
+
 ## v0.2.1
 
 ### Bug Fixes
