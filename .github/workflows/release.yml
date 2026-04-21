@@ -62,8 +62,12 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
 
+      # Do NOT use `shell: bash` here — Git Bash prepends /usr/bin to PATH,
+      # which shadows MSVC `link.exe` with GNU coreutils' `link` (a hardlink
+      # utility). That produces "/usr/bin/link: extra operand ..." errors
+      # when rustc tries to link build scripts (proc-macro2, serde_core, etc).
       - name: Build Tauri app
-        shell: bash
+        shell: pwsh
         run: cargo tauri build --features vulkan
 
       - name: Package release assets
