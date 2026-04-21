@@ -30,10 +30,28 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Cache ~/.cargo/registry, ~/.cargo/git, and $CARGO_TARGET_DIR
+      # (C:\b) keyed by lockfile + toolchain.  Without this every run
+      # recompiles whisper-rs-sys + llama-cpp-sys-2 + Tauri + ~600
+      # transitive crates from scratch — roughly 20-plus minutes of
+      # the build time was attributable to missing cache.  The
+      # workspace lives in src-tauri/; CARGO_TARGET_DIR is honored.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # Include the Vulkan feature in the cache key so a
+          # no-feature build doesn't poison the Vulkan target dir
+          # (and vice versa).
+          key: vulkan
+
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          # setup-node's built-in npm cache keyed on package-lock.json.
+          # Trims `npm ci` from ~90s to ~15s on warm runs.
+          cache: npm
 
       # Ninja drives `cl.exe` / `link.exe` directly instead of going
       # through MSBuild, so the MSVC toolchain paths need to be on PATH
@@ -59,8 +77,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Fetch a prebuilt tauri-cli binary instead of compiling it from
+      # source.  `cargo install tauri-cli` was burning 5-10 minutes
+      # every run rebuilding the CLI's own 200+ dependency tree.
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@^2
 
       # Do NOT use `shell: bash` here — Git Bash prepends /usr/bin to PATH,
       # which shadows MSVC `link.exe` with GNU coreutils' `link` (a hardlink
