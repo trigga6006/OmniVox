@@ -67,6 +67,14 @@ fn cursor_monitor(_app: &tauri::AppHandle) -> Option<tauri::Monitor> {
 /// Resize and reposition the overlay pill window from the frontend.
 /// Automatically moves the pill to whichever monitor has the cursor,
 /// so it follows the user across multi-monitor setups.
+///
+/// On Windows, the size + position are applied atomically via a single
+/// `SetWindowPos` call.  Using Tauri's `set_size` followed by
+/// `set_position` produced a visible flicker on the primary monitor
+/// when opening the right-click menu: between the two IPC calls the
+/// window briefly exists at the OLD position with the NEW (much larger)
+/// size, so the pill appeared to jump toward the top-left before
+/// settling.  A single `SetWindowPos` skips that intermediate state.
 #[tauri::command]
 pub async fn resize_overlay(
     app: tauri::AppHandle,
@@ -94,12 +102,48 @@ pub async fn resize_overlay(
 
     let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
     let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
+    let xi = x as i32;
+    let yi = y.max(0.0) as i32;
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        };
+
+        if let Ok(hwnd_raw) = window.hwnd() {
+            // Convert Tauri's HWND to windows-sys HWND (both are `isize`
+            // pointers wrapping the same OS handle).
+            let hwnd: HWND = hwnd_raw.0 as HWND;
+            let w_phys = phys_w.round() as i32;
+            let h_phys = phys_h.round() as i32;
+            // SAFETY: hwnd is valid (just retrieved from Tauri), flags
+            // are well-formed, no z-order or activation change.
+            let ok = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    xi,
+                    yi,
+                    w_phys,
+                    h_phys,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+            if ok != 0 {
+                return Ok(());
+            }
+            // If SetWindowPos failed for some reason, fall through to
+            // the cross-platform path so resize still happens.
+        }
+    }
 
     window
         .set_size(tauri::LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
     window
-        .set_position(tauri::PhysicalPosition::new(x as i32, y.max(0.0) as i32))
+        .set_position(tauri::PhysicalPosition::new(xi, yi))
         .map_err(|e| e.to_string())?;
 
     Ok(())

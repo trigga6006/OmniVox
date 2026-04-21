@@ -42,6 +42,17 @@ const TRIGGER_ALIASES: &[&str] = &[
     "vexify",  // different vowel (e)
     "vaxify",  // different vowel (a)
     "oxify",   // initial consonant elided
+    // Whisper also drops the /i/ between /f/ and /aɪ/ when the user says
+    // "Voxify" quickly (the vowel collapses to a schwa).  Each canonical
+    // form has a no-`i` twin; all are still non-lexical.
+    "voxfy",
+    "foxfy",
+    "boxfy",
+    "poxfy",
+    "woxfy",
+    "vexfy",
+    "vaxfy",
+    "oxfy",
 ];
 
 fn matches_any_trigger(word: &str) -> bool {
@@ -145,7 +156,11 @@ mod tests {
         // Every alias in TRIGGER_ALIASES should activate the trigger —
         // Whisper occasionally hears any of these instead of "Voxify"
         // because the word isn't in its training vocabulary.
-        for alias in ["Foxify", "Boxify", "Poxify", "Woxify", "Vaxify", "Oxify", "VEXIFY"] {
+        for alias in [
+            "Foxify", "Boxify", "Poxify", "Woxify", "Vaxify", "Oxify", "VEXIFY",
+            // No-`i` variants (schwa collapse between /f/ and /aɪ/).
+            "Voxfy", "Foxfy", "Boxfy", "Poxfy", "Woxfy", "Vexfy", "Vaxfy", "Oxfy",
+        ] {
             let input = format!("Refactor the auth flow. {alias}.");
             let (stripped, said) = detect_and_strip_trigger(&input);
             assert!(said, "alias {alias:?} should trigger");

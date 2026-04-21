@@ -174,6 +174,17 @@ export function FloatingPill() {
   // banner mounts below) skips past that race.  200 ms out for
   // expanded→idle so the fade-out completes before the window shrinks.
   const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
+  // Pending showContent timer lives in a ref rather than being released by
+  // the effect's cleanup.  Reason: the effect's deps include `pillState`,
+  // which changes AFTER `structuredPayload` is set (the pipeline emits
+  // `structured-output-ready` and then `recording-state-change: idle`
+  // back-to-back).  The second re-run sees `sizeChanged === false` and
+  // returns early — but React has already invoked the first run's cleanup,
+  // which would `clearTimeout` the pending `setShowContent(true)` call.
+  // The panel then stays unmounted forever because `showContent` is stuck
+  // at false.  Owning the timer manually means incidental re-runs no
+  // longer nuke an in-flight show.
+  const showContentTimerRef = useRef<number | null>(null);
   useEffect(() => {
     let targetW: number;
     let targetH: number;
@@ -204,25 +215,50 @@ export function FloatingPill() {
     const wasExpanded = prevExpandedRef.current;
     const prev = prevTargetRef.current;
     const sizeChanged = prev.w !== targetW || prev.h !== targetH;
+
+    if (!sizeChanged) return;
+
     prevExpandedRef.current = expanded;
     prevTargetRef.current = { w: targetW, h: targetH };
 
-    if (!sizeChanged) return;
+    // Starting a fresh hide→resize→show cycle, so cancel any prior
+    // show-timer ourselves.  (See the ref-declaration comment above for
+    // why this isn't delegated to the effect cleanup.)
+    if (showContentTimerRef.current !== null) {
+      window.clearTimeout(showContentTimerRef.current);
+      showContentTimerRef.current = null;
+    }
 
     if (!expanded && wasExpanded) {
       // expanded → idle: fade content out, then shrink.
       setShowContent(false);
-      const t = setTimeout(() => resizeOverlay(targetW, targetH), 200);
-      return () => clearTimeout(t);
+      showContentTimerRef.current = window.setTimeout(() => {
+        resizeOverlay(targetW, targetH);
+        showContentTimerRef.current = null;
+      }, 200);
+      return;
     }
     // idle → expanded OR expanded → expanded (new dims): hide content,
     // resize, then fade content back in.  Same 80 ms delay in both
     // paths so WebView2 has time to re-layout before content paints.
     setShowContent(false);
     resizeOverlay(targetW, targetH);
-    const t = setTimeout(() => setShowContent(true), 80);
-    return () => clearTimeout(t);
+    showContentTimerRef.current = window.setTimeout(() => {
+      setShowContent(true);
+      showContentTimerRef.current = null;
+    }, 80);
   }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length]);
+
+  // Clean up the pending showContent timer on unmount so it doesn't
+  // fire against a torn-down component.
+  useEffect(() => {
+    return () => {
+      if (showContentTimerRef.current !== null) {
+        window.clearTimeout(showContentTimerRef.current);
+        showContentTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Mount: transparent bg, force dark theme, shrink to idle
   useEffect(() => {
