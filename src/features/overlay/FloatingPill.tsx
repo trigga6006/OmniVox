@@ -163,10 +163,16 @@ export function FloatingPill() {
   // horizontally but no menu".  Collapsing into a single effect
   // guarantees exactly one resize per state transition.
   //
-  // showContent fade timing (80 ms in / 200 ms out) is preserved but
-  // only triggered on the idle↔expanded boundary, so intra-expanded
-  // transitions (e.g. opening the menu while the pill is already
-  // recording) reshape the window without flashing the content.
+  // `showContent` is reset to false on EVERY size change (not just
+  // idle↔expanded), then flipped back to true 80 ms later.  This
+  // masks a one-frame WebView2 composition race: SetWindowPos resizes
+  // the window atomically on the Windows thread, but WebView2 can
+  // paint the pre-resize React layout into the new window bounds for
+  // a single frame before re-laying-out — showing the pill/menu at
+  // the top-left of the expanded region.  Hiding content for 80 ms
+  // (which also gates ModeSelector / StructuredPanel / degraded
+  // banner mounts below) skips past that race.  200 ms out for
+  // expanded→idle so the fade-out completes before the window shrinks.
   const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
   useEffect(() => {
     let targetW: number;
@@ -203,20 +209,19 @@ export function FloatingPill() {
 
     if (!sizeChanged) return;
 
-    if (expanded && !wasExpanded) {
-      // idle → expanded: resize immediately, fade content in after.
-      resizeOverlay(targetW, targetH);
-      const t = setTimeout(() => setShowContent(true), 80);
-      return () => clearTimeout(t);
-    }
     if (!expanded && wasExpanded) {
       // expanded → idle: fade content out, then shrink.
       setShowContent(false);
       const t = setTimeout(() => resizeOverlay(targetW, targetH), 200);
       return () => clearTimeout(t);
     }
-    // expanded → expanded (size change only): just apply the new size.
+    // idle → expanded OR expanded → expanded (new dims): hide content,
+    // resize, then fade content back in.  Same 80 ms delay in both
+    // paths so WebView2 has time to re-layout before content paints.
+    setShowContent(false);
     resizeOverlay(targetW, targetH);
+    const t = setTimeout(() => setShowContent(true), 80);
+    return () => clearTimeout(t);
   }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length]);
 
   // Mount: transparent bg, force dark theme, shrink to idle
@@ -485,7 +490,22 @@ export function FloatingPill() {
       if (ghostMode) {
         exitGhostMode();
       }
-      if (pillState === "idle") {
+      // The degraded banner clips the menu if left in place — the user's
+      // intent when right-clicking is "show me the menu," so dismiss any
+      // banner that's currently up so the menu has room to appear.
+      if (structuredDegraded) {
+        setStructuredDegraded(null);
+      }
+      // Allow the menu from any non-active pill state.  The `success` /
+      // `error` states are transient tails of a completed recording
+      // (2.5 s) — blocking the menu during them felt arbitrary to the
+      // user, and the degraded banner commonly shows while pillState is
+      // still `success`, so this is also part of the bug-2 fix.
+      const canOpenMenu =
+        pillState === "idle" ||
+        pillState === "success" ||
+        pillState === "error";
+      if (canOpenMenu) {
         setShowModeSelector((prev) => {
           // Close nested popups when toggling mode selector
           if (!prev) {
@@ -496,7 +516,7 @@ export function FloatingPill() {
         });
       }
     },
-    [pillState, ghostMode, exitGhostMode]
+    [pillState, ghostMode, exitGhostMode, structuredDegraded]
   );
 
   const handleModeSelect = useCallback(async (id: string) => {
@@ -525,8 +545,12 @@ export function FloatingPill() {
           single unified surface.  Zero bottom margin is deliberate (the
           "reverse Dynamic Island" expansion effect): the panel's flat
           bottom merges visually into the pill's rounded top so they read
-          as one connected shape instead of two floating bubbles. */}
-      {structuredPayload && !ghostMode && (
+          as one connected shape instead of two floating bubbles.
+          Gated on showContent so WebView2 finishes re-laying-out after
+          the window resize before the panel mounts — otherwise a
+          one-frame paint of the old layout in the new window bounds
+          flashes the panel at the top-left of the expanded region. */}
+      {showContent && structuredPayload && !ghostMode && (
         <div className="shrink-0">
           <StructuredPanel
             payload={structuredPayload}
@@ -536,8 +560,9 @@ export function FloatingPill() {
         </div>
       )}
 
-      {/* Transient degraded banner — LLM timed out / not loaded */}
-      {structuredDegraded && !structuredPayload && !ghostMode && (
+      {/* Transient degraded banner — LLM timed out / not loaded.
+          Gated on showContent for the same anti-flicker reason. */}
+      {showContent && structuredDegraded && !structuredPayload && !ghostMode && (
         <div
           className="mb-1.5 shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-[380px] cursor-pointer group"
           onClick={() => setStructuredDegraded(null)}
@@ -580,8 +605,12 @@ export function FloatingPill() {
         </div>
       )}
 
-      {/* Mode selector dropdown — centered above the pill */}
-      {showModeSelector && modes.length > 0 && (
+      {/* Mode selector dropdown — centered above the pill.  Gated on
+          showContent so the menu only mounts after the window has
+          resized to 600×~200 + WebView2 has re-laid-out, preventing
+          the one-frame flicker where the menu painted at the top-left
+          of the old 56×26 bounds. */}
+      {showContent && showModeSelector && modes.length > 0 && (
         <div className="relative shrink-0 flex justify-center w-full">
           <ModeSelector
             modes={modes}
