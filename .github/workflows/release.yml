@@ -77,13 +77,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # Fetch a prebuilt tauri-cli binary instead of compiling it from
-      # source.  `cargo install tauri-cli` was burning 5-10 minutes
-      # every run rebuilding the CLI's own 200+ dependency tree.
+      # Fetch a prebuilt tauri-cli binary via cargo-binstall instead of
+      # compiling it from source.  `cargo install tauri-cli` was burning
+      # 5-10 minutes every run rebuilding the CLI's own 200+ dependency
+      # tree.  cargo-binstall pulls the official prebuilt from tauri's
+      # GitHub releases based on the semver range, so we don't have to
+      # pin to an exact version the way taiki-e/install-action requires.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install Tauri CLI
-        uses: taiki-e/install-action@v2
-        with:
-          tool: tauri-cli@^2
+        shell: pwsh
+        run: cargo binstall tauri-cli --version "^2" --no-confirm --force
 
       # Do NOT use `shell: bash` here — Git Bash prepends /usr/bin to PATH,
       # which shadows MSVC `link.exe` with GNU coreutils' `link` (a hardlink
