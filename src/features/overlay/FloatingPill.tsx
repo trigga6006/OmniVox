@@ -230,12 +230,20 @@ export function FloatingPill() {
     }
 
     if (!expanded && wasExpanded) {
-      // expanded → idle: fade content out, then shrink.
+      // expanded → idle.
+      //
+      // The old branch delayed the resize 200 ms "to let the content
+      // fade out."  That was load-bearing back when the opacity fade
+      // ran in both directions (200 ms out / 200 ms in).  Since the
+      // hide side is now instant (see the opacity style on the pill's
+      // active-content wrapper), the 200 ms wait was pure dead space
+      // — it left a tiny idle-sized pill sitting inside a still-
+      // expanded transparent window for a fifth of a second after the
+      // menu / panel closed.  Resize immediately instead.  Content is
+      // either already unmounted (idle path) or gated to opacity 0 on
+      // the same tick, so nothing flashes.
       setShowContent(false);
-      showContentTimerRef.current = window.setTimeout(() => {
-        resizeOverlay(targetW, targetH);
-        showContentTimerRef.current = null;
-      }, 200);
+      resizeOverlay(targetW, targetH);
       return;
     }
     // idle → expanded OR expanded → expanded (new dims): hide content,
@@ -896,28 +904,36 @@ export function FloatingPill() {
         transition: "opacity 0.25s ease",
       }}
       className={cn(
-        // The pill — sized to match resizeOverlay dimensions
+        // The pill — sized to match resizeOverlay dimensions.  Every
+        // state carries `border border-transparent` so the 1 px border
+        // is always present; only its COLOR changes between states.
+        // Without this, idle→active would transition border-width
+        // from 0→1 px, which can't interpolate and snaps instead —
+        // producing a visible one-frame jolt.  Colour + background
+        // transitions below pick up those same class changes and
+        // smooth them over 200 ms.
         isIdle && !showModeSelector ? "w-[56px] h-[26px]" : "w-[200px] h-[34px]",
-        "relative flex items-center overflow-hidden shrink-0",
+        "relative flex items-center overflow-hidden shrink-0 border border-transparent rounded-full",
+        "transition-[border-color,background-color,box-shadow] duration-200 ease-out",
         isProcessing ? "cursor-default" : "cursor-pointer",
 
-        // Idle
-        isIdle && "bg-[var(--color-pill-bg)] rounded-full",
+        // Idle (just the base background; border inherits transparent).
+        isIdle && "bg-[var(--color-pill-bg)]",
 
         // Recording
-        isRecording && "bg-[var(--color-pill-bg)] border border-recording-500/30 rounded-full gap-2.5 px-3.5",
+        isRecording && "bg-[var(--color-pill-bg)] border-recording-500/30 gap-2.5 px-3.5",
 
         // Processing
-        isProcessing && "bg-[var(--color-pill-bg)] border border-amber-500/25 rounded-full gap-2.5 px-3.5",
+        isProcessing && "bg-[var(--color-pill-bg)] border-amber-500/25 gap-2.5 px-3.5",
 
         // Structuring (Structured Mode — LLM slot extraction in flight)
-        isStructuring && "bg-[var(--color-pill-bg)] border border-violet-400/30 rounded-full gap-2.5 px-3.5",
+        isStructuring && "bg-[var(--color-pill-bg)] border-violet-400/30 gap-2.5 px-3.5",
 
         // Success
-        isSuccess && "bg-[var(--color-pill-bg)] border border-success/30 rounded-full gap-2.5 px-3.5",
+        isSuccess && "bg-[var(--color-pill-bg)] border-success/30 gap-2.5 px-3.5",
 
         // Error
-        isError && "bg-[var(--color-pill-bg)] border border-recording-500/35 rounded-full gap-2.5 px-3.5",
+        isError && "bg-[var(--color-pill-bg)] border-recording-500/35 gap-2.5 px-3.5",
       )}
     >
       {/* ── Idle: sleek ambient waveform ── */}
@@ -929,7 +945,21 @@ export function FloatingPill() {
           className="flex items-center w-full h-full gap-2.5"
           style={{
             opacity: showContent ? 1 : 0,
-            transition: "opacity 0.2s ease",
+            // Asymmetric transition — key polish fix.
+            // Before: `opacity 0.2s ease` applied in both directions,
+            // which meant the 80 ms hide window (set before resize)
+            // cut off the fade-out at ~60 % opacity, then React flipped
+            // showContent back to true and the fade reversed.  User
+            // perception: "content dims and brightens for no reason"
+            // = the one-frame flicker.
+            // Now: hide is instant (transition: "none" when going
+            // false), so no partial fade is ever visible.  Show uses a
+            // 40 ms delay to give WebView2 a margin beyond the 80 ms
+            // resize window before the pixels arrive, then fades in
+            // cleanly over 220 ms.
+            transition: showContent
+              ? "opacity 220ms cubic-bezier(0.4, 0, 0.2, 1) 40ms"
+              : "none",
           }}
         >
           {isProcessing && (

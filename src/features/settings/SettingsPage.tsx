@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
   updateSettings,
@@ -21,8 +22,6 @@ import {
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { StructuredModeSection } from "./StructuredModeSection";
-import { LlmModelsPage } from "./LlmModelsPage";
 
 const outputModes = [
   { id: "clipboard", label: "Clipboard", icon: Clipboard },
@@ -387,7 +386,12 @@ export function SettingsPage() {
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const [showVoiceCommands, setShowVoiceCommands] = useState(false);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
-  const [showLlmModelsPage, setShowLlmModelsPage] = useState(false);
+  // Version is sourced from tauri.conf.json via the Tauri app API
+  // rather than hardcoded — so the About section stays correct across
+  // releases without anyone remembering to hand-edit this file.  Null
+  // until the async call resolves; the label gracefully falls back to
+  // just "OmniVox" in the meantime.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -411,6 +415,10 @@ export function SettingsPage() {
     getPlatformInfo()
       .then(setPlatformInfo)
       .catch((e) => console.error("Failed to load platform info:", e));
+
+    getVersion()
+      .then(setAppVersion)
+      .catch((e) => console.error("Failed to load app version:", e));
 
     // Stay in sync when settings change from the overlay pill (or any window)
     const unlisten = onSettingsChanged((s) => {
@@ -534,19 +542,6 @@ export function SettingsPage() {
     updateSettings(updated).catch(console.error);
   }, [settings]);
 
-  /** Single-field patch helper used by the Structured Mode section.  Mirrors
-   *  the existing per-field handlers but avoids the manual `{ ...settings, ... }`
-   *  incantation for every individual setting. */
-  const applyPatch = useCallback(
-    async (patch: Partial<AppSettings>): Promise<void> => {
-      if (!settings) return;
-      const updated: AppSettings = { ...settings, ...patch };
-      setSettings(updated);
-      await updateSettings(updated);
-    },
-    [settings]
-  );
-
   const currentTheme = settings?.theme ?? "dark";
   const handleThemeChange = useCallback(
     (theme: string) => {
@@ -558,11 +553,6 @@ export function SettingsPage() {
     },
     [settings]
   );
-
-  // LLM models subpage — swaps the whole Settings view when active.
-  if (showLlmModelsPage) {
-    return <LlmModelsPage onBack={() => setShowLlmModelsPage(false)} />;
-  }
 
   return (
     <div className="flex h-full flex-col p-6 overflow-y-auto">
@@ -1288,12 +1278,9 @@ export function SettingsPage() {
           onSaved={handleHotkeySaved}
         />
 
-        {/* ── Structured Mode ── */}
-        <StructuredModeSection
-          settings={settings}
-          onPatch={applyPatch}
-          onOpenLlmModels={() => setShowLlmModelsPage(true)}
-        />
+        {/* Structured Mode config + LLM model manager live on the
+            Models page now — one place for "pick and tune a model,"
+            whether it's Whisper or an LLM. */}
 
         {/* ── About ── */}
         <section
@@ -1307,7 +1294,9 @@ export function SettingsPage() {
             </span>
           </div>
 
-          <p className="text-sm text-text-primary">OmniVox v0.2.1</p>
+          <p className="text-sm text-text-primary">
+            OmniVox{appVersion ? ` v${appVersion}` : ""}
+          </p>
           <p className="text-xs text-text-muted mt-1 flex items-center gap-1.5">
             <span>Local-first AI dictation</span>
             <span className="text-text-muted/40 mx-0.5">·</span>

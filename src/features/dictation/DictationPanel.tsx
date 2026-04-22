@@ -137,6 +137,12 @@ function TranscriptionCard({ text }: { text: string }) {
 
 /* ── Milestones ── */
 
+// Milestone labels above 100k reference real word counts from
+// well-known books and collected works, so each new tier feels earned
+// rather than arbitrary.  Curve roughly follows the "next step is
+// ~1.3–1.5× the previous" shape already established by 25k→50k→100k,
+// so users hit a new tier every few weeks of heavy dictation instead
+// of grinding for months between rewards.
 const MILESTONES = [
   { words: 0, label: "Just Getting Started" },
   { words: 100, label: "First Steps" },
@@ -147,6 +153,18 @@ const MILESTONES = [
   { words: 25000, label: "Novelist in Training" },
   { words: 50000, label: "Novel Complete" },
   { words: 100000, label: "Prolific Author" },
+  { words: 125000, label: "The Great Gatsby × 2.5" },      // Gatsby ≈ 50k
+  { words: 150000, label: "Literary Luminary" },           // avg hefty literary novel
+  { words: 200000, label: "Fellowship Scribe" },           // LoTR: The Fellowship ≈ 187k
+  { words: 250000, label: "Moby-Dick Whisperer" },         // Moby-Dick ≈ 209k, rounded up
+  { words: 300000, label: "Epic Pen" },                    // Anna Karenina ≈ 349k
+  { words: 400000, label: "Saga Weaver" },                 // Stephen King's *It* ≈ 445k
+  { words: 500000, label: "Voice of an Era" },             // Les Misérables ≈ 530k
+  { words: 587000, label: "Tolstoy's Peer" },              // War and Peace ≈ 587k
+  { words: 650000, label: "Atlas Lifter" },                // Atlas Shrugged ≈ 645k
+  { words: 783000, label: "Scripturist" },                 // KJV Bible ≈ 783k
+  { words: 884000, label: "The Bard Incarnate" },          // complete Shakespeare ≈ 884k
+  { words: 1000000, label: "Million-Word Sage" },          // seven-figure voice
 ];
 
 function getCurrentMilestone(words: number) {
