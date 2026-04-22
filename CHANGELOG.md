@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.5
+
+### New Features
+
+- **"Raw" paste button in the Structured panel** — drop-in escape hatch when the LLM misreads your dictation. Sits right of the primary Paste button, styled amber so it reads as a lighter-weight commit than the structured one. Pastes the exact pre-structuring ASR transcript via the existing `paste_structured_output` command (the parameter is misnamed "markdown" but accepts any string).
+- **Full-bar dictation mode in the Structured panel** — when you fire a dictation into an open preview, the action bar now collapses every button except the mic entirely out of layout and expands the mic to fill the full row with a "Listening · click to stop" label. Replaces the earlier shrink-to-icons approach, which left awkward dead space between icon pills and the recording waveform.
+- **Models page: tabbed layout + Structured Mode live here now** — the page is split into **Speech Recognition** and **LLM Structuring** tabs (amber / violet accents match the rest of the design system). Structured Mode config (enable toggle, min-chars slider, LLM timeout slider, Test prompt button) moved out of Settings into a compact strip above the LLM model list. Settings no longer has a Structured Mode card; one hub for "pick + tune your models."
+- **More word-count milestones, up to one million** — the previous ladder topped out at "Prolific Author" (100k). Added 12 new tiers with real-book word-count references: The Great Gatsby × 2.5 (125k), Literary Luminary (150k), Fellowship Scribe (200k — *Fellowship of the Ring*), Moby-Dick Whisperer (250k), Epic Pen (300k — *Anna Karenina*), Saga Weaver (400k — *It*), Voice of an Era (500k — *Les Misérables*), Tolstoy's Peer (587k — *War and Peace*), Atlas Lifter (645k — *Atlas Shrugged*), Scripturist (783k — KJV), The Bard Incarnate (884k — complete Shakespeare), Million-Word Sage (1,000,000).
+
+### Improvements
+
+- **Pill animation polish pass** — three frame-level flickers hunted down:
+  - The active-content opacity transition was symmetric (200 ms out / 200 ms in), but the 80 ms resize window cut the fade-out off at ~60 % opacity before flipping `showContent` back to true — so the content visibly dimmed and brightened on every expand. Hide is now instant; show is a 220 ms fade-in with a 40 ms grace delay. No more dim-then-brighten.
+  - Idle → active previously transitioned the pill border from `0 px` to `1 px solid <state>/30`, which can't interpolate and snapped. Every state now carries `border border-transparent` as the base, so only the *color* changes; the 1 px border is always present and transitions smoothly over 200 ms.
+  - Removed the 200 ms "expanded → idle fade-out wait" that was load-bearing back when the opacity fade ran in both directions. With the hide now instant, that delay was pure dead time — the pill snapped to idle-size while the window stayed expanded for a fifth of a second, leaving a tiny pill floating in an oversized transparent window. Resize is immediate on expanded → idle now.
+- **Dismiss button tightened** — dropped the `ESC` kbd chip from the Structured panel's Dismiss button. Gained back ~28 px of horizontal space in the action bar so the mic button no longer gets clipped by the panel's right edge. Tooltip still surfaces the shortcut on hover.
+- **About version auto-syncs** — Settings → About now reads the app version from `tauri.conf.json` via `getVersion()` instead of hardcoding. No more stale "v0.2.1" shown while the app is actually at 0.2.5.
+- **LLM Structuring tab — no delete** — removed the Trash2 button from each LLM model row. Language models are download-only from the UI now; prevents the easy "oops, I just nuked my active Structured Mode model" mistake.
+- **Voxify alias extension and more** — carry-over from v0.2.4.
+
+### Bug Fixes
+
+- **"No Structured Mode models in the catalog" empty state** — the new LlmModelsSection was using a `mountedRef` pattern that flipped to `false` during StrictMode's mount → cleanup → remount cycle and never reset, so every `setModels` / `setSettings` call was silently dropped. Added an explicit `mountedRef.current = true` on mount. (This was also why the section appeared unclickable — there were no rows to click.)
+
 ## v0.2.4
 
 ### Bug Fixes
