@@ -1,8 +1,8 @@
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::oneshot;
 
@@ -26,6 +26,7 @@ use crate::llm::schema::SlotExtraction;
 ///   degrades to plain dictation instead of queuing.
 pub struct LlmRunner {
     tx: SyncSender<LlmRequest>,
+    busy: Arc<AtomicBool>,
     last_used_ns: Arc<AtomicI64>,
     /// Kept alive to stop the worker cleanly on drop.
     _worker: WorkerHandle,
@@ -33,6 +34,8 @@ pub struct LlmRunner {
 
 struct LlmRequest {
     text: String,
+    screen_tokens: Vec<String>,
+    source_app: Option<String>,
     reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
 }
 
@@ -40,6 +43,21 @@ struct LlmRequest {
 /// after its current extraction.
 struct WorkerHandle {
     _join: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+struct BusyReset(Arc<AtomicBool>);
+
+impl Drop for BusyReset {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 impl LlmRunner {
@@ -50,7 +68,9 @@ impl LlmRunner {
     /// STATUS_STACK_BUFFER_OVERRUN on Windows without this.
     pub fn spawn<E: LlmEngine + 'static>(engine: E) -> AppResult<Self> {
         let (tx, rx) = sync_channel::<LlmRequest>(1);
-        let last_used_ns = Arc::new(AtomicI64::new(Instant::now().elapsed().as_nanos() as i64));
+        let busy = Arc::new(AtomicBool::new(false));
+        let last_used_ns = Arc::new(AtomicI64::new(now_ns()));
+        let worker_busy = Arc::clone(&busy);
         let worker_last_used = Arc::clone(&last_used_ns);
 
         let join = thread::Builder::new()
@@ -59,19 +79,22 @@ impl LlmRunner {
             .spawn(move || {
                 let engine = engine;
                 while let Ok(req) = rx.recv() {
-                    let result = engine.extract_slots(&req.text);
+                    let _busy_reset = BusyReset(Arc::clone(&worker_busy));
+                    let result = engine.extract_slots_with_context(
+                        &req.text,
+                        &req.screen_tokens,
+                        req.source_app.as_deref(),
+                    );
                     // Receiver may have been dropped by a timeout — ignore.
                     let _ = req.reply_tx.send(result);
-                    worker_last_used.store(
-                        Instant::now().elapsed().as_nanos() as i64,
-                        Ordering::Relaxed,
-                    );
+                    worker_last_used.store(now_ns(), Ordering::Relaxed);
                 }
             })
             .map_err(|e| AppError::Llm(format!("spawn LLM worker failed: {e}")))?;
 
         Ok(Self {
             tx,
+            busy,
             last_used_ns,
             _worker: WorkerHandle {
                 _join: Mutex::new(Some(join)),
@@ -91,18 +114,44 @@ impl LlmRunner {
         text: String,
         timeout: Duration,
     ) -> AppResult<SlotExtraction> {
+        self.extract_with_context_and_timeout(text, Vec::new(), None, timeout)
+            .await
+    }
+
+    /// Submit a request with optional screen-context tokens and await the
+    /// response with a timeout.  Behaviour identical to `extract_with_timeout`
+    /// when `screen_tokens` is empty (Phase 2 caller gates on a setting).
+    pub async fn extract_with_context_and_timeout(
+        &self,
+        text: String,
+        screen_tokens: Vec<String>,
+        source_app: Option<String>,
+        timeout: Duration,
+    ) -> AppResult<SlotExtraction> {
         let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(AppError::Llm("LLM busy — another extraction in flight".into()));
+        }
+
         let req = LlmRequest {
             text,
+            screen_tokens,
+            source_app,
             reply_tx,
         };
 
         match self.tx.try_send(req) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                self.busy.store(false, Ordering::Release);
                 return Err(AppError::Llm("LLM busy — another extraction in flight".into()));
             }
             Err(TrySendError::Disconnected(_)) => {
+                self.busy.store(false, Ordering::Release);
                 return Err(AppError::Llm("LLM worker has stopped".into()));
             }
         }
@@ -117,9 +166,68 @@ impl LlmRunner {
         }
     }
 
-    /// Nanoseconds since process start when the worker last finished a job.
-    /// Used by the idle-unload timer in AppState.
+    /// Unix timestamp in nanoseconds when the worker last finished a job.
     pub fn last_used_ns(&self) -> i64 {
         self.last_used_ns.load(Ordering::Relaxed)
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    struct SlowEngine {
+        delay: Duration,
+    }
+
+    impl LlmEngine for SlowEngine {
+        fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction> {
+            std::thread::sleep(self.delay);
+            Ok(SlotExtraction {
+                goal: user_text.to_string(),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_second_request_while_native_inference_is_running() {
+        let runner = Arc::new(
+            LlmRunner::spawn(SlowEngine {
+                delay: Duration::from_millis(100),
+            })
+            .unwrap(),
+        );
+
+        let first = {
+            let runner = Arc::clone(&runner);
+            tokio::spawn(async move {
+                runner
+                    .extract_with_timeout("first".into(), Duration::from_secs(1))
+                    .await
+            })
+        };
+
+        for _ in 0..100 {
+            if runner.is_busy() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(runner.is_busy());
+
+        let second = runner
+            .extract_with_timeout("second".into(), Duration::from_secs(1))
+            .await;
+        assert!(second.unwrap_err().to_string().contains("busy"));
+
+        let first_result = first.await.unwrap().unwrap();
+        assert_eq!(first_result.goal, "first");
+        assert!(!runner.is_busy());
     }
 }

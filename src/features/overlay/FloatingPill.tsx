@@ -107,6 +107,7 @@ export function FloatingPill() {
   // realistic gap between two adjacent Tauri event emits.
   const dictatingInPanelRef = useRef(false);
   const dictatingGraceTimerRef = useRef<number | null>(null);
+  const degradedTimerRef = useRef<number | null>(null);
   const handleDictatingChange = useCallback((active: boolean) => {
     if (dictatingGraceTimerRef.current !== null) {
       window.clearTimeout(dictatingGraceTimerRef.current);
@@ -265,6 +266,14 @@ export function FloatingPill() {
         window.clearTimeout(showContentTimerRef.current);
         showContentTimerRef.current = null;
       }
+      if (dictatingGraceTimerRef.current !== null) {
+        window.clearTimeout(dictatingGraceTimerRef.current);
+        dictatingGraceTimerRef.current = null;
+      }
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+        degradedTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -368,7 +377,13 @@ export function FloatingPill() {
       console.warn("[structured-mode] degraded:", reason);
       setStructuredDegraded(reason);
       // Keep the banner visible long enough to actually be read.
-      window.setTimeout(() => setStructuredDegraded(null), 15000);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 15000);
     });
 
     return () => {

@@ -9,6 +9,7 @@ pub mod models;
 pub mod output;
 pub mod pipeline;
 pub mod postprocess;
+pub mod screen_context;
 pub mod state;
 pub mod storage;
 

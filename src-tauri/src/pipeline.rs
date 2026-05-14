@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{Emitter, Manager};
+use tokio::sync::oneshot;
 
 use crate::asr::engine::AsrEngine;
 use crate::error::ErrorCode;
 use crate::llm::schema::SlotExtraction;
 use crate::llm::template::render_markdown;
 use crate::postprocess::processor::TextProcessor;
+use crate::screen_context::ScreenContext;
 use crate::state::AppState;
 
 /// Payload emitted on `structured-output-ready` so the overlay can render the
@@ -274,6 +276,9 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     // Load settings once — used for auto-switch and audio ducking below.
     let settings = crate::storage::settings::get_settings(&state.db).ok();
+    if let Ok(mut guard) = state.preview_done_rx.lock() {
+        *guard = None;
+    }
 
     // Auto-switch context mode based on the foreground application.
     if let Some(hwnd) = fg {
@@ -327,6 +332,30 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
         let amount = settings.as_ref().map(|s| s.ducking_amount).unwrap_or(70);
         let factor = 1.0 - (amount.min(100) as f32 / 100.0);
         crate::audio::ducking::duck(Some(factor));
+    }
+
+    // Spawn screen-context capture in parallel with the user speaking.  By
+    // the time stop_and_transcribe runs, the receiver typically already has
+    // a value — capture cost (UIA tree walk, ~50–200 ms) is fully hidden
+    // under the user's utterance.
+    if settings.as_ref().map(|s| s.use_screen_context).unwrap_or(true) {
+        let (tx, rx) = oneshot::channel::<ScreenContext>();
+        if let Ok(mut guard) = state.screen_context_rx.lock() {
+            *guard = Some(rx);
+        }
+        let fg_for_task = fg;
+        tokio::task::spawn_blocking(move || {
+            let ctx = crate::screen_context::capture(fg_for_task);
+            // Receiver may have been dropped if the user stopped immediately
+            // and we already moved past consumption — silently OK.
+            let _ = tx.send(ctx);
+        });
+    } else {
+        // Feature toggled off — clear any stale receiver from a prior run
+        // so the consumer side never grabs leftover context.
+        if let Ok(mut guard) = state.screen_context_rx.lock() {
+            *guard = None;
+        }
     }
 
     let mut audio = match state.audio.lock() {
@@ -401,6 +430,7 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
             // Capacity-1 sync channel: if worker is busy when sender tries
             // to send, try_send fails fast and we skip this round.
             let (tx_audio, rx_audio) = std::sync::mpsc::sync_channel::<Vec<f32>>(1);
+            let (preview_done_tx, preview_done_rx) = oneshot::channel::<()>();
 
             // Worker thread — owns the WhisperState for the duration of
             // this recording session.  Exits when the async task drops its
@@ -408,26 +438,48 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
             let worker_handle = app_handle.clone();
             let worker_engine = engine.clone();
             let worker_is_rec = is_recording.clone();
-            let _ = std::thread::Builder::new()
+            let preview_worker = std::thread::Builder::new()
                 .name("omnivox-preview".into())
                 .spawn(move || {
                     use std::sync::atomic::Ordering;
-                    let mut state = match worker_engine.create_preview_state() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Preview: create_state failed: {e}");
-                            return;
-                        }
-                    };
-                    while let Ok(audio) = rx_audio.recv() {
+                    use std::sync::mpsc::RecvTimeoutError;
+                    let mut preview_state: Option<whisper_rs::WhisperState> = None;
+                    loop {
+                        let audio = match rx_audio
+                            .recv_timeout(std::time::Duration::from_millis(250))
+                        {
+                            Ok(audio) => audio,
+                            Err(RecvTimeoutError::Timeout) => {
+                                if !worker_is_rec.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        };
                         // Cancellation check — if user stopped recording
                         // between send and receive, skip inference.
                         if !worker_is_rec.load(Ordering::Relaxed) {
                             break;
                         }
-                        match worker_engine.transcribe_preview_with_state(&mut state, &audio) {
+                        if preview_state.is_none() {
+                            preview_state = match worker_engine.create_preview_state() {
+                                Ok(s) => Some(s),
+                                Err(e) => {
+                                    eprintln!("Preview: create_state failed: {e}");
+                                    break;
+                                }
+                            };
+                        }
+                        let state = preview_state.as_mut().expect("preview_state set above");
+
+                        match worker_engine.transcribe_preview_with_state(state, &audio) {
                             Ok(text) if !text.is_empty() => {
-                                let _ = worker_handle.emit("transcription-preview", &text);
+                                if worker_is_rec.load(Ordering::Relaxed) {
+                                    let _ = worker_handle.emit("transcription-preview", &text);
+                                } else {
+                                    break;
+                                }
                             }
                             Ok(_) => {}
                             Err(e) => {
@@ -436,7 +488,17 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                         }
                     }
                     // state drops here, freeing decode buffers.
+                    let _ = preview_done_tx.send(());
                 });
+
+            match preview_worker {
+                Ok(_) => {
+                    if let Ok(mut guard) = state.preview_done_rx.lock() {
+                        *guard = Some(preview_done_rx);
+                    }
+                }
+                Err(e) => eprintln!("Preview: failed to spawn worker: {e}"),
+            }
 
             // Async snapshot task — samples audio every 3 s, forwards to
             // worker.  When recording stops it returns, dropping tx_audio
@@ -484,6 +546,23 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
     }
 }
 
+async fn wait_for_preview_worker(state: &AppState) {
+    let rx = state
+        .preview_done_rx
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+
+    if let Some(rx) = rx {
+        match tokio::time::timeout(Duration::from_millis(1500), rx).await {
+            Ok(Ok(())) | Ok(Err(_)) => {}
+            Err(_) => eprintln!(
+                "Preview worker still releasing decode buffers; continuing with final transcription"
+            ),
+        }
+    }
+}
+
 /// Stop capture, run Whisper inference, post-process, and output the text.
 pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState) {
     // Restore system volume immediately — don't wait for transcription.
@@ -496,6 +575,37 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // voice_commands/command_send, ship_mode) — each a full table scan and
     // HashMap build.  Cache once, reuse everywhere.
     let settings = crate::storage::settings::get_settings(&state.db).ok();
+
+    // Drain the screen-context capture spawned at recording start.  Wait at
+    // most 50 ms — capture should already be done since the user has been
+    // speaking for a while.  On timeout we proceed without context.
+    let screen_context: Option<ScreenContext> = if settings
+        .as_ref()
+        .map(|s| s.use_screen_context)
+        .unwrap_or(true)
+    {
+        let rx = state
+            .screen_context_rx
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        if let Some(rx) = rx {
+            match tokio::time::timeout(Duration::from_millis(50), rx).await {
+                Ok(Ok(ctx)) => {
+                    if ctx.is_empty() {
+                        None
+                    } else {
+                        Some(ctx)
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 1. Stop capture and get raw audio samples
     let samples = {
@@ -513,16 +623,15 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
+    // 1a. Let the live-preview worker drop its WhisperState before final
+    // transcription allocates a fresh state. This avoids overlapping decode
+    // buffers on smaller GPUs and 16 GB machines.
+    wait_for_preview_worker(state).await;
+
     if samples.is_empty() {
         let _ = app_handle.emit("recording-state-change", "idle");
         return;
     }
-
-    // 1a. Give the live preview task time to notice is_recording=false and exit.
-    //     The preview checks the flag before and after inference. A short yield
-    //     lets it release its WhisperState (and ~500 MB of decode buffers) before
-    //     the final transcription allocates its own. Critical on 16 GB machines.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // 1b. Conditionally denoise audio with RNNoise before Whisper.
     let mut samples = samples;
@@ -553,20 +662,48 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
-    let transcription = match tokio::task::spawn_blocking(move || engine.transcribe(&samples)).await
+    // Snapshot the current vocabulary prompt so we can restore it after this
+    // transcription — screen-context tokens are dynamic per utterance and
+    // must not bleed into subsequent calls.  When no merged prompt is
+    // produced (no screen context, or feature off) we leave the engine
+    // untouched and skip the restore.
+    let saved_initial_prompt = engine.get_initial_prompt();
+    let merged_prompt = screen_context.as_ref().and_then(|ctx| {
+        crate::screen_context::build_initial_prompt(ctx, saved_initial_prompt.as_deref())
+    });
+    let prompt_was_overridden = merged_prompt.is_some();
+    if let Some(p) = merged_prompt.as_ref() {
+        engine.set_initial_prompt(Some(p.clone()));
+    }
+
+    let engine_for_transcribe = Arc::clone(&engine);
+    let transcription = match tokio::task::spawn_blocking(move || {
+        engine_for_transcribe.transcribe(&samples)
+    })
+    .await
     {
         Ok(Ok(t)) => t,
         Ok(Err(e)) => {
+            if prompt_was_overridden {
+                engine.set_initial_prompt(saved_initial_prompt.clone());
+            }
             eprintln!("Transcription failed: {e}");
             emit_error(app_handle, ErrorCode::TranscriptionFailed, format!("Transcription failed: {e}"));
             return;
         }
         Err(e) => {
+            if prompt_was_overridden {
+                engine.set_initial_prompt(saved_initial_prompt.clone());
+            }
             eprintln!("Transcription task panicked: {e}");
             emit_error(app_handle, ErrorCode::TranscriptionPanicked, format!("Transcription crashed: {e}"));
             return;
         }
     };
+
+    if prompt_was_overridden {
+        engine.set_initial_prompt(saved_initial_prompt);
+    }
 
     if transcription.text.is_empty() {
         let _ = app_handle.emit("recording-state-change", "idle");
@@ -689,16 +826,38 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             if let Some(runner) = runner_opt {
                 let _ = app_handle.emit("recording-state-change", "structuring");
                 let t0 = std::time::Instant::now();
+
+                // Phase 2: when both Structured Mode and the screen-context
+                // sub-toggle are on, feed the captured tokens into Qwen so
+                // it can substitute phonetic guesses with verbatim screen
+                // text.  Otherwise pass empty tokens — the runner falls
+                // through to the legacy single-arg prompt path.
+                let pass_screen_tokens = settings
+                    .as_ref()
+                    .map(|s| s.use_screen_context && s.structured_use_screen_context)
+                    .unwrap_or(false);
+                let (sm_tokens, sm_app) = if pass_screen_tokens {
+                    screen_context
+                        .as_ref()
+                        .map(|c| (c.tokens.clone(), c.source_app.clone()))
+                        .unwrap_or_default()
+                } else {
+                    (Vec::new(), None)
+                };
+
                 crate::llm::diaglog::log(&format!(
-                    "pipeline: starting extraction input_chars={} llm_input_chars={} timeout={}s min_chars={}",
+                    "pipeline: starting extraction input_chars={} llm_input_chars={} timeout={}s min_chars={} screen_tokens={}",
                     processed_text.chars().count(),
                     structured_input.chars().count(),
                     llm_timeout,
-                    min_chars
+                    min_chars,
+                    sm_tokens.len(),
                 ));
                 match runner
-                    .extract_with_timeout(
+                    .extract_with_context_and_timeout(
                         structured_input.clone(),
+                        sm_tokens,
+                        sm_app,
                         Duration::from_secs(llm_timeout as u64),
                     )
                     .await

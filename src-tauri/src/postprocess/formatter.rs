@@ -77,12 +77,57 @@ fn strip_line_marker(line: &str) -> &str {
         }
     }
 
+    // Some existing tests/outputs contain a double-mojibake form of the same
+    // markers. Keep these as escapes so the source stays unambiguous.
+    for marker in &[
+        "\u{00C3}\u{00A2}\u{00E2}\u{201A}\u{00AC}\u{00C2}\u{00A2} ",
+        "\u{00C3}\u{201A}\u{00C2}\u{00B7} ",
+    ] {
+        if s.starts_with(marker) {
+            return s[marker.len()..].trim_start();
+        }
+    }
+    if let Some((marker, rest)) = s.split_once(' ') {
+        let is_bulletish = marker.chars().any(|c| {
+            matches!(c, '\u{00A2}' | '\u{00B7}' | '\u{2022}' | '\u{00AC}')
+        }) && marker.chars().all(|c| !c.is_ascii_alphanumeric());
+        if is_bulletish {
+            return rest.trim_start();
+        }
+    }
+
     // Numbered markers: "1. ", "2) ", "10. ", etc.
     if let Some(rest) = strip_numbered_prefix(s) {
         return rest;
     }
 
     s
+}
+
+/// True when the input already contains obvious structural markers from
+/// Markdown / list hallucination. Short dictations normally bypass formatter
+/// logic, but these markers are safe to clean even when the text is brief.
+fn has_explicit_markers(text: &str) -> bool {
+    if text.lines().any(|line| {
+        let s = line.trim_start();
+        strip_line_marker(s) != s
+    }) || strip_inline_markers(text) != text
+    {
+        return true;
+    }
+
+    // Legacy fallback for older mojibake marker spellings already present in
+    // tests / saved transcripts. The stripping side handles those generically.
+    text.lines().any(|line| {
+        let s = line.trim_start();
+        s.starts_with("# ")
+            || s.starts_with("##")
+            || s.starts_with("- ")
+            || s.starts_with("* ")
+            || s.starts_with("â€¢ ")
+            || s.starts_with("Â· ")
+            || strip_numbered_prefix(s).is_some()
+    })
 }
 
 /// Strip a leading numbered list marker like "1. " or "2) " from a string.
@@ -101,11 +146,23 @@ fn strip_numbered_prefix(s: &str) -> Option<&str> {
         return None;
     }
 
-    if (bytes[i] == b'.' || bytes[i] == b')') && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
-        Some(s[i + 2..].trim_start())
-    } else {
-        None
+    if (bytes[i] != b'.' && bytes[i] != b')') || i + 1 >= bytes.len() || bytes[i + 1] != b' ' {
+        return None;
     }
+
+    let rest = s[i + 2..].trim_start();
+    let Some(first) = rest.as_bytes().first() else {
+        return None;
+    };
+
+    // Do not strip decimal/number continuations such as "1. 5 million" or
+    // "2. 2026 goals". Whisper occasionally inserts a space after a decimal
+    // point; treating that as a list marker silently corrupts the number.
+    if first.is_ascii_digit() {
+        return None;
+    }
+
+    Some(rest)
 }
 
 /// Strip **bold** and __bold__ inline markers.
@@ -488,6 +545,17 @@ fn detect_repeated_prefix(sentences: &[String], start: usize) -> Option<usize> {
 
 // ── Inline comma list detection ──────────────────────────────────────────
 
+/// Repeated sentence starters are only promoted to bullets when nearby speech
+/// explicitly frames the run as a list. Without this, ordinary long dictations
+/// like "I want to..." repeated five times become surprise bullet lists.
+fn has_nearby_list_cue(sentences: &[String], start: usize) -> bool {
+    if start > 0 && detect_list_header(&sentences[start - 1]).is_some() {
+        return true;
+    }
+
+    starts_with_ordinal(&sentences[start])
+}
+
 /// Detect an inline comma-separated list within a single sentence.
 /// Returns (prefix, items) if found — e.g., "I need" and ["milk", "eggs", "bread"].
 fn detect_inline_list(sentence: &str) -> Option<(String, Vec<String>)> {
@@ -659,15 +727,20 @@ const MIN_WORDS_FOR_LIST: usize = 40;
 /// Pre-strips existing bullet/heading markers from input to avoid double-marking.
 /// This is a no-op when no list pattern is detected or text is too short.
 pub fn format_lists(text: &str) -> String {
+    // Short text guard runs before marker stripping. This preserves brief
+    // numeric dictations like "1. 5 million dollars" where Whisper inserted a
+    // space after a decimal point; stripping first would delete the leading 1.
+    if text.split_whitespace().count() < MIN_WORDS_FOR_LIST {
+        if has_explicit_markers(text) {
+            return strip_existing_markers(text);
+        }
+        return text.to_string();
+    }
+
     // Pre-strip any existing markers (Whisper markdown hallucinations, user
     // saying "dash" / "bullet point", etc.) to avoid double-marking.
     let clean = strip_existing_markers(text);
     let text = &clean;
-
-    // Short text guard — don't apply list formatting to brief dictations.
-    if text.split_whitespace().count() < MIN_WORDS_FOR_LIST {
-        return text.to_string();
-    }
 
     let sentences = split_sentences(text);
 
@@ -728,13 +801,15 @@ pub fn format_lists(text: &str) -> String {
         }
 
         // Pattern 4: 3+ sentences with the same first 2 words.
-        if let Some(count) = detect_repeated_prefix(&sentences, i) {
-            for j in i..i + count {
-                let item = strip_leading_connector(&sentences[j]);
-                parts.push(format!("- {item}"));
+        if has_nearby_list_cue(&sentences, i) {
+            if let Some(count) = detect_repeated_prefix(&sentences, i) {
+                for j in i..i + count {
+                    let item = strip_leading_connector(&sentences[j]);
+                    parts.push(format!("- {item}"));
+                }
+                i += count;
+                continue;
             }
-            i += count;
-            continue;
         }
 
         // Pattern 5: Inline comma list within this sentence.
@@ -784,6 +859,26 @@ mod tests {
         assert_eq!(
             strip_existing_markers("1. First\n2. Second\n3. Third"),
             "First Second Third"
+        );
+    }
+
+    #[test]
+    fn does_not_strip_decimal_like_numbered_prefix() {
+        assert_eq!(
+            strip_existing_markers("1. 5 million dollars"),
+            "1. 5 million dollars"
+        );
+        assert_eq!(
+            format_lists("1. 5 million dollars"),
+            "1. 5 million dollars"
+        );
+    }
+
+    #[test]
+    fn does_not_strip_numeric_continuation_prefix() {
+        assert_eq!(
+            strip_existing_markers("2. 2026 goals are still written as a number"),
+            "2. 2026 goals are still written as a number"
         );
     }
 
@@ -970,8 +1065,22 @@ mod tests {
 
     #[test]
     fn repeated_sentence_starters() {
-        // Needs 5+ repeated prefix matches and 40+ words.
         let input = "I want to do a full Unicode compatibility test on the frontend application. \
+                     I want to do a transformer performance test on the backend service layer. \
+                     I want to check the output format for correctness and readability. \
+                     I want to verify the error handling works for all edge cases. \
+                     I want to run the full integration suite against the staging server.";
+        let result = format_lists(input);
+        assert!(
+            !result.contains("- "),
+            "Repeated sentence starters without an explicit list cue should stay prose: {result}"
+        );
+    }
+
+    #[test]
+    fn repeated_sentence_starters_after_header() {
+        let input = "Here are the tasks I want to complete before the next project release. \
+                     I want to do a full Unicode compatibility test on the frontend application. \
                      I want to do a transformer performance test on the backend service layer. \
                      I want to check the output format for correctness and readability. \
                      I want to verify the error handling works for all edge cases. \
@@ -1091,8 +1200,27 @@ mod tests {
         // Whisper output with existing dashes should not produce "- - item"
         let input = "Here are my tasks. - Update the code. - Fix the tests. - Deploy to staging.";
         let result = format_lists(input);
+        assert_eq!(
+            result,
+            "Here are my tasks. Update the code. Fix the tests. Deploy to staging."
+        );
         assert!(!result.contains("- - "), "Should not double-mark: {result}");
         assert!(!result.contains("- * "), "Should not have mixed markers: {result}");
+    }
+
+    #[test]
+    fn short_numbered_markers_are_cleaned_before_guard() {
+        let input = "1. First item\n2. Second item\n3. Third item";
+        assert_eq!(
+            format_lists(input),
+            "First item Second item Third item"
+        );
+    }
+
+    #[test]
+    fn short_unicode_markers_are_cleaned_before_guard() {
+        let input = "â€¢ First item\nâ€¢ Second item";
+        assert_eq!(format_lists(input), "First item Second item");
     }
 
     #[test]

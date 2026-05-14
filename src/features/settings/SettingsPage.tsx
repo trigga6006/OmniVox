@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
@@ -497,6 +497,23 @@ export function SettingsPage() {
     updateSettings(updated).catch(console.error);
   }, [settings]);
 
+  const handleScreenContextToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = { ...settings, use_screen_context: !settings.use_screen_context };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
+  const handleStructuredScreenContextToggle = useCallback(() => {
+    if (!settings) return;
+    const updated = {
+      ...settings,
+      structured_use_screen_context: !settings.structured_use_screen_context,
+    };
+    setSettings(updated);
+    updateSettings(updated).catch(console.error);
+  }, [settings]);
+
   const handleAudioDuckingToggle = useCallback(() => {
     if (!settings) return;
     const updated = { ...settings, audio_ducking: !settings.audio_ducking };
@@ -773,6 +790,90 @@ export function SettingsPage() {
               );
             })}
           </div>
+        </section>
+
+        {/* ── Screen Context ── */}
+        <section
+          className={cn(
+            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            settings?.use_screen_context
+              ? "border-amber-500/20"
+              : "border-border hover:border-border-hover"
+          )}
+          style={{ opacity: 0, animationDelay: "0.18s", animationFillMode: "forwards" }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <ScanText size={14} strokeWidth={2} className="text-text-muted" />
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Screen Context
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted mb-4 max-w-[440px]">
+            Read visible text in the focused app to transcribe file paths,
+            identifiers, and commands exactly as they appear on screen.
+            Capture runs in parallel with your dictation, so it adds no
+            perceived latency.{" "}
+            <span className="text-text-secondary">
+              Local only — never leaves your device.
+            </span>
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleScreenContextToggle}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                settings?.use_screen_context ? "bg-amber-500" : "bg-surface-3"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                  settings?.use_screen_context ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm text-text-secondary">
+              {settings?.use_screen_context ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+
+          {settings?.use_screen_context && settings?.structured_mode && (
+            <div className="mt-4 pt-4 border-t border-border/40">
+              <p className="text-xs text-text-muted mb-3 max-w-[440px]">
+                Also pass screen-context tokens into Structured Mode so the
+                LLM substitutes phonetic guesses with verbatim screen text.
+                Adds a small amount of LLM prefill latency on CPU; negligible
+                on GPU.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleStructuredScreenContextToggle}
+                  className={cn(
+                    "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                    settings?.structured_use_screen_context
+                      ? "bg-amber-500"
+                      : "bg-surface-3"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                      settings?.structured_use_screen_context
+                        ? "translate-x-6"
+                        : "translate-x-1"
+                    )}
+                  />
+                </button>
+                <span className="text-sm text-text-secondary">
+                  {settings?.structured_use_screen_context
+                    ? "Used in Structured Mode"
+                    : "Whisper only"}
+                </span>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* ── Live Preview ── */}

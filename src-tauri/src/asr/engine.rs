@@ -57,6 +57,13 @@ impl WhisperEngine {
         let ctx = WhisperContext::new_with_params(path, ctx_params)
             .map_err(|e| AppError::Asr(format!("Failed to load model '{path}': {e}")))?;
 
+        // Prove the first real transcription can allocate its decode state
+        // while we are still in the loader's GPU/CPU fallback path.
+        let state_probe = ctx
+            .create_state()
+            .map_err(|e| AppError::Asr(format!("Failed to allocate decode state: {e}")))?;
+        drop(state_probe);
+
         Ok(Self {
             ctx,
             config,
@@ -74,6 +81,16 @@ impl WhisperEngine {
         if let Ok(mut guard) = self.prompt_override.write() {
             *guard = prompt;
         }
+    }
+
+    /// Snapshot the currently-set initial prompt override.
+    ///
+    /// Used by the screen-context capture path to save the user's vocabulary
+    /// prompt before temporarily merging in dynamic screen tokens, then
+    /// restore it after transcription so subsequent calls aren't biased by
+    /// stale screen content.
+    pub fn get_initial_prompt(&self) -> Option<String> {
+        self.prompt_override.read().ok().and_then(|g| g.clone())
     }
 
     /// Allocate a fresh `WhisperState` suitable for live preview transcription.

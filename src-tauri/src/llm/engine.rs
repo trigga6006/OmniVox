@@ -11,7 +11,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 
 use crate::error::{AppError, AppResult};
 use crate::llm::grammar::{SLOT_EXTRACTION_ROOT, SLOT_EXTRACTION_V1};
-use crate::llm::prompt::format_prompt;
+use crate::llm::prompt::{format_prompt, format_prompt_with_context};
 use crate::llm::schema::SlotExtraction;
 use crate::llm::types::{LlmConfig, LlmInferenceResult};
 
@@ -21,6 +21,20 @@ use crate::llm::types::{LlmConfig, LlmInferenceResult};
 pub trait LlmEngine: Send + Sync {
     /// Run one grammar-constrained slot extraction on `user_text`.
     fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction>;
+
+    /// Slot extraction with optional screen context.
+    ///
+    /// Default impl ignores context and delegates to `extract_slots` so test
+    /// mocks compile unchanged.  The production `LlamaEngine` overrides this
+    /// to feed the tokens into the user turn for verbatim reconciliation.
+    fn extract_slots_with_context(
+        &self,
+        user_text: &str,
+        _screen_tokens: &[String],
+        _source_app: Option<&str>,
+    ) -> AppResult<SlotExtraction> {
+        self.extract_slots(user_text)
+    }
 
     /// Raw single-shot inference — exposed for diagnostics and the Settings
     /// "Test" button.  Default impl just calls `extract_slots` and serializes
@@ -106,6 +120,18 @@ impl LlamaEngine {
         let model = LlamaModel::load_from_file(backend, path, &model_params)
             .map_err(|e| AppError::Llm(format!("Failed to load LLM model: {e}")))?;
 
+        // Validate context/KV-cache allocation during load so GPU OOM or
+        // backend-driver problems fall into the caller's CPU fallback path
+        // instead of surfacing on the first Structured Mode dictation.
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(config.n_ctx))
+            .with_n_batch(config.n_ctx.max(512))
+            .with_n_threads(config.n_threads);
+        let ctx_probe = model
+            .new_context(backend, ctx_params)
+            .map_err(|e| AppError::Llm(format!("Failed to create LLM context: {e}")))?;
+        drop(ctx_probe);
+
         Ok(Self {
             model,
             config,
@@ -120,7 +146,12 @@ impl LlamaEngine {
     /// - The grammar sampler is first in the chain, so token selection is
     ///   restricted to the GBNF alphabet before greedy picks the max-logit.
     /// - EOG stops generation; `max_tokens` bounds runaway loops.
-    fn generate_json(&self, user_text: &str) -> AppResult<String> {
+    fn generate_json(
+        &self,
+        user_text: &str,
+        screen_tokens: &[String],
+        source_app: Option<&str>,
+    ) -> AppResult<String> {
         let backend = backend()?;
 
         // Build a context sized just above the prompt + output budget.  Any
@@ -135,7 +166,11 @@ impl LlamaEngine {
             .new_context(backend, ctx_params)
             .map_err(|e| AppError::Llm(format!("Failed to create LLM context: {e}")))?;
 
-        let prompt = format_prompt(user_text);
+        let prompt = if screen_tokens.is_empty() {
+            format_prompt(user_text)
+        } else {
+            format_prompt_with_context(user_text, screen_tokens, source_app)
+        };
 
         // Tokenize prompt — BOS is prepended automatically where the template
         // calls for it.
@@ -205,14 +240,25 @@ impl LlamaEngine {
 
 impl LlmEngine for LlamaEngine {
     fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction> {
+        self.extract_slots_with_context(user_text, &[], None)
+    }
+
+    fn extract_slots_with_context(
+        &self,
+        user_text: &str,
+        screen_tokens: &[String],
+        source_app: Option<&str>,
+    ) -> AppResult<SlotExtraction> {
         let t0 = std::time::Instant::now();
         crate::llm::diaglog::log(&format!(
-            "extract_slots: model={} input_chars={} input_preview={:?}",
+            "extract_slots: model={} input_chars={} screen_tokens={} app={:?} input_preview={:?}",
             self.model_name,
             user_text.chars().count(),
+            screen_tokens.len(),
+            source_app,
             &user_text.chars().take(120).collect::<String>()
         ));
-        let raw = match self.generate_json(user_text) {
+        let raw = match self.generate_json(user_text, screen_tokens, source_app) {
             Ok(r) => r,
             Err(e) => {
                 crate::llm::diaglog::log(&format!(
@@ -237,12 +283,12 @@ impl LlmEngine for LlamaEngine {
             // helpful-bias invents context/constraints to pad the JSON,
             // and this pass strips anything with zero content-word overlap.
             .map(|slots| slots.normalize_with_raw(user_text))
-            .map_err(|e| AppError::Llm(format!("parse LLM JSON failed: {e}; raw={trimmed}")))
+            .map_err(|e| AppError::Llm(format!("parse LLM JSON failed: {e}")))
     }
 
     fn extract_raw(&self, user_text: &str) -> AppResult<LlmInferenceResult> {
         let t0 = std::time::Instant::now();
-        let raw = self.generate_json(user_text)?;
+        let raw = self.generate_json(user_text, &[], None)?;
         Ok(LlmInferenceResult {
             raw_json: raw,
             duration_ms: t0.elapsed().as_millis() as u64,

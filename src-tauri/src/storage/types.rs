@@ -143,6 +143,16 @@ pub struct AppSettings {
     /// voice command — lets the user opt-in per utterance instead of
     /// structuring every single one.
     pub structured_voice_command: bool,
+    /// Read visible text from the foreground window (Windows UIA) and feed
+    /// the technical tokens it contains into Whisper as `initial_prompt`,
+    /// so file paths, identifiers, and CLI flags transcribe verbatim.  Local
+    /// only — captured text never leaves the device.
+    pub use_screen_context: bool,
+    /// When true, Structured Mode also receives the screen-context tokens so
+    /// Qwen can swap phonetic guesses for verbatim matches.  Independent of
+    /// `use_screen_context` (Phase 1 alone covers most cases; this adds the
+    /// reconciliation layer for multi-token strings).
+    pub structured_use_screen_context: bool,
 }
 
 impl Default for AppSettings {
@@ -173,6 +183,8 @@ impl Default for AppSettings {
             llm_timeout_secs: 8,
             structured_min_chars: 40,
             structured_voice_command: false,
+            use_screen_context: true,
+            structured_use_screen_context: true,
         }
     }
 }
