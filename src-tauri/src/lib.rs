@@ -354,7 +354,7 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+    let builder = tauri::Builder::default();
 
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

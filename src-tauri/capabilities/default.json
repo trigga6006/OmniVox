@@ -5,7 +5,6 @@
   "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
-    "shell:allow-open",
     "core:event:default",
     "core:event:allow-emit",
     "core:event:allow-listen",
