@@ -23,26 +23,24 @@ export function ModelsPage() {
   const [tab, setTab] = useState<Tab>("speech");
 
   return (
-    <div className="flex h-full flex-col p-6 overflow-y-auto">
+    <div className="flex h-full flex-col overflow-y-auto px-8 py-8">
       {/* Header */}
       <div
         className="opacity-0 animate-slide-up"
         style={{ animationDelay: "0.05s", animationFillMode: "forwards" }}
       >
-        <h1 className="font-display font-semibold text-2xl text-text-primary">
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
           Models
         </h1>
-        <p className="text-sm text-text-muted mt-1">
+        <p className="mt-1 text-sm text-text-muted">
           Speech recognition and structured-output language models.
         </p>
       </div>
 
-      {/* Tab bar — underline-style tabs below the header.  Amber for
-          speech (matches the Whisper accent), violet for LLM (matches
-          the Structured Mode accent), so the active-tab underline
-          reinforces which catalog you're looking at. */}
+      {/* Tab bar — amber for speech (matches the Whisper accent),
+          violet for LLM (matches the Structured Mode accent). */}
       <div
-        className="mt-5 flex items-center gap-1 border-b border-border opacity-0 animate-slide-up"
+        className="mt-6 flex items-center gap-1 border-b border-border/70 opacity-0 animate-slide-up"
         style={{ animationDelay: "0.08s", animationFillMode: "forwards" }}
         role="tablist"
         aria-label="Model catalog"
@@ -89,30 +87,24 @@ function TabButton({
   accent: "amber" | "violet";
   onClick: () => void;
 }) {
-  const activeText = accent === "amber" ? "text-amber-400" : "text-violet-300";
+  const activeText = accent === "amber" ? "text-amber-300" : "text-violet-300";
   const activeUnderline =
-    accent === "amber" ? "bg-amber-400/70" : "bg-violet-400/70";
+    accent === "amber" ? "bg-amber-400" : "bg-violet-400";
   return (
     <button
       onClick={onClick}
       role="tab"
       aria-selected={active}
       className={cn(
-        "relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors",
-        active
-          ? activeText
-          : "text-text-muted hover:text-text-secondary"
+        "relative flex items-center gap-2 px-3.5 py-3 text-sm font-medium transition-colors",
+        active ? activeText : "text-text-muted hover:text-text-secondary"
       )}
     >
       {icon}
       <span>{label}</span>
-      {/* Underline indicator — rendered inside the button so its width
-          hugs the label + icon rather than spanning the whole
-          flex-item with padding.  1.5 px + translate(0,1px) so it
-          sits flush on the border line instead of floating above it. */}
       <span
         className={cn(
-          "absolute left-0 right-0 bottom-0 h-[2px] rounded-t-sm translate-y-[1px] transition-opacity",
+          "absolute bottom-[-1px] left-0 right-0 h-[2px] rounded-full transition-opacity",
           activeUnderline,
           active ? "opacity-100" : "opacity-0"
         )}

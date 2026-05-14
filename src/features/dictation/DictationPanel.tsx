@@ -32,20 +32,20 @@ export function DictationPanel() {
   const isProcessing = status === "processing";
 
   return (
-    <div className="relative flex h-full flex-col items-center px-8 py-12">
+    <div className="relative flex h-full flex-col items-center px-8 py-10">
       {/* ── Top section: headline + instruction ─────────────── */}
       <div className="flex flex-1 flex-col items-center justify-end">
         <h1
           className={cn(
-            "font-display font-semibold text-3xl tracking-tight opacity-0 animate-fade-in",
+            "font-display text-[2rem] font-semibold tracking-[-0.022em] opacity-0 animate-fade-in",
             isIdle && "text-text-primary",
-            isRecording && "text-amber-400",
+            isRecording && "text-amber-300",
             isProcessing && "text-text-secondary"
           )}
         >
           {isIdle && "Ready to listen"}
-          {isRecording && "Listening\u2026"}
-          {isProcessing && "Transcribing\u2026"}
+          {isRecording && "Listening…"}
+          {isProcessing && "Transcribing…"}
           {status === "error" && "Something went wrong"}
         </h1>
 
@@ -53,15 +53,23 @@ export function DictationPanel() {
           className="mt-3 text-sm text-text-muted opacity-0 animate-fade-in"
           style={{ animationDelay: "80ms" }}
         >
-          {isIdle && `${hotkeyLabel} to begin`}
-          {isRecording && "Speak now \u2014 press again to stop"}
-          {isProcessing && "Hang tight, processing your audio\u2026"}
+          {isIdle && (
+            <>
+              Press{" "}
+              <kbd className="rounded-md border border-border bg-surface-1 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
+                {hotkeyLabel}
+              </kbd>{" "}
+              to begin
+            </>
+          )}
+          {isRecording && "Speak now — press again to stop"}
+          {isProcessing && "Hang tight, processing your audio…"}
           {status === "error" && "Try recording again"}
         </p>
       </div>
 
       {/* ── Center: Record Button (fixed position) ─────────── */}
-      <div className="my-8 shrink-0 opacity-0 animate-scale-in" style={{ animationDelay: "150ms" }}>
+      <div className="my-10 shrink-0 opacity-0 animate-scale-in" style={{ animationDelay: "150ms" }}>
         <RecordButton />
       </div>
 
@@ -78,7 +86,7 @@ export function DictationPanel() {
           {isRecording && <AudioVisualizer />}
         </div>
 
-        <div className="h-6" />
+        <div className="h-5" />
 
         {/* ── Word count & milestone ─────────────────────────── */}
         <StatsCard />
@@ -110,24 +118,24 @@ function TranscriptionCard({ text }: { text: string }) {
   return (
     <div
       className={cn(
-        "w-full max-w-lg rounded-lg bg-surface-1 p-5 mt-4",
-        "opacity-0 animate-slide-up"
+        "w-full max-w-lg rounded-xl border border-border/70 bg-surface-1/80 px-5 py-4 mt-4",
+        "backdrop-blur-sm shadow-sm opacity-0 animate-slide-up"
       )}
     >
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+      <div className="flex items-center justify-between mb-2.5">
+        <p className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Last transcription
         </p>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-text-muted hover:text-text-secondary hover:bg-surface-2/70 transition-colors"
         >
-          {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+          {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
           <span>{copied ? "Copied" : "Copy"}</span>
         </button>
       </div>
       <div className="max-h-32 overflow-y-auto">
-        <p className="font-sans text-base leading-relaxed text-text-primary select-text">
+        <p className="font-sans text-[15px] leading-[1.65] text-text-primary select-text">
           {text}
         </p>
       </div>
@@ -138,11 +146,7 @@ function TranscriptionCard({ text }: { text: string }) {
 /* ── Milestones ── */
 
 // Milestone labels above 100k reference real word counts from
-// well-known books and collected works, so each new tier feels earned
-// rather than arbitrary.  Curve roughly follows the "next step is
-// ~1.3–1.5× the previous" shape already established by 25k→50k→100k,
-// so users hit a new tier every few weeks of heavy dictation instead
-// of grinding for months between rewards.
+// well-known books and collected works.
 const MILESTONES = [
   { words: 0, label: "Just Getting Started" },
   { words: 100, label: "First Steps" },
@@ -153,18 +157,18 @@ const MILESTONES = [
   { words: 25000, label: "Novelist in Training" },
   { words: 50000, label: "Novel Complete" },
   { words: 100000, label: "Prolific Author" },
-  { words: 125000, label: "The Great Gatsby × 2.5" },      // Gatsby ≈ 50k
-  { words: 150000, label: "Literary Luminary" },           // avg hefty literary novel
-  { words: 200000, label: "Fellowship Scribe" },           // LoTR: The Fellowship ≈ 187k
-  { words: 250000, label: "Moby-Dick Whisperer" },         // Moby-Dick ≈ 209k, rounded up
-  { words: 300000, label: "Epic Pen" },                    // Anna Karenina ≈ 349k
-  { words: 400000, label: "Saga Weaver" },                 // Stephen King's *It* ≈ 445k
-  { words: 500000, label: "Voice of an Era" },             // Les Misérables ≈ 530k
-  { words: 587000, label: "Tolstoy's Peer" },              // War and Peace ≈ 587k
-  { words: 650000, label: "Atlas Lifter" },                // Atlas Shrugged ≈ 645k
-  { words: 783000, label: "Scripturist" },                 // KJV Bible ≈ 783k
-  { words: 884000, label: "The Bard Incarnate" },          // complete Shakespeare ≈ 884k
-  { words: 1000000, label: "Million-Word Sage" },          // seven-figure voice
+  { words: 125000, label: "The Great Gatsby × 2.5" },
+  { words: 150000, label: "Literary Luminary" },
+  { words: 200000, label: "Fellowship Scribe" },
+  { words: 250000, label: "Moby-Dick Whisperer" },
+  { words: 300000, label: "Epic Pen" },
+  { words: 400000, label: "Saga Weaver" },
+  { words: 500000, label: "Voice of an Era" },
+  { words: 587000, label: "Tolstoy's Peer" },
+  { words: 650000, label: "Atlas Lifter" },
+  { words: 783000, label: "Scripturist" },
+  { words: 884000, label: "The Bard Incarnate" },
+  { words: 1000000, label: "Million-Word Sage" },
 ];
 
 function getCurrentMilestone(words: number) {
@@ -208,7 +212,7 @@ const TIPS: Tip[] = [
   },
   {
     id: "voice_commands",
-    text: "Try voice commands — say \"new line\" or \"send\" while dictating",
+    text: "Try voice commands — say “new line” or “send” while dictating",
     shouldShow: (s) => !s.voice_commands,
     page: "settings",
   },
@@ -262,7 +266,6 @@ function FeatureTip() {
           (t) => !dismissed.has(t.id) && t.shouldShow(s)
         );
         if (available.length > 0) {
-          // Pick a random tip so it feels fresh each session
           setTip(available[Math.floor(Math.random() * available.length)]);
         }
       })
@@ -291,15 +294,15 @@ function FeatureTip() {
         "w-full max-w-lg mt-3 flex items-center gap-2 rounded-lg px-3 py-2",
         "border transition-colors duration-300 opacity-0 animate-fade-in",
         isRecording
-          ? "bg-recording-500/5 border-recording-500/20"
-          : "bg-surface-1/60 border-border/50"
+          ? "bg-recording-500/[0.06] border-recording-500/20"
+          : "bg-surface-1/55 border-border/45"
       )}
       style={{ animationDelay: "400ms", animationFillMode: "forwards" }}
     >
       <p
         className={cn(
           "flex-1 text-xs transition-colors duration-300",
-          isRecording ? "text-recording-400/80" : "text-text-muted"
+          isRecording ? "text-recording-400/85" : "text-text-secondary/85"
         )}
       >
         {tip.text}
@@ -307,10 +310,10 @@ function FeatureTip() {
       <button
         onClick={handleNavigate}
         className={cn(
-          "shrink-0 p-1 rounded transition-colors",
+          "shrink-0 p-1 rounded-md transition-colors",
           isRecording
             ? "text-recording-400/60 hover:text-recording-300"
-            : "text-text-muted hover:text-text-secondary"
+            : "text-text-muted hover:text-text-secondary hover:bg-surface-2/60"
         )}
         title="Go to setting"
       >
@@ -319,10 +322,10 @@ function FeatureTip() {
       <button
         onClick={handleDismiss}
         className={cn(
-          "shrink-0 p-1 rounded transition-colors",
+          "shrink-0 p-1 rounded-md transition-colors",
           isRecording
             ? "text-recording-400/40 hover:text-recording-300"
-            : "text-text-muted/50 hover:text-text-secondary"
+            : "text-text-muted/60 hover:text-text-secondary hover:bg-surface-2/60"
         )}
         title="Dismiss"
       >
@@ -342,7 +345,6 @@ function StatsCard() {
     getDictationStats().then(setStats).catch(() => {});
   }, []);
 
-  // Refresh after each new transcription
   useEffect(() => {
     if (lastTranscription) {
       getDictationStats().then(setStats).catch(() => {});
@@ -358,25 +360,28 @@ function StatsCard() {
     : 100;
 
   return (
-    <div className="w-full max-w-lg opacity-0 animate-fade-in" style={{ animationDelay: "200ms", animationFillMode: "forwards" }}>
+    <div
+      className="w-full max-w-lg opacity-0 animate-fade-in"
+      style={{ animationDelay: "200ms", animationFillMode: "forwards" }}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-amber-400">
+          <span className="text-xs font-semibold tabular-nums text-amber-300">
             {stats.total_words.toLocaleString()} words
           </span>
-          <span className="text-xs text-text-muted">&middot;</span>
+          <span className="text-xs text-text-muted/60">·</span>
           <span className="text-xs text-text-muted">{milestone.label}</span>
         </div>
         {next && (
-          <span className="text-[11px] text-text-muted">
+          <span className="text-[11px] tabular-nums text-text-muted/80">
             {next.words.toLocaleString()} next
           </span>
         )}
       </div>
       {next && (
-        <div className="mt-1.5 h-1 w-full rounded-full bg-surface-2">
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-surface-2">
           <div
-            className="h-1 rounded-full bg-amber-500/40 transition-all duration-500"
+            className="h-full rounded-full bg-amber-400/55 transition-all duration-700 ease-out"
             style={{ width: `${Math.min(progress, 100)}%` }}
           />
         </div>

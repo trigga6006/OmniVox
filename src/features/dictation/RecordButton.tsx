@@ -47,7 +47,7 @@ export function RecordButton() {
         {/* Recording: warm crimson glow */}
         {isRecording && (
           <span
-            className="absolute inset-[-8px] rounded-full bg-recording-500/20 blur-xl animate-recording-pulse"
+            className="absolute inset-[-10px] rounded-full bg-recording-500/22 blur-2xl animate-recording-pulse"
             aria-hidden="true"
           />
         )}
@@ -55,19 +55,19 @@ export function RecordButton() {
         {/* Processing: spinning amber ring */}
         {isProcessing && (
           <svg
-            className="absolute h-[108px] w-[108px]"
-            viewBox="0 0 108 108"
+            className="absolute h-[112px] w-[112px]"
+            viewBox="0 0 112 112"
             aria-hidden="true"
             style={{ animation: "spin-slow 2s linear infinite" }}
           >
             <circle
-              cx="54"
-              cy="54"
-              r="51"
+              cx="56"
+              cy="56"
+              r="53"
               fill="none"
               stroke="currentColor"
               strokeWidth="2"
-              strokeDasharray="80 240"
+              strokeDasharray="80 260"
               strokeLinecap="round"
               className="text-amber-400"
             />
@@ -87,23 +87,26 @@ export function RecordButton() {
           }
           className={cn(
             // Base: 96px circle with smooth transitions and press feel
-            "relative flex h-24 w-24 items-center justify-center rounded-full",
-            "transition-all duration-200 ease-out",
-            "active:scale-95",
-            "focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-amber-500",
+            "relative flex h-[96px] w-[96px] items-center justify-center rounded-full",
+            "transition-all duration-300 ease-out",
+            "active:scale-[0.97]",
+            "focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-amber-400",
 
-            // Idle state
+            // Idle state — clean, soft amber halo
             isIdle && [
-              "bg-surface-2 border border-amber-400/40",
-              "hover:border-amber-500 hover:scale-105",
-              "hover:shadow-[0_0_24px_-4px] hover:shadow-amber-500/20",
+              "bg-gradient-to-b from-surface-2 to-surface-1",
+              "border border-amber-400/35",
+              "shadow-[0_1px_0_0_rgb(255_255_255_/_0.04)_inset,0_8px_24px_-12px_rgb(232_180_95_/_0.30),0_2px_4px_-2px_rgb(0_0_0_/_0.30)]",
+              "hover:border-amber-400/65 hover:scale-[1.025]",
+              "hover:shadow-[0_1px_0_0_rgb(255_255_255_/_0.06)_inset,0_12px_30px_-10px_rgb(232_180_95_/_0.45),0_2px_4px_-2px_rgb(0_0_0_/_0.30)]",
             ],
 
             // Recording state
             isRecording && [
-              "bg-recording-500 border border-recording-400/50",
+              "bg-gradient-to-b from-recording-400 to-recording-500",
+              "border border-recording-300/55",
               "animate-recording-pulse",
-              "shadow-[0_0_40px_-4px] shadow-recording-500/40",
+              "shadow-[0_0_0_1px_rgb(255_255_255_/_0.04)_inset,0_0_36px_-4px_rgb(216_67_47_/_0.55),0_4px_12px_-4px_rgb(0_0_0_/_0.40)]",
             ],
 
             // Processing state
@@ -113,9 +116,9 @@ export function RecordButton() {
             ]
           )}
         >
-          {isIdle && <Mic size={36} className="text-amber-400" strokeWidth={1.5} />}
+          {isIdle && <Mic size={34} className="text-amber-300" strokeWidth={1.5} />}
           {isRecording && (
-            <Square size={28} className="text-white" fill="currentColor" strokeWidth={0} />
+            <Square size={26} className="text-white drop-shadow-[0_1px_2px_rgb(0_0_0_/_0.25)]" fill="currentColor" strokeWidth={0} />
           )}
           {isProcessing && (
             <Loader2
@@ -130,13 +133,13 @@ export function RecordButton() {
       {/* Recording metadata: timer + cancel */}
       {isRecording && (
         <div className="flex flex-col items-center gap-2 animate-fade-in">
-          <span className="font-mono text-lg tracking-wider text-recording-400 tabular-nums">
+          <span className="font-mono text-lg tracking-wider text-recording-300 tabular-nums">
             {formatDuration(duration)}
           </span>
           <button
             onClick={handleCancel}
             className={cn(
-              "text-xs font-sans tracking-wide uppercase text-text-muted",
+              "text-[11px] font-medium tracking-[0.14em] uppercase text-text-muted",
               "transition-colors duration-150",
               "hover:text-text-secondary"
             )}

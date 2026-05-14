@@ -106,7 +106,7 @@ function VocabularyTab() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <div className="relative flex items-center justify-center">
-          <div className="absolute h-20 w-20 rounded-full bg-amber-500/5 border border-amber-700/20" />
+          <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
           <Languages size={40} strokeWidth={1.5} className="relative text-text-muted" />
         </div>
         <div className="text-center mt-2">
@@ -119,7 +119,7 @@ function VocabularyTab() {
         </div>
         <button
           onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/15 transition-colors"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-4 py-2 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/50 hover:bg-amber-500/[0.16]"
         >
           <Plus size={14} strokeWidth={2} />
           Add first word
@@ -137,25 +137,25 @@ function VocabularyTab() {
           return (
             <div
               key={entry.id}
-              className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex items-center gap-2"
+              className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm"
             >
               <input
                 value={editWord}
                 onChange={(e) => setEditWord(e.target.value)}
-                className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Word or phrase…"
                 onKeyDown={(e) => e.key === "Enter" && handleUpdate(entry.id)}
                 autoFocus
               />
               <button
                 onClick={() => handleUpdate(entry.id)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
+                className="rounded-md p-1.5 text-success transition-colors hover:bg-surface-3"
               >
                 <Check size={14} />
               </button>
               <button
                 onClick={() => setEditId(null)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-3"
               >
                 <X size={14} />
               </button>
@@ -166,7 +166,7 @@ function VocabularyTab() {
         return (
           <div
             key={entry.id}
-            className="group bg-surface-1 rounded-lg border border-border hover:border-border-hover p-3 flex items-center gap-3 transition-colors"
+            className="group flex items-center gap-3 rounded-xl border border-border bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <span className="text-sm text-text-primary font-medium flex-1 truncate">
               {entry.word}
@@ -174,13 +174,13 @@ function VocabularyTab() {
             <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={() => startEdit(entry)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-text-secondary transition-colors"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
               >
                 <Pencil size={13} />
               </button>
               <button
                 onClick={() => handleDelete(entry.id)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-recording-400 transition-colors"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
               >
                 <Trash2 size={13} />
               </button>
@@ -191,7 +191,7 @@ function VocabularyTab() {
 
       {/* Inline add row */}
       {adding && (
-        <div className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex items-center gap-2">
+        <div className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
           <input
             ref={wordRef}
             value={newWord}
@@ -222,7 +222,7 @@ function VocabularyTab() {
       {!adding && (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-2 rounded-lg border border-dashed border-border hover:border-amber-500/30 p-3 text-sm text-text-muted hover:text-amber-400 transition-colors"
+          className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
         >
           <Plus size={14} strokeWidth={2} />
           Add vocabulary word
@@ -315,7 +315,7 @@ function WordsTab() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <div className="relative flex items-center justify-center">
-          <div className="absolute h-20 w-20 rounded-full bg-amber-500/5 border border-amber-700/20" />
+          <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
           <BookOpen size={40} strokeWidth={1.5} className="relative text-text-muted" />
         </div>
         <div className="text-center mt-2">
@@ -328,7 +328,7 @@ function WordsTab() {
         </div>
         <button
           onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/15 transition-colors"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-4 py-2 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/50 hover:bg-amber-500/[0.16]"
         >
           <Plus size={14} strokeWidth={2} />
           Add first word
@@ -347,31 +347,31 @@ function WordsTab() {
           return (
             <div
               key={entry.id}
-              className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex items-center gap-2"
+              className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm"
             >
               <input
                 value={editPhrase}
                 onChange={(e) => setEditPhrase(e.target.value)}
-                className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Heard as…"
               />
               <ArrowRight size={14} className="text-text-muted shrink-0" />
               <input
                 value={editReplacement}
                 onChange={(e) => setEditReplacement(e.target.value)}
-                className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Replace with…"
                 onKeyDown={(e) => e.key === "Enter" && handleUpdate(entry.id)}
               />
               <button
                 onClick={() => handleUpdate(entry.id)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
+                className="rounded-md p-1.5 text-success transition-colors hover:bg-surface-3"
               >
                 <Check size={14} />
               </button>
               <button
                 onClick={() => setEditId(null)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-3"
               >
                 <X size={14} />
               </button>
@@ -382,25 +382,25 @@ function WordsTab() {
         return (
           <div
             key={entry.id}
-            className="group bg-surface-1 rounded-lg border border-border hover:border-border-hover p-3 flex items-center gap-3 transition-colors"
+            className="group flex items-center gap-3 rounded-xl border border-border bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <span className="text-sm text-text-secondary font-medium flex-1 truncate">
               {entry.phrase}
             </span>
             <ArrowRight size={12} className="text-text-muted shrink-0" />
-            <span className="text-sm text-amber-400/80 flex-1 truncate">
+            <span className="flex-1 truncate text-sm text-amber-300/90">
               {entry.replacement}
             </span>
             <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={() => startEdit(entry)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-text-secondary transition-colors"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
               >
                 <Pencil size={13} />
               </button>
               <button
                 onClick={() => handleDelete(entry.id)}
-                className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-recording-400 transition-colors"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
               >
                 <Trash2 size={13} />
               </button>
@@ -411,7 +411,7 @@ function WordsTab() {
 
       {/* Inline add row */}
       {adding && (
-        <div className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex items-center gap-2">
+        <div className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
           <input
             ref={phraseRef}
             value={newPhrase}
@@ -450,7 +450,7 @@ function WordsTab() {
       {!adding && (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-2 rounded-lg border border-dashed border-border hover:border-amber-500/30 p-3 text-sm text-text-muted hover:text-amber-400 transition-colors"
+          className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
         >
           <Plus size={14} strokeWidth={2} />
           Add word replacement
@@ -553,7 +553,7 @@ function SnippetsTab() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <div className="relative flex items-center justify-center">
-          <div className="absolute h-20 w-20 rounded-full bg-amber-500/5 border border-amber-700/20" />
+          <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
           <FileText size={40} strokeWidth={1.5} className="relative text-text-muted" />
         </div>
         <div className="text-center mt-2">
@@ -566,7 +566,7 @@ function SnippetsTab() {
         </div>
         <button
           onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/15 transition-colors"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-4 py-2 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/50 hover:bg-amber-500/[0.16]"
         >
           <Plus size={14} strokeWidth={2} />
           Add first snippet
@@ -584,20 +584,20 @@ function SnippetsTab() {
           return (
             <div
               key={snippet.id}
-              className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex flex-col gap-2"
+              className="flex flex-col gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm"
             >
               <div className="flex items-center gap-2">
                 <input
                   value={editTrigger}
                   onChange={(e) => setEditTrigger(e.target.value)}
-                  className="w-32 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+                  className="w-32 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                   placeholder="Word…"
                 />
                 <ArrowRight size={14} className="text-text-muted shrink-0" />
                 <input
                   value={editContent}
                   onChange={(e) => setEditContent(e.target.value)}
-                  className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+                  className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                   placeholder="Expands to…"
                 />
                 <button
@@ -616,7 +616,7 @@ function SnippetsTab() {
               <input
                 value={editDesc}
                 onChange={(e) => setEditDesc(e.target.value)}
-                className="bg-surface-2 rounded-md px-2.5 py-1.5 text-xs text-text-muted border border-border outline-none focus:border-amber-500/40"
+                className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs text-text-secondary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Description (optional)"
                 onKeyDown={(e) => e.key === "Enter" && handleUpdate(snippet.id)}
               />
@@ -627,10 +627,10 @@ function SnippetsTab() {
         return (
           <div
             key={snippet.id}
-            className="group bg-surface-1 rounded-lg border border-border hover:border-border-hover p-3 transition-colors"
+            className="group rounded-xl border border-border bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <div className="flex items-center gap-3">
-              <kbd className="bg-surface-3 rounded-md px-2 py-0.5 font-mono text-xs text-amber-400 border border-border shrink-0">
+              <kbd className="shrink-0 rounded-md border border-amber-400/25 bg-amber-500/[0.08] px-2 py-0.5 font-mono text-xs text-amber-300">
                 {snippet.trigger}
               </kbd>
               <ArrowRight size={12} className="text-text-muted shrink-0" />
@@ -640,13 +640,13 @@ function SnippetsTab() {
               <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                   onClick={() => startEdit(snippet)}
-                  className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-text-secondary transition-colors"
+                  className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
                 >
                   <Pencil size={13} />
                 </button>
                 <button
                   onClick={() => handleDelete(snippet.id)}
-                  className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-recording-400 transition-colors"
+                  className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -663,7 +663,7 @@ function SnippetsTab() {
 
       {/* Inline add */}
       {adding && (
-        <div className="bg-surface-1 rounded-lg border border-amber-500/30 p-3 flex flex-col gap-2">
+        <div className="flex flex-col gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
           <div className="flex items-center gap-2">
             <input
               ref={triggerRef}
@@ -710,7 +710,7 @@ function SnippetsTab() {
       {!adding && (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-2 rounded-lg border border-dashed border-border hover:border-amber-500/30 p-3 text-sm text-text-muted hover:text-amber-400 transition-colors"
+          className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
         >
           <Plus size={14} strokeWidth={2} />
           Add snippet
@@ -726,17 +726,19 @@ export function DictionaryPage() {
   const [activeTab, setActiveTab] = useState<Tab>("Vocabulary");
 
   return (
-    <div className="flex h-full flex-col p-6">
+    <div className="flex h-full flex-col px-8 py-8">
       {/* Header */}
       <div>
-        <h1 className="font-display font-semibold text-2xl text-text-primary">Dictionary</h1>
-        <p className="text-sm text-text-muted mt-1">
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
+          Dictionary
+        </h1>
+        <p className="mt-1 text-sm text-text-muted">
           Custom vocabulary & text snippets
         </p>
       </div>
 
       {/* Tabs */}
-      <div className="mt-5 flex gap-6 border-b border-border">
+      <div className="mt-6 flex gap-6 border-b border-border/70">
         {tabs.map((tab) => {
           const isActive = activeTab === tab;
           return (
@@ -744,15 +746,15 @@ export function DictionaryPage() {
               key={tab}
               onClick={() => setActiveTab(tab)}
               className={cn(
-                "relative pb-2.5 text-sm font-medium transition-colors",
+                "relative pb-3 text-sm font-medium transition-colors",
                 isActive
-                  ? "text-amber-400"
+                  ? "text-amber-300"
                   : "text-text-muted hover:text-text-secondary"
               )}
             >
               {tab}
               {isActive && (
-                <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-full bg-amber-500" />
+                <span className="absolute bottom-[-1px] left-0 right-0 h-[2px] rounded-full bg-amber-400" />
               )}
             </button>
           );

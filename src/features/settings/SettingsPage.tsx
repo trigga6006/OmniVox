@@ -157,10 +157,10 @@ function HotkeySection({
       className={cn(
         "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
         state === "listening"
-          ? "border-amber-500/40"
+          ? "border-amber-400/45 bg-amber-500/[0.03]"
           : state === "confirming"
-            ? "border-green-500/30"
-            : "border-border hover:border-border-hover"
+            ? "border-success/35 bg-success/[0.04]"
+            : "border-border hover:border-border-hover hover:bg-surface-1"
       )}
       style={{ opacity: 0, animationDelay: "0.32s", animationFillMode: "forwards" }}
     >
@@ -184,7 +184,7 @@ function HotkeySection({
                 {i > 0 && (
                   <span className="text-xs text-text-muted select-none">+</span>
                 )}
-                <kbd className="bg-surface-3 rounded-lg px-3 py-1.5 font-mono text-sm text-text-secondary border border-border shadow-sm">
+                <kbd className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 font-mono text-[13px] text-text-secondary shadow-sm">
                   {key}
                 </kbd>
               </div>
@@ -192,7 +192,7 @@ function HotkeySection({
           </div>
           <button
             onClick={handleRemap}
-            className="ml-2 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+            className="ml-2 rounded-md px-2 py-1 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/[0.10] hover:text-amber-200"
           >
             Remap
           </button>
@@ -212,10 +212,10 @@ function HotkeySection({
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-3">
             <div
-              className="flex items-center justify-center gap-2 bg-surface-2 rounded-lg px-4 py-2.5 border border-amber-500/30 min-w-[160px]"
+              className="flex min-w-[160px] items-center justify-center gap-2 rounded-lg border border-amber-400/35 bg-amber-500/[0.06] px-4 py-2.5"
             >
               {captured.length === 0 ? (
-                <span className="text-sm text-amber-400/70 animate-pulse">
+                <span className="animate-pulse text-sm text-amber-300/80">
                   Press your keys...
                 </span>
               ) : (
@@ -224,7 +224,7 @@ function HotkeySection({
                     {i > 0 && (
                       <span className="text-xs text-text-muted">+</span>
                     )}
-                    <kbd className="bg-amber-500/15 rounded-md px-2.5 py-1 font-mono text-sm text-amber-400 border border-amber-500/25">
+                    <kbd className="rounded-md border border-amber-400/30 bg-amber-500/[0.14] px-2.5 py-1 font-mono text-sm text-amber-200">
                       {k.label}
                     </kbd>
                   </div>
@@ -254,7 +254,7 @@ function HotkeySection({
                   {i > 0 && (
                     <span className="text-xs text-text-muted">+</span>
                   )}
-                  <kbd className="bg-green-500/10 rounded-lg px-3 py-1.5 font-mono text-sm text-green-400 border border-green-500/25 shadow-sm">
+                  <kbd className="rounded-lg border border-success/30 bg-success/[0.10] px-3 py-1.5 font-mono text-[13px] text-success shadow-sm">
                     {k.label}
                   </kbd>
                 </div>
@@ -264,7 +264,7 @@ function HotkeySection({
             <div className="flex items-center gap-2 ml-2">
               <button
                 onClick={handleSave}
-                className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 border border-amber-500/30 px-3 py-1 text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-colors"
+                className="inline-flex items-center gap-1 rounded-md border border-amber-400/35 bg-amber-500/[0.14] px-3 py-1 text-xs font-medium text-amber-200 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.22]"
               >
                 Save
               </button>
@@ -346,23 +346,23 @@ function GpuAccelerationSection({
           onClick={handleToggle}
           disabled={reloading}
           className={cn(
-            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+            "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
             enabled ? "bg-amber-500" : "bg-surface-3",
             reloading && "opacity-60"
           )}
         >
           <span
             className={cn(
-              "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-              enabled ? "translate-x-6" : "translate-x-1"
+              "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+              enabled ? "translate-x-[21px]" : "translate-x-[3px]"
             )}
           />
         </button>
         <span className="text-sm text-text-secondary">
           {reloading ? (
             <span className="flex items-center gap-1.5">
-              <Loader2 size={13} strokeWidth={2} className="animate-spin text-amber-400" />
-              Reloading model...
+              <Loader2 size={13} strokeWidth={2} className="animate-spin text-amber-300" />
+              Reloading model…
             </span>
           ) : enabled ? (
             "Enabled"
@@ -572,31 +572,33 @@ export function SettingsPage() {
   );
 
   return (
-    <div className="flex h-full flex-col p-6 overflow-y-auto">
+    <div className="flex h-full flex-col overflow-y-auto px-8 py-8">
       {/* Header */}
       <div
         className="animate-slide-up"
         style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
       >
-        <h1 className="font-display font-semibold text-2xl text-text-primary">Settings</h1>
-        <p className="text-sm text-text-muted mt-1">Configuration</p>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
+          Settings
+        </h1>
+        <p className="mt-1 text-sm text-text-muted">Configuration</p>
       </div>
 
-      <div className="mt-6 flex flex-col gap-5">
+      <div className="mt-6 flex max-w-2xl flex-col gap-4">
         {/* ── Appearance ── */}
         <section
-          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          className="rounded-xl border border-border bg-surface-1/85 p-5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up"
           style={{ opacity: 0, animationDelay: "0.08s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Sun size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Appearance
             </span>
           </div>
 
           <label className="block text-sm text-text-secondary mb-2">Theme</label>
-          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+          <div className="inline-flex gap-0.5 rounded-lg border border-border bg-surface-2/70 p-0.5">
             {([
               { id: "dark", label: "Dark", Icon: Moon },
               { id: "light", label: "Light", Icon: Sun },
@@ -607,10 +609,10 @@ export function SettingsPage() {
                   key={id}
                   onClick={() => handleThemeChange(id)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                    "inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-sm font-medium transition-all duration-150",
                     isActive
-                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                      : "text-text-muted hover:text-text-secondary border border-transparent"
+                      ? "bg-amber-500/[0.14] text-amber-200 shadow-sm ring-1 ring-amber-400/25"
+                      : "text-text-muted hover:bg-surface-1 hover:text-text-secondary"
                   )}
                 >
                   <Icon size={14} strokeWidth={1.75} />
@@ -623,12 +625,12 @@ export function SettingsPage() {
 
         {/* ── Audio ── */}
         <section
-          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          className="rounded-xl border border-border bg-surface-1/85 p-5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up"
           style={{ opacity: 0, animationDelay: "0.1s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Mic size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Audio
             </span>
           </div>
@@ -640,7 +642,7 @@ export function SettingsPage() {
               </label>
               <button
                 onClick={() => setDeviceMenuOpen((p) => !p)}
-                className="flex items-center gap-2 w-full bg-surface-2 rounded-lg px-3 py-2 border border-border hover:border-border-hover transition-colors text-left"
+                className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface-2/80 px-3 py-2 text-left transition-colors hover:border-border-hover hover:bg-surface-2"
               >
                 <Volume2 size={14} strokeWidth={1.75} className="text-text-muted shrink-0" />
                 <span className="text-sm text-text-primary truncate flex-1">
@@ -652,7 +654,7 @@ export function SettingsPage() {
               </button>
 
               {deviceMenuOpen && audioDevices.length > 0 && (
-                <div className="absolute z-10 left-0 right-0 mt-1 bg-surface-1 border border-border rounded-lg shadow-xl overflow-hidden">
+                <div className="absolute left-0 right-0 z-10 mt-1.5 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-lg backdrop-blur-sm">
                   {audioDevices.map((device) => {
                     const isActive = device.id === selectedDeviceId;
                     return (
@@ -664,13 +666,13 @@ export function SettingsPage() {
                           setAudioDevice(device.id).catch(console.error);
                         }}
                         className={cn(
-                          "flex items-center gap-2 w-full px-3 py-2 text-left text-sm transition-colors",
+                          "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
                           isActive
-                            ? "bg-amber-500/10 text-amber-400"
-                            : "text-text-primary hover:bg-surface-2"
+                            ? "bg-amber-500/[0.10] text-amber-300"
+                            : "text-text-primary hover:bg-surface-2/80"
                         )}
                       >
-                        <Volume2 size={13} strokeWidth={1.75} className={isActive ? "text-amber-400" : "text-text-muted"} />
+                        <Volume2 size={13} strokeWidth={1.75} className={isActive ? "text-amber-300" : "text-text-muted"} />
                         <span className="truncate">{device.name}</span>
                         {device.is_default && (
                           <span className="text-[10px] text-text-muted ml-auto shrink-0">Default</span>
@@ -698,7 +700,7 @@ export function SettingsPage() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => openMicSettings().catch(console.error)}
-                    className="flex items-center gap-1.5 rounded-md bg-surface-2 border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+                    className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:border-border-hover hover:bg-surface-1 hover:text-text-primary"
                   >
                     <Mic size={12} />
                     Microphone Access
@@ -706,7 +708,7 @@ export function SettingsPage() {
                   </button>
                   <button
                     onClick={() => openAccessibilitySettings().catch(console.error)}
-                    className="flex items-center gap-1.5 rounded-md bg-surface-2 border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+                    className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:border-border-hover hover:bg-surface-1 hover:text-text-primary"
                   >
                     <Keyboard size={12} />
                     Accessibility
@@ -720,12 +722,12 @@ export function SettingsPage() {
 
         {/* ── Output ── */}
         <section
-          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          className="rounded-xl border border-border bg-surface-1/85 p-5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up"
           style={{ opacity: 0, animationDelay: "0.18s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Type size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Output
             </span>
           </div>
@@ -734,18 +736,19 @@ export function SettingsPage() {
             Transcription delivery
           </label>
 
-          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+          <div className="inline-flex gap-0.5 rounded-lg border border-border bg-surface-2/70 p-0.5">
             {outputModes.map(({ id, label, icon: Icon }) => {
               const isActive = activeMode === id;
               return (
                 <button
                   key={id}
                   onClick={() => handleModeChange(id)}
-                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-sm font-medium transition-all duration-150",
                     isActive
-                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                      : "text-text-muted hover:text-text-secondary border border-transparent"
-                  }`}
+                      ? "bg-amber-500/[0.14] text-amber-200 shadow-sm ring-1 ring-amber-400/25"
+                      : "text-text-muted hover:bg-surface-1 hover:text-text-secondary"
+                  )}
                 >
                   {Icon && <Icon size={14} strokeWidth={1.75} />}
                   {label}
@@ -757,33 +760,34 @@ export function SettingsPage() {
 
         {/* ── Writing Style ── */}
         <section
-          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          className="rounded-xl border border-border bg-surface-1/85 p-5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up"
           style={{ opacity: 0, animationDelay: "0.185s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <PenLine size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Writing Style
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Controls capitalization and punctuation in your transcriptions.
             This is the default style — context modes can override it.
           </p>
 
-          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
+          <div className="inline-flex gap-0.5 rounded-lg border border-border bg-surface-2/70 p-0.5">
             {writingStyles.map(({ id, label }) => {
               const isActive = activeStyle === id;
               return (
                 <button
                   key={id}
                   onClick={() => handleStyleChange(id)}
-                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-sm font-medium transition-all duration-150",
                     isActive
-                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                      : "text-text-muted hover:text-text-secondary border border-transparent"
-                  }`}
+                      ? "bg-amber-500/[0.14] text-amber-200 shadow-sm ring-1 ring-amber-400/25"
+                      : "text-text-muted hover:bg-surface-1 hover:text-text-secondary"
+                  )}
                 >
                   {label}
                 </button>
@@ -795,21 +799,21 @@ export function SettingsPage() {
         {/* ── Screen Context ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.use_screen_context
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.18s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <ScanText size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Screen Context
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[440px]">
+          <p className="mb-4 max-w-[440px] text-xs leading-relaxed text-text-muted">
             Read visible text in the focused app to transcribe file paths,
             identifiers, and commands exactly as they appear on screen.
             Capture runs in parallel with your dictation, so it adds no
@@ -823,14 +827,14 @@ export function SettingsPage() {
             <button
               onClick={handleScreenContextToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors",
                 settings?.use_screen_context ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.use_screen_context ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.use_screen_context ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -851,7 +855,7 @@ export function SettingsPage() {
                 <button
                   onClick={handleStructuredScreenContextToggle}
                   className={cn(
-                    "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                    "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                     settings?.structured_use_screen_context
                       ? "bg-amber-500"
                       : "bg-surface-3"
@@ -859,7 +863,7 @@ export function SettingsPage() {
                 >
                   <span
                     className={cn(
-                      "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                      "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
                       settings?.structured_use_screen_context
                         ? "translate-x-6"
                         : "translate-x-1"
@@ -879,23 +883,23 @@ export function SettingsPage() {
         {/* ── Live Preview ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.live_preview
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.19s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Eye size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Live Preview
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Show live transcription words in the floating pill while recording.
-            <span className="text-amber-400/70"> Adds latency</span> — runs
+            <span className="text-amber-300/85"> Adds latency</span> — runs
             inference during recording, which can delay the final transcription.
           </p>
 
@@ -903,14 +907,14 @@ export function SettingsPage() {
             <button
               onClick={handleLivePreviewToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                 settings?.live_preview ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.live_preview ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.live_preview ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -923,21 +927,21 @@ export function SettingsPage() {
         {/* ── Noise Reduction ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.noise_reduction
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.22s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <ShieldCheck size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Noise Reduction
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Remove background noise from recordings before transcription.
             Filters fan noise, keyboard clicks, and other non-speech sounds
             using RNNoise.
@@ -947,14 +951,14 @@ export function SettingsPage() {
             <button
               onClick={handleNoiseReductionToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                 settings?.noise_reduction ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.noise_reduction ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.noise_reduction ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -967,21 +971,21 @@ export function SettingsPage() {
         {/* ── Audio Ducking ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.audio_ducking
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.24s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <VolumeX size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Audio Ducking
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Lower system volume while dictating so other audio doesn't compete
             with your microphone. Restores volume when recording stops.
           </p>
@@ -990,14 +994,14 @@ export function SettingsPage() {
             <button
               onClick={handleAudioDuckingToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                 settings?.audio_ducking ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.audio_ducking ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.audio_ducking ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -1021,11 +1025,7 @@ export function SettingsPage() {
                 step={5}
                 value={settings.ducking_amount}
                 onChange={(e) => handleDuckingAmountChange(parseInt(e.target.value, 10))}
-                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-surface-3
-                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4
-                  [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full
-                  [&::-webkit-slider-thumb]:bg-amber-500 [&::-webkit-slider-thumb]:shadow-sm
-                  [&::-webkit-slider-thumb]:cursor-pointer"
+                className="w-full cursor-pointer"
               />
               <div className="flex justify-between mt-1">
                 <span className="text-[10px] text-text-muted">None</span>
@@ -1038,21 +1038,21 @@ export function SettingsPage() {
         {/* ── AI Cleanup ── */}
         {/* <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             aiStatus?.model_loaded
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.25s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Sparkles size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               AI Cleanup
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Use a local LLM (Qwen3 0.6B) to clean up transcriptions — removes filler words,
             fixes grammar, and handles self-corrections. Runs entirely on your device.
           </p>
@@ -1102,14 +1102,14 @@ export function SettingsPage() {
                 }}
                 disabled={aiLoading}
                 className={cn(
-                  "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                  "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                   aiStatus?.model_loaded ? "bg-amber-500" : "bg-surface-3"
                 )}
               >
                 <span
                   className={cn(
-                    "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                    aiStatus?.model_loaded ? "translate-x-6" : "translate-x-1"
+                    "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                    aiStatus?.model_loaded ? "translate-x-[21px]" : "translate-x-[3px]"
                   )}
                 />
               </button>
@@ -1132,21 +1132,21 @@ export function SettingsPage() {
         {/* ── Voice Commands ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.voice_commands
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.27s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Mic size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Voice Commands
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Recognize spoken commands during dictation. Say "new line" for a line
             break, "new paragraph" for a paragraph break, or "delete last word"
             to remove the previous word.
@@ -1156,14 +1156,14 @@ export function SettingsPage() {
             <button
               onClick={handleVoiceCommandsToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                 settings?.voice_commands ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.voice_commands ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.voice_commands ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -1173,7 +1173,7 @@ export function SettingsPage() {
 
             <button
               onClick={() => setShowVoiceCommands(true)}
-              className="ml-auto text-xs text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
+              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2/70 hover:text-text-secondary"
             >
               <Info size={12} />
               View commands
@@ -1221,28 +1221,27 @@ export function SettingsPage() {
         {/* ── Voice Commands Reference Popup ── */}
         {showVoiceCommands && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-md animate-fade-in"
             onClick={() => setShowVoiceCommands(false)}
           >
             <div
-              className="bg-surface-1 border border-border rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-slide-up"
-              style={{ animationDuration: "0.15s" }}
+              className="w-full max-w-sm rounded-2xl border border-border bg-surface-1 p-6 shadow-lg animate-scale-in"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-5">
+              <div className="mb-5 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Mic size={16} strokeWidth={2} className="text-amber-500" />
-                  <h3 className="text-sm font-semibold text-text-primary">Voice Commands</h3>
+                  <Mic size={16} strokeWidth={2} className="text-amber-300" />
+                  <h3 className="text-[14px] font-semibold text-text-primary">Voice Commands</h3>
                 </div>
                 <button
                   onClick={() => setShowVoiceCommands(false)}
-                  className="text-text-muted hover:text-text-secondary transition-colors p-1 rounded-lg hover:bg-surface-2"
+                  className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
                 >
                   <X size={14} />
                 </button>
               </div>
 
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {[
                   { phrase: "new line", desc: "Insert a line break" },
                   { phrase: "new paragraph", desc: "Insert a paragraph break" },
@@ -1251,19 +1250,19 @@ export function SettingsPage() {
                 ].map((cmd) => (
                   <div
                     key={cmd.phrase}
-                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-2/50 border border-border/50"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-2/55 px-3 py-2.5"
                   >
                     <div>
-                      <span className="text-xs font-mono font-medium text-amber-500">
+                      <span className="font-mono text-xs font-medium text-amber-300">
                         "{cmd.phrase}"
                       </span>
-                      <p className="text-xs text-text-muted mt-0.5">{cmd.desc}</p>
+                      <p className="mt-0.5 text-xs text-text-muted">{cmd.desc}</p>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <p className="text-[10px] text-text-muted mt-4 text-center">
+              <p className="mt-5 text-center text-[10.5px] text-text-muted">
                 Speak these phrases naturally during dictation
               </p>
             </div>
@@ -1273,21 +1272,21 @@ export function SettingsPage() {
         {/* ── Auto Context Switching ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.auto_switch_modes
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.30s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Layers size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Auto Context Switching
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Automatically switch context mode based on which application is
             focused when recording starts. Bind apps to modes in the Context
             Modes editor.
@@ -1297,14 +1296,14 @@ export function SettingsPage() {
             <button
               onClick={handleAutoSwitchToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                 settings?.auto_switch_modes ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.auto_switch_modes ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.auto_switch_modes ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -1317,31 +1316,31 @@ export function SettingsPage() {
         {/* ── Ship Mode ── */}
         <section
           className={cn(
-            "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+            "rounded-xl border bg-surface-1/85 p-5 transition-all duration-200 animate-slide-up",
             settings?.ship_mode
-              ? "border-amber-500/20"
-              : "border-border hover:border-border-hover"
+              ? "border-amber-400/30 bg-amber-500/[0.04]"
+              : "border-border hover:border-border-hover hover:bg-surface-1"
           )}
           style={{ opacity: 0, animationDelay: "0.33s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Rocket size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Ship Mode
             </span>
-            <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">
+            <span className="rounded-md border border-amber-400/30 bg-amber-500/[0.12] px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-[0.12em] text-amber-200">
               Beta
             </span>
           </div>
 
-          <p className="text-xs text-text-muted mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-xs leading-relaxed text-text-muted">
             Automatically sends your transcription by pressing Enter after
             output. Built for agentic workflows — Claude Code, Cursor, and
             similar tools where hands-free submit keeps you in flow.
             Requires Type Simulation or Both output mode.
           </p>
 
-          <p className="text-[11px] text-amber-400/70 mb-4 max-w-[400px]">
+          <p className="mb-4 max-w-[420px] text-[11.5px] text-amber-300/80">
             Your message will be sent immediately after transcription — there
             is no chance to edit before it goes out.
           </p>
@@ -1350,14 +1349,14 @@ export function SettingsPage() {
             <button
               onClick={handleShipModeToggle}
               className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
                 settings?.ship_mode ? "bg-amber-500" : "bg-surface-3"
               )}
             >
               <span
                 className={cn(
-                  "inline-block h-4 w-4 rounded-full bg-white transition-transform",
-                  settings?.ship_mode ? "translate-x-6" : "translate-x-1"
+                  "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
+                  settings?.ship_mode ? "translate-x-[21px]" : "translate-x-[3px]"
                 )}
               />
             </button>
@@ -1385,12 +1384,12 @@ export function SettingsPage() {
 
         {/* ── About ── */}
         <section
-          className="bg-surface-1 rounded-xl border border-border p-5 hover:border-border-hover transition-colors animate-slide-up"
+          className="rounded-xl border border-border bg-surface-1/85 p-5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up"
           style={{ opacity: 0, animationDelay: "0.36s", animationFillMode: "forwards" }}
         >
           <div className="flex items-center gap-2 mb-3">
             <Info size={14} strokeWidth={2} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               About
             </span>
           </div>

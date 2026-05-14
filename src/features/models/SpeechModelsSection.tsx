@@ -80,9 +80,9 @@ export function SpeechModelsSection() {
             <div
               key={model.id}
               className={cn(
-                "bg-surface-1 rounded-xl border border-border px-5 py-3.5 transition-colors hover:border-border-hover opacity-0 animate-slide-up flex items-center gap-4",
-                isActive && "border-l-[3px] border-l-success/60",
-                model.recommended && !isActive && "border-l-[3px] border-l-amber-600"
+                "flex items-center gap-4 rounded-xl border border-border bg-surface-1/85 px-5 py-3.5 opacity-0 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up",
+                isActive && "border-l-[3px] border-l-success/75",
+                model.recommended && !isActive && "border-l-[3px] border-l-amber-500/70"
               )}
               style={{
                 animationDelay: `${0.05 + i * 0.04}s`,
@@ -90,58 +90,58 @@ export function SpeechModelsSection() {
               }}
             >
               {/* Left: name + badges */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-text-primary text-sm">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[14px] font-medium text-text-primary">
                     {model.name}
                   </span>
 
                   {model.bundled && (
-                    <span className="text-[9px] font-medium uppercase tracking-wider text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
+                    <span className="rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.10em] text-text-muted">
                       Included
                     </span>
                   )}
 
                   {model.recommended && (
-                    <span className="text-[9px] font-medium uppercase tracking-wider text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                    <span className="rounded-md border border-amber-400/25 bg-amber-500/[0.10] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.10em] text-amber-300">
                       Recommended
                     </span>
                   )}
 
                   {isActive && (
-                    <span className="text-[9px] font-medium uppercase tracking-wider text-success bg-success/10 px-1.5 py-0.5 rounded">
+                    <span className="rounded-md border border-success/30 bg-success/[0.10] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.10em] text-success">
                       Active
                     </span>
                   )}
                 </div>
 
-                <p className="text-xs text-text-muted mt-0.5 leading-relaxed line-clamp-1">
+                <p className="mt-0.5 line-clamp-1 text-xs leading-relaxed text-text-muted">
                   {model.description}
                 </p>
               </div>
 
               {/* Center: size + quant */}
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="font-mono text-xs text-text-muted w-[70px] text-right">
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="w-[70px] text-right font-mono text-xs tabular-nums text-text-muted">
                   {formatBytes(model.size_bytes)}
                 </span>
-                <span className="bg-surface-3 text-text-muted text-[10px] px-1.5 py-0.5 rounded-full w-[38px] text-center">
+                <span className="w-[40px] rounded-full bg-surface-2 px-1.5 py-0.5 text-center text-[10px] text-text-muted">
                   {model.quantization}
                 </span>
               </div>
 
               {/* Right: action button */}
-              <div className="shrink-0 w-[100px] flex justify-end">
+              <div className="flex w-[110px] shrink-0 justify-end">
                 {model.is_downloaded ? (
                   isActive ? (
-                    <span className="inline-flex items-center gap-1.5 text-success text-xs font-medium">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
                       <Check size={13} strokeWidth={2} />
                       In use
                     </span>
                   ) : (
                     <button
                       onClick={() => handleActivate(model.id)}
-                      className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-lg px-3 py-1 text-xs font-medium transition-colors"
+                      className="inline-flex items-center gap-1 rounded-lg border border-amber-400/25 bg-amber-500/[0.10] px-3 py-1 text-xs font-medium text-amber-300 transition-colors hover:border-amber-400/45 hover:bg-amber-500/[0.18]"
                     >
                       Activate
                     </button>
@@ -151,10 +151,10 @@ export function SpeechModelsSection() {
                     onClick={() => handleDownload(model.id)}
                     disabled={isDownloading}
                     className={cn(
-                      "inline-flex items-center gap-1 rounded-lg px-3 py-1 text-xs font-medium transition-colors",
+                      "inline-flex items-center gap-1 rounded-lg border px-3 py-1 text-xs font-medium transition-colors",
                       isDownloading
-                        ? "bg-surface-3 text-text-muted cursor-not-allowed"
-                        : "bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                        ? "cursor-not-allowed border-border bg-surface-2 text-text-muted"
+                        : "border-amber-400/25 bg-amber-500/[0.10] text-amber-300 hover:border-amber-400/45 hover:bg-amber-500/[0.18]"
                     )}
                   >
                     {isDownloading ? (
@@ -180,12 +180,12 @@ export function SpeechModelsSection() {
           "Recommended" callout references a Whisper model id. */}
       {hardware && (
         <div
-          className="mt-5 bg-surface-1 rounded-xl border border-border p-4 opacity-0 animate-slide-up"
+          className="mt-5 rounded-xl border border-border bg-surface-1/80 p-4 opacity-0 animate-slide-up"
           style={{ animationDelay: "0.35s", animationFillMode: "forwards" }}
         >
-          <div className="flex items-center gap-2 mb-2">
-            <Cpu size={14} strokeWidth={1.75} className="text-text-muted" />
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+          <div className="mb-2.5 flex items-center gap-2">
+            <Cpu size={13} strokeWidth={1.75} className="text-text-muted" />
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Hardware
             </span>
           </div>
@@ -193,13 +193,13 @@ export function SpeechModelsSection() {
           <div className="flex flex-wrap gap-x-8 gap-y-1 text-sm">
             <div>
               <span className="text-text-muted">CPU threads: </span>
-              <span className="font-mono text-text-secondary">
+              <span className="font-mono tabular-nums text-text-secondary">
                 {hardware.cpu_cores}
               </span>
             </div>
             <div>
               <span className="text-text-muted">Recommended: </span>
-              <span className="text-amber-400 font-medium">
+              <span className="font-medium text-amber-300">
                 {models.find((m) => m.id === hardware.recommended_model)?.name ??
                   hardware.recommended_model}
               </span>
