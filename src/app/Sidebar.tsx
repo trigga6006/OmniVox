@@ -20,15 +20,17 @@ export function Sidebar() {
   const isRecording = status === "recording";
 
   return (
-    <aside className="flex h-full w-[72px] shrink-0 flex-col items-center border-r border-border bg-surface-0 py-5">
+    <aside className="flex h-full w-[68px] shrink-0 flex-col items-center border-r border-border/60 bg-surface-0 py-5">
       {/* Logo */}
-      <Logo size={32} />
+      <div className="flex h-9 w-9 items-center justify-center">
+        <Logo size={28} />
+      </div>
 
       {/* Separator */}
-      <div className="my-4 h-px w-8 bg-surface-3" />
+      <div className="my-5 h-px w-7 bg-border/70" />
 
       {/* Navigation */}
-      <nav className="flex flex-1 flex-col items-center gap-1">
+      <nav className="flex flex-1 flex-col items-center gap-0.5">
         {navItems.map(({ page, icon: Icon, label }) => {
           const isActive = currentPage === page;
 
@@ -40,18 +42,22 @@ export function Sidebar() {
               aria-label={label}
               aria-current={isActive ? "page" : undefined}
               className={cn(
-                "relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200",
+                "relative flex h-10 w-10 items-center justify-center rounded-[10px]",
+                "transition-[color,background-color] duration-200 ease-out",
                 isActive
-                  ? "text-amber-400"
-                  : "text-text-muted hover:bg-surface-2 hover:text-text-secondary",
+                  ? "text-amber-300 bg-amber-500/[0.08]"
+                  : "text-text-muted hover:bg-surface-2/60 hover:text-text-secondary"
               )}
             >
-              {/* Active indicator — 3px amber bar on the left */}
+              {/* Active indicator — slim amber rail on the left */}
               {isActive && (
-                <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-amber-500" />
+                <span
+                  aria-hidden="true"
+                  className="absolute -left-[10px] top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-full bg-amber-400"
+                />
               )}
 
-              <Icon size={20} strokeWidth={1.75} />
+              <Icon size={18} strokeWidth={isActive ? 2 : 1.75} />
             </button>
           );
         })}
@@ -60,7 +66,13 @@ export function Sidebar() {
       {/* Recording status dot */}
       <div className="flex h-6 items-center justify-center">
         {isRecording && (
-          <span className="block h-1.5 w-1.5 rounded-full bg-recording-500 animate-breathe" />
+          <span
+            className="block h-1.5 w-1.5 rounded-full bg-recording-500"
+            style={{
+              boxShadow: "0 0 8px rgb(216 67 47 / 0.65)",
+              animation: "breathe 2.4s ease-in-out infinite",
+            }}
+          />
         )}
       </div>
     </aside>

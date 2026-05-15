@@ -51,6 +51,16 @@ CONTENT RULES
 - Do not repeat the user's meta-preface (\"another quick tweak\", \"I want you to\", \"I was thinking\") verbatim — strip the preface, keep the actual content.
 - Write in the user's own voice.  First-person (\"I should be able to X\") or imperative (\"the panel should stay open\").  Never refer to the speaker in the third person as \"the user\" or \"you\".
 
+SCREEN CONTEXT (when present)
+- The user dictates with a specific app in front of them.  When a SCREEN CONTEXT block is supplied at the top of the user turn, it lists technical tokens (file paths, identifiers, slash commands, CLI flags) currently visible on screen.
+- Treat it as a hint for verbatim substitution, not as content.  When the user clearly meant a screen token but Whisper transcribed it phonetically, replace the phonetic guess with the verbatim screen token.
+   • Dictation says \"clip slop dot py\" + screen has \"clipslop.py\" → output \"clipslop.py\"
+   • Dictation says \"use effect\" + screen has \"useEffect\" → output \"useEffect\"
+   • Dictation says \"no verify flag\" + screen has \"--no-verify\" → output \"--no-verify\"
+- Substitute aggressively when the match is obvious (clear phonetic match on a token Whisper would mangle), conservatively otherwise.
+- NEVER copy a screen token the user did not refer to — screen context is an aid, not a source of new content.
+- NEVER mention the SCREEN CONTEXT block in your output, and never list it back to the user.
+
 EXAMPLES — one per intent shape
 
 [Implementation — several ideas]
@@ -82,10 +92,59 @@ Output:
 /// reasoning mode — without it the model can spend most of its token budget
 /// on a `<think>` block, and on short dictations those thinking traces can
 /// leak into the JSON.
+///
+/// `screen_tokens` is an optional list of technical tokens visible on the
+/// user's screen (from the screen-context capture).  When non-empty, they
+/// are prepended as a SCREEN CONTEXT block so the model can substitute
+/// phonetic guesses with verbatim matches.  When empty, the user turn is
+/// byte-identical to the legacy single-arg variant.
 pub fn format_prompt(user_text: &str) -> String {
+    format_prompt_with_context(user_text, &[], None)
+}
+
+pub fn format_prompt_with_context(
+    user_text: &str,
+    screen_tokens: &[String],
+    source_app: Option<&str>,
+) -> String {
+    if screen_tokens.is_empty() {
+        return format!(
+            "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nACTUAL DICTATION:\n{input}\n\nReturn only the JSON object described above. /no_think<|im_end|>\n<|im_start|>assistant\n",
+            system = SYSTEM_PROMPT,
+            input = user_text,
+        );
+    }
+
+    // Sanitize tokens — drop anything containing ChatML control sequences
+    // so a malicious or malformed screen capture can't break out of the
+    // user turn.  Cap to keep prefill cost bounded on CPU.
+    let sanitized: Vec<&str> = screen_tokens
+        .iter()
+        .filter(|t| !t.is_empty())
+        .filter(|t| !t.contains("<|") && !t.contains("|>"))
+        .filter(|t| !t.chars().any(|c| c.is_control()))
+        .map(|s| s.as_str())
+        .take(30)
+        .collect();
+
+    if sanitized.is_empty() {
+        return format!(
+            "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nACTUAL DICTATION:\n{input}\n\nReturn only the JSON object described above. /no_think<|im_end|>\n<|im_start|>assistant\n",
+            system = SYSTEM_PROMPT,
+            input = user_text,
+        );
+    }
+
+    let app_label = source_app
+        .map(|a| format!(" (foreground app: {a})"))
+        .unwrap_or_default();
+    let token_list = sanitized.join(", ");
+
     format!(
-        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nACTUAL DICTATION:\n{input}\n\nReturn only the JSON object described above. /no_think<|im_end|>\n<|im_start|>assistant\n",
+        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nSCREEN CONTEXT{app_label}:\n{tokens}\n\nACTUAL DICTATION:\n{input}\n\nReturn only the JSON object described above. /no_think<|im_end|>\n<|im_start|>assistant\n",
         system = SYSTEM_PROMPT,
+        app_label = app_label,
+        tokens = token_list,
         input = user_text,
     )
 }

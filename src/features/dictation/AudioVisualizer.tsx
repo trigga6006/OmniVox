@@ -19,7 +19,6 @@ export function AudioVisualizer() {
 
   // Derive per-bar heights from the audio level (0-1 range)
   const barHeights = useMemo(() => {
-    // Clamp audio level to 0-1
     const level = Math.max(0, Math.min(1, audioLevel));
 
     return BAR_WEIGHTS.map((weight) => {
@@ -30,19 +29,21 @@ export function AudioVisualizer() {
 
   return (
     <div
-      className="flex items-end justify-center gap-[6px]"
-      style={{ width: 60, height: MAX_HEIGHT + 4 }}
+      className="flex items-end justify-center gap-[7px]"
+      style={{ width: 72, height: MAX_HEIGHT + 4 }}
       role="img"
       aria-label="Audio level visualization"
     >
       {Array.from({ length: BAR_COUNT }, (_, i) => (
         <span
           key={i}
-          className="w-[3px] rounded-full bg-gradient-to-t from-amber-500 to-amber-400 origin-bottom"
+          className="origin-bottom rounded-full bg-gradient-to-t from-amber-500 via-amber-400 to-amber-300"
           style={{
+            width: 3,
             height: `${barHeights[i]}px`,
-            animation: `bar-bounce 0.8s ease-in-out ${BAR_DELAYS[i]}ms infinite`,
-            transition: "height 120ms ease-out",
+            animation: `bar-bounce 0.85s cubic-bezier(0.4, 0, 0.6, 1) ${BAR_DELAYS[i]}ms infinite`,
+            transition: "height 120ms cubic-bezier(0.4, 0, 0.2, 1)",
+            boxShadow: "0 0 8px rgb(232 180 95 / 0.35)",
           }}
         />
       ))}

@@ -10,6 +10,10 @@ use tokio::io::AsyncWriteExt;
 use crate::error::{AppError, AppResult};
 use crate::models::types::{DownloadProgress, DownloadStatus};
 
+/// Reject suspiciously large downloads. The largest whisper model is about
+/// 3.1 GB, so this leaves a small amount of headroom.
+const MAX_DOWNLOAD_BYTES: u64 = 3_500_000_000;
+
 /// Streaming model downloader with progress events and cancellation.
 ///
 /// Downloads GGML whisper models from HuggingFace, writes to a `.part` file
@@ -73,7 +77,6 @@ impl ModelDownloader {
         let total_bytes = response.content_length().unwrap_or(0);
 
         // Reject suspiciously large downloads (max 3 GB — largest whisper model is ~3.1 GB)
-        const MAX_DOWNLOAD_BYTES: u64 = 3_500_000_000;
         if total_bytes > MAX_DOWNLOAD_BYTES {
             return Err(AppError::Model(format!(
                 "File size ({total_bytes} bytes) exceeds maximum allowed ({MAX_DOWNLOAD_BYTES} bytes)"
@@ -112,6 +115,13 @@ impl ModelDownloader {
                 .map_err(|e| AppError::Model(format!("Write error: {e}")))?;
 
             downloaded += chunk.len() as u64;
+            if downloaded > MAX_DOWNLOAD_BYTES {
+                drop(file);
+                let _ = fs::remove_file(&part_path).await;
+                return Err(AppError::Model(format!(
+                    "Downloaded bytes ({downloaded}) exceed maximum allowed ({MAX_DOWNLOAD_BYTES})"
+                )));
+            }
 
             // Throttle progress events to ~1 per percentage point
             let percent = if total_bytes > 0 {

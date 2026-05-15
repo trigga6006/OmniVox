@@ -1,5 +1,5 @@
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
@@ -17,16 +17,21 @@ const DELETE_WORD_MODIFIER: Key = Key::Alt;
 #[cfg(not(target_os = "macos"))]
 const DELETE_WORD_MODIFIER: Key = Key::Control;
 
+const CLIPBOARD_VERIFY_TIMEOUT_MS: u64 = 750;
+const CLIPBOARD_VERIFY_INTERVAL_MS: u64 = 10;
+const POST_PASTE_GUARD_MS: u64 = 250;
+
 use crate::error::{AppError, AppResult};
 use crate::output::types::{OutputConfig, OutputMode};
-use crate::postprocess::voice_commands::{OutputSegment, VoiceCommand, segments_to_string};
+use crate::postprocess::voice_commands::{segments_to_string, OutputSegment, VoiceCommand};
 
 /// Routes transcribed text to the user's focused application.
 ///
 /// Supports three output modes:
 /// - **Clipboard**: Copies text to the system clipboard. User pastes manually.
-/// - **TypeSimulation**: Pastes text via a temporary clipboard write + Ctrl+V,
-///   then restores the previous clipboard contents. Reliable for any text length.
+/// - **TypeSimulation**: Pastes text via clipboard + Ctrl+V and leaves the
+///   transcription on the clipboard so deferred paste handlers cannot read
+///   stale user clipboard contents.
 /// - **Both**: Sets clipboard permanently and also pastes into the focused app.
 pub struct OutputRouter;
 
@@ -44,15 +49,8 @@ impl OutputRouter {
             OutputMode::Clipboard => {
                 self.set_clipboard(text)?;
             }
-            OutputMode::TypeSimulation => {
-                self.paste_with_restore(text)?;
-            }
-            OutputMode::Both => {
-                // Clipboard gets our text permanently; also paste into focused app.
-                // No restore needed since the user wants the text on clipboard.
-                self.set_clipboard(text)?;
-                thread::sleep(Duration::from_millis(30));
-                self.send_paste_keystroke()?;
+            OutputMode::TypeSimulation | OutputMode::Both => {
+                self.paste_text(text)?;
             }
         }
 
@@ -76,15 +74,7 @@ impl OutputRouter {
                     self.set_clipboard(&text)?;
                 }
             }
-            OutputMode::TypeSimulation => {
-                self.execute_segments(segments)?;
-            }
-            OutputMode::Both => {
-                let text = segments_to_string(segments);
-                if !text.is_empty() {
-                    self.set_clipboard(&text)?;
-                }
-                thread::sleep(Duration::from_millis(30));
+            OutputMode::TypeSimulation | OutputMode::Both => {
                 self.execute_segments(segments)?;
             }
         }
@@ -97,27 +87,19 @@ impl OutputRouter {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
 
-        // Snapshot clipboard for restoration after we're done
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
-        let previous = clipboard.get_text().ok();
 
         for seg in segments {
             match seg {
                 OutputSegment::Text(s) => {
                     if !s.is_empty() {
-                        // Paste the entire text block at once (including newlines)
-                        // via the clipboard.  This is critical for terminals: most
-                        // support bracketed-paste mode and will treat the whole
-                        // paste as a single input.  The old approach of splitting
-                        // on '\n' and sending Shift+Enter between lines caused
-                        // terminals to execute each line as a separate command.
-                        clipboard
-                            .set_text(s.as_str())
-                            .map_err(|e| AppError::Output(format!("Clipboard failed: {e}")))?;
-                        thread::sleep(Duration::from_millis(20));
+                        // Paste the entire text block at once, including
+                        // newlines. This keeps terminal/editor paste handling
+                        // atomic and avoids per-line command execution.
+                        Self::set_clipboard_verified(&mut clipboard, s)?;
                         Self::paste_keystroke(&mut enigo)?;
-                        thread::sleep(Duration::from_millis(30));
+                        thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
                     }
                 }
                 OutputSegment::Command(VoiceCommand::NewLine) => {
@@ -139,8 +121,7 @@ impl OutputRouter {
                         .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
                 }
                 OutputSegment::Command(VoiceCommand::Send) => {
-                    // Small delay to ensure all preceding text has landed.
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
                     enigo
                         .key(Key::Return, Direction::Click)
                         .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
@@ -148,49 +129,33 @@ impl OutputRouter {
             }
         }
 
-        // Give the target app time to finish processing the last paste before
-        // we restore the user's original clipboard.  See paste_with_restore for
-        // why — same race applies here (and more so, since we paste multiple
-        // text segments).
-        thread::sleep(Duration::from_millis(150));
-
-        // Restore previous clipboard contents
-        if let Some(prev) = previous {
-            let _ = clipboard.set_text(&prev);
+        // Leave the complete paste-ready transcription on the clipboard. Some
+        // target apps read clipboard contents after the Ctrl+V key event
+        // returns, so restoring the user's previous clipboard can leak stale
+        // text into the selected input.
+        let final_text = segments_to_string(segments);
+        if !final_text.is_empty() {
+            Self::set_clipboard_verified(&mut clipboard, &final_text)?;
         }
 
         Ok(())
     }
 
-    /// Paste text into the focused app, then restore the user's clipboard.
-    fn paste_with_restore(&self, text: &str) -> AppResult<()> {
+    /// Paste text into the focused app and leave that text on the clipboard.
+    fn paste_text(&self, text: &str) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
 
-        // Snapshot — clipboard may contain non-text (images, etc.), so failing is OK
-        let previous = clipboard.get_text().ok();
-
-        clipboard
-            .set_text(text)
-            .map_err(|e| AppError::Output(format!("Failed to set clipboard: {e}")))?;
-
-        // Allow the clipboard to settle before sending the keystroke
-        thread::sleep(Duration::from_millis(30));
+        // Refuse to press Ctrl+V unless the clipboard readback matches this
+        // dictation. Otherwise a transient clipboard race can paste the user's
+        // previous clipboard into the target app.
+        Self::set_clipboard_verified(&mut clipboard, text)?;
 
         self.send_paste_keystroke()?;
 
-        // Give the target application time to process the paste event before
-        // we overwrite the clipboard.  Some apps (Slack, Notion, Electron-based
-        // chat apps) read the clipboard on a deferred tick after Ctrl+V — if
-        // we restore too fast, their paste handler sees our restored text and
-        // either leaks the user's previous clipboard into the message or the
-        // paste fails entirely.  150 ms is empirically safe across tested apps.
-        thread::sleep(Duration::from_millis(150));
-
-        // Restore original clipboard contents
-        if let Some(prev) = previous {
-            let _ = clipboard.set_text(&prev);
-        }
+        // Keep the clipboard stable long enough for target apps that read it
+        // on a deferred tick after Ctrl+V. The text remains afterward by design.
+        thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
 
         Ok(())
     }
@@ -198,10 +163,56 @@ impl OutputRouter {
     fn set_clipboard(&self, text: &str) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
-        clipboard
-            .set_text(text)
-            .map_err(|e| AppError::Output(format!("Failed to set clipboard: {e}")))?;
-        Ok(())
+        Self::set_clipboard_verified(&mut clipboard, text)
+    }
+
+    fn set_clipboard_verified(clipboard: &mut Clipboard, text: &str) -> AppResult<()> {
+        let start = Instant::now();
+        let timeout = Duration::from_millis(CLIPBOARD_VERIFY_TIMEOUT_MS);
+        let interval = Duration::from_millis(CLIPBOARD_VERIFY_INTERVAL_MS);
+        let mut last_error: Option<String> = None;
+
+        while start.elapsed() <= timeout {
+            match clipboard.set_text(text) {
+                Ok(()) => {
+                    thread::sleep(interval);
+                    match clipboard.get_text() {
+                        Ok(current) if Self::clipboard_text_matches(&current, text) => {
+                            return Ok(());
+                        }
+                        Ok(current) => {
+                            last_error = Some(format!(
+                                "clipboard still held different text ({} chars)",
+                                current.chars().count()
+                            ));
+                        }
+                        Err(e) => {
+                            last_error = Some(format!("clipboard readback failed: {e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(format!("clipboard write failed: {e}"));
+                }
+            }
+
+            thread::sleep(interval);
+        }
+
+        Err(AppError::Output(format!(
+            "Clipboard did not contain the dictation after write; refusing to paste stale clipboard{}",
+            last_error
+                .map(|e| format!(" ({e})"))
+                .unwrap_or_default()
+        )))
+    }
+
+    fn clipboard_text_matches(actual: &str, expected: &str) -> bool {
+        fn normalize(s: &str) -> String {
+            s.replace("\r\n", "\n")
+        }
+
+        actual == expected || normalize(actual) == normalize(expected)
     }
 
     /// Simulates Ctrl+V.

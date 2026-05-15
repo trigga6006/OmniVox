@@ -148,12 +148,12 @@ export function NotesPage() {
     return (
       <div className="flex h-full flex-col">
         {/* Toolbar — slim, utility-focused */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-border/50">
+        <div className="flex items-center justify-between border-b border-border/55 px-8 py-3.5">
           <button
             onClick={handleBack}
-            className="flex items-center gap-1.5 text-xs tracking-wide uppercase text-text-muted hover:text-text-secondary transition-colors"
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted transition-colors hover:bg-surface-2/60 hover:text-text-secondary"
           >
-            <ArrowLeft size={14} strokeWidth={1.5} />
+            <ArrowLeft size={14} strokeWidth={1.75} />
             Notes
           </button>
 
@@ -161,36 +161,36 @@ export function NotesPage() {
           <div className="flex items-center gap-1.5 text-xs text-text-muted">
             {saved ? (
               <>
-                <Check size={12} className="text-emerald-400" />
-                <span className="text-emerald-400/80">Saved</span>
+                <Check size={12} className="text-success" />
+                <span className="text-success/90">Saved</span>
               </>
             ) : (
-              <span className="opacity-40">Auto-saves</span>
+              <span className="opacity-50">Auto-saves</span>
             )}
           </div>
         </div>
 
         {/* Document canvas */}
         <div className="flex-1 overflow-auto">
-          <div className="mx-auto w-full max-w-[640px] px-6 py-10">
+          <div className="mx-auto w-full max-w-[640px] px-8 py-12">
             {/* Title */}
             <input
               ref={titleRef}
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               placeholder="Untitled"
-              className="w-full bg-transparent font-display font-semibold text-3xl text-text-primary placeholder:text-text-muted/25 outline-none border-none leading-tight"
+              className="w-full border-none bg-transparent font-display text-[2rem] font-semibold leading-tight tracking-[-0.022em] text-text-primary outline-none placeholder:text-text-muted/30"
             />
 
             {/* Subtle rule */}
-            <div className="mt-4 mb-6 h-px w-12 bg-amber-500/20 rounded-full" />
+            <div className="mb-7 mt-5 h-px w-12 rounded-full bg-amber-400/25" />
 
             {/* Content */}
             <textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
               placeholder="Start writing…"
-              className="w-full min-h-[60vh] bg-transparent text-[15px] text-text-secondary/90 placeholder:text-text-muted/20 outline-none border-none resize-none leading-[1.8] tracking-[0.005em]"
+              className="min-h-[60vh] w-full resize-none border-none bg-transparent text-[15.5px] leading-[1.75] tracking-[0.005em] text-text-secondary outline-none placeholder:text-text-muted/30"
             />
           </div>
         </div>
@@ -202,12 +202,14 @@ export function NotesPage() {
      Grid View
      ──────────────────────────────────────────────────────────── */
   return (
-    <div className="flex h-full flex-col p-6">
+    <div className="flex h-full flex-col px-8 py-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-semibold text-2xl text-text-primary">Notes</h1>
-          <p className="text-sm text-text-muted mt-1">
+          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
+            Notes
+          </h1>
+          <p className="mt-1 text-sm text-text-muted">
             {notes.length > 0
               ? `${notes.length} note${notes.length === 1 ? "" : "s"}`
               : "Your saved notes"}
@@ -215,7 +217,7 @@ export function NotesPage() {
         </div>
         <button
           onClick={handleNew}
-          className="flex items-center gap-2 h-8 px-3 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 text-xs font-medium tracking-wide uppercase transition-colors"
+          className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-3 text-xs font-medium uppercase tracking-[0.10em] text-amber-300 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.18]"
         >
           <Plus size={13} strokeWidth={2} />
           New
@@ -225,23 +227,23 @@ export function NotesPage() {
       {/* Grid */}
       <div className="mt-6 flex-1 overflow-auto pr-1">
         {loading && notes.length === 0 ? (
-          <div className="flex items-center justify-center h-48 text-text-muted text-sm">
+          <div className="flex h-48 items-center justify-center text-sm text-text-muted">
             Loading…
           </div>
         ) : notes.length === 0 ? (
           /* ── Empty state ── */
-          <div className="flex flex-col items-center justify-center h-64 text-center">
+          <div className="flex h-64 flex-col items-center justify-center text-center">
             <div className="relative mb-5">
-              <div className="absolute inset-0 -m-3 rounded-2xl bg-amber-500/[0.03] border border-amber-500/10" />
-              <StickyNote size={28} strokeWidth={1.25} className="relative text-text-muted/60" />
+              <div className="absolute inset-0 -m-3 rounded-2xl border border-amber-500/15 bg-amber-500/[0.04]" />
+              <StickyNote size={28} strokeWidth={1.5} className="relative text-text-muted/70" />
             </div>
-            <p className="text-sm text-text-secondary">No notes yet</p>
-            <p className="text-xs text-text-muted mt-1 mb-4">
+            <p className="text-sm font-medium text-text-secondary">No notes yet</p>
+            <p className="mb-4 mt-1 text-xs text-text-muted">
               Create a note to start writing
             </p>
             <button
               onClick={handleNew}
-              className="text-xs text-amber-400 hover:text-amber-300 transition-colors tracking-wide"
+              className="text-xs font-medium tracking-wide text-amber-300 transition-colors hover:text-amber-200"
             >
               + Create note
             </button>
@@ -253,27 +255,27 @@ export function NotesPage() {
               <button
                 key={note.id}
                 onClick={() => handleOpen(note)}
-                className="group relative flex flex-col text-left rounded-xl border border-border bg-surface-1 hover:bg-surface-2 hover:border-border-hover transition-all duration-200"
+                className="group relative flex flex-col rounded-xl border border-border bg-surface-1/80 text-left shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-border-hover hover:bg-surface-1 hover:shadow-md"
                 style={{
-                  animation: `fade-in 0.3s ease-out ${i * 0.04}s both`,
+                  animation: `fade-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) ${i * 0.03}s both`,
                 }}
               >
                 {/* Document preview area */}
-                <div className="px-4 pt-4 pb-3 flex-1 min-h-[100px]">
+                <div className="min-h-[104px] flex-1 px-4 pb-3 pt-4">
                   {/* Title */}
-                  <h3 className="text-sm font-medium text-text-primary truncate leading-snug">
+                  <h3 className="truncate text-[14px] font-medium leading-snug text-text-primary">
                     {note.title || "Untitled"}
                   </h3>
 
                   {/* Content preview */}
-                  <p className="mt-2 text-xs text-text-muted/70 line-clamp-4 leading-relaxed">
+                  <p className="mt-1.5 line-clamp-4 text-xs leading-relaxed text-text-muted">
                     {note.content || "Empty note"}
                   </p>
                 </div>
 
                 {/* Footer — date + actions */}
-                <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/50">
-                  <span className="text-[10px] text-text-muted/50 tracking-wide">
+                <div className="flex items-center justify-between border-t border-border/55 px-4 py-2.5">
+                  <span className="text-[10.5px] tabular-nums tracking-wide text-text-muted/70">
                     {formatDate(note.updated_at)}
                   </span>
 
@@ -285,7 +287,7 @@ export function NotesPage() {
                       if (e.key === "Enter")
                         handleDelete(e as unknown as React.MouseEvent, note.id);
                     }}
-                    className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-3 text-text-muted hover:text-recording-400 transition-all"
+                    className="rounded-md p-1 text-text-muted opacity-0 transition-all hover:bg-recording-500/12 hover:text-recording-400 group-hover:opacity-100"
                   >
                     <Trash2 size={11} />
                   </div>

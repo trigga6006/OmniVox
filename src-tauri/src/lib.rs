@@ -9,6 +9,7 @@ pub mod models;
 pub mod output;
 pub mod pipeline;
 pub mod postprocess;
+pub mod screen_context;
 pub mod state;
 pub mod storage;
 
@@ -354,7 +355,7 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+    let builder = tauri::Builder::default();
 
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

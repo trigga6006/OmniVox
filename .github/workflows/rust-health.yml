@@ -1,0 +1,64 @@
+name: Rust Health
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: C:\b
+  CMAKE_GENERATOR: Ninja
+
+jobs:
+  rust-health:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: rust-health
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Install audit tools
+        run: cargo install cargo-audit cargo-deny cargo-machete --locked
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets
+
+      - name: Audit Rust advisories
+        run: cargo audit
+
+      - name: Check Rust dependency policy
+        run: cargo deny check advisories bans licenses sources
+
+      - name: Check unused Rust dependencies
+        run: cargo machete
