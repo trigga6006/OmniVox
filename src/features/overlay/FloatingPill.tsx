@@ -9,6 +9,7 @@ import {
   Send,
   Sparkles,
   Mic,
+  StickyNote,
 } from "lucide-react";
 import { useRecordingStore, type RecordingStatus } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
@@ -48,11 +49,50 @@ const MODE_COLORS: Record<string, string> = {
   cyan: "rgb(34,211,238)",
 };
 
-// Window sizes — button always fills the window 100%
+// Window sizes — button always fills the window 100% (except in hover-idle,
+// where the window widens rightward to reveal the scratchpad trigger circle
+// while the pill stays anchored at screen-center via the outer flex layout).
+//
+// State ladder:
+//   slim-idle    window 96 × 26   pill 60 × 10 at bottom-centre (rest is a
+//                                 transparent hover hit-zone so the cursor
+//                                 doesn't need pixel-perfect aim on the slit)
+//   hover-idle   window 112 × 26  pill 60 × 26, waveform fades in, trigger right
+//   menu         window 600 × ~240, pill 200 × 26
+//   active       window 210 × 34, pill 200 × 34
+//
+// IDLE_W/IDLE_H are the slim-idle WINDOW dimensions, not the pill's visible
+// size — the pill stays 60 × 10 in CSS and the surrounding ~18 px of width
+// + 16 px of height above it is transparent.  Cursor anywhere in the
+// window triggers hover via the outer div's onMouseEnter.  Trade-off: that
+// transparent margin intercepts clicks meant for apps behind the overlay,
+// but the region is tiny (96 × 26 px just above the taskbar) where no app
+// typically has clickable UI.
 const ACTIVE_W = 210;
 const ACTIVE_H = 34;
-const IDLE_W = 56;
+const IDLE_W = 96;
 const IDLE_H = 26;
+// Hover-idle window math: pill 60 stays centred, gap 4 + trigger 22 to the
+// right → pill right edge at +30, trigger right edge at +56.  Window must
+// span ±56 around pill-centre → width 112.  The .scratchpad-trigger CSS
+// pins the trigger at `left: calc(50% + 34px)` so these dimensions must
+// stay in sync if you change one.
+const HOVER_IDLE_W = 112;
+const HOVER_IDLE_H = 26;
+const MENU_PILL_H = 26;
+const HOVER_DWELL_MS = 100;
+const HOVER_LEAVE_MS = 120;
+// Motion budget — single source of truth for the choreography.
+//   PILL_MORPH_MS: pill width/height CSS transition, the "spine" of every
+//     transition.  All other timings are calibrated against this.
+//   SHRINK_RESIZE_DELAY_MS: how long the window stays at its old (larger)
+//     size while the pill morphs smaller.  Must equal PILL_MORPH_MS so the
+//     pill is never larger than the window it lives in (= no edge-clipping).
+//   CONTENT_FADE_IN_DELAY_MS: how long active/menu/panel content waits
+//     before fading in after a grow.  Past the WebView2 composition race.
+const PILL_MORPH_MS = 240;
+const SHRINK_RESIZE_DELAY_MS = 240;
+const CONTENT_FADE_IN_DELAY_MS = 80;
 
 export function FloatingPill() {
   useRecordingState();
@@ -65,6 +105,15 @@ export function FloatingPill() {
   const [flashText, setFlashText] = useState<string | null>(null);
   const prevExpandedRef = useRef(false);
   const [showContent, setShowContent] = useState(false);
+
+  // Hover-idle: cursor over the overlay window while in idle state.  Activates
+  // after HOVER_DWELL_MS continuous dwell (filters fly-by cursor passes),
+  // collapses after HOVER_LEAVE_MS off-window (filters brief gaps between
+  // pill and trigger circle).  Drives both the pill's height bump
+  // (22→26) and the scratchpad trigger circle's appearance.
+  const [isHovering, setIsHovering] = useState(false);
+  const hoverEnterTimerRef = useRef<number | null>(null);
+  const hoverLeaveTimerRef = useRef<number | null>(null);
 
   // Live preview state
   const [previewText, setPreviewText] = useState<string | null>(null);
@@ -186,6 +235,12 @@ export function FloatingPill() {
   // at false.  Owning the timer manually means incidental re-runs no
   // longer nuke an in-flight show.
   const showContentTimerRef = useRef<number | null>(null);
+  // Companion to showContentTimerRef.  Holds the pending shrink-resize call
+  // when transitioning to a smaller size: we delay resizeOverlay() until the
+  // pill's CSS morph has had time to finish, so the pill is never bigger
+  // than the window for even one frame.  Cancelled (alongside showContent's
+  // timer) on every effect re-run so the latest state wins.
+  const shrinkResizeTimerRef = useRef<number | null>(null);
   useEffect(() => {
     let targetW: number;
     let targetH: number;
@@ -203,10 +258,16 @@ export function FloatingPill() {
       // right edge at 50%+296px, so 600 window gives 4px margin.
       const selectorH = Math.min(modes.length * 34 + 40 + 34, 240);
       targetW = 600;
-      targetH = ACTIVE_H + selectorH + 4;
+      targetH = MENU_PILL_H + selectorH + 4;
     } else if (pillState !== "idle") {
       targetW = ACTIVE_W;
       targetH = ACTIVE_H;
+    } else if (isHovering) {
+      // Hover-idle: window widens to expose the scratchpad trigger circle on
+      // the right.  Pill stays at window-center via flex layout, so the user
+      // perceives the trigger as appearing without the pill moving.
+      targetW = HOVER_IDLE_W;
+      targetH = HOVER_IDLE_H;
     } else {
       targetW = IDLE_W;
       targetH = IDLE_H;
@@ -256,7 +317,7 @@ export function FloatingPill() {
       setShowContent(true);
       showContentTimerRef.current = null;
     }, 80);
-  }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length]);
+  }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length, isHovering]);
 
   // Clean up the pending showContent timer on unmount so it doesn't
   // fire against a torn-down component.
@@ -273,6 +334,14 @@ export function FloatingPill() {
       if (degradedTimerRef.current !== null) {
         window.clearTimeout(degradedTimerRef.current);
         degradedTimerRef.current = null;
+      }
+      if (hoverEnterTimerRef.current !== null) {
+        window.clearTimeout(hoverEnterTimerRef.current);
+        hoverEnterTimerRef.current = null;
+      }
+      if (hoverLeaveTimerRef.current !== null) {
+        window.clearTimeout(hoverLeaveTimerRef.current);
+        hoverLeaveTimerRef.current = null;
       }
     };
   }, []);
@@ -527,6 +596,43 @@ export function FloatingPill() {
     } catch {}
   }, [applySettingPatch]);
 
+  // Hover handlers — attached to the outer w-screen div so the cursor can
+  // travel between the pill and the trigger circle (with 8 px of transparent
+  // gap between them) without breaking the hover state.  The enter timer is
+  // a dwell filter: a cursor flying past the pill on its way to the system
+  // tray shouldn't pop the trigger open.
+  const handleOverlayMouseEnter = useCallback(() => {
+    if (hoverLeaveTimerRef.current !== null) {
+      window.clearTimeout(hoverLeaveTimerRef.current);
+      hoverLeaveTimerRef.current = null;
+    }
+    if (hoverEnterTimerRef.current !== null) return;
+    hoverEnterTimerRef.current = window.setTimeout(() => {
+      hoverEnterTimerRef.current = null;
+      setIsHovering(true);
+    }, HOVER_DWELL_MS);
+  }, []);
+
+  const handleOverlayMouseLeave = useCallback(() => {
+    if (hoverEnterTimerRef.current !== null) {
+      window.clearTimeout(hoverEnterTimerRef.current);
+      hoverEnterTimerRef.current = null;
+    }
+    if (hoverLeaveTimerRef.current !== null) return;
+    hoverLeaveTimerRef.current = window.setTimeout(() => {
+      hoverLeaveTimerRef.current = null;
+      setIsHovering(false);
+    }, HOVER_LEAVE_MS);
+  }, []);
+
+  // PR 2 will wire this to a toggle_scratchpad Tauri command.  Today it just
+  // logs so the click is visible in the WebView2 console during PR 1 review.
+  const handleScratchpadClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    console.log("[scratchpad] trigger clicked (PR 2 will wire this)");
+  }, []);
+
   const handleClick = useCallback(async () => {
     if (showModeSelector) return; // Don't start recording while selector is open
     // If ghost mode is active, just reveal the pill — don't trigger recording
@@ -596,10 +702,25 @@ export function FloatingPill() {
   const isSuccess = pillState === "success";
   const isError = pillState === "error";
 
+  // Hover-idle is the only state that shows the scratchpad trigger.  Suppress
+  // it when any other UI is on screen (mode menu, structured panel, degraded
+  // banner) or while the pill itself is invisible (ghost mode).
+  const showHoverIdle =
+    isHovering &&
+    isIdle &&
+    !showModeSelector &&
+    !structuredPayload &&
+    !structuredDegraded &&
+    !ghostMode;
+
   const modeColor = MODE_COLORS[activeColor] ?? MODE_COLORS.amber;
 
   return (
-    <div className="w-screen h-screen flex flex-col justify-end items-center">
+    <div
+      className="w-screen h-screen flex flex-col justify-end items-center relative"
+      onMouseEnter={handleOverlayMouseEnter}
+      onMouseLeave={handleOverlayMouseLeave}
+    >
       {/* Structured Mode panel — sits flush on top of the pill, forming a
           single unified surface.  Zero bottom margin is deliberate (the
           "reverse Dynamic Island" expansion effect): the panel's flat
@@ -927,7 +1048,20 @@ export function FloatingPill() {
         // producing a visible one-frame jolt.  Colour + background
         // transitions below pick up those same class changes and
         // smooth them over 200 ms.
-        isIdle && !showModeSelector ? "w-[56px] h-[26px]" : "w-[200px] h-[34px]",
+        // Size ladder: slim-idle is a tiny 28×18 slit; hover-idle pops to
+        // 56×26 (revealing the waveform and the trigger circle); menu
+        // widens to 200×26 (slim like hover-idle, not 34); active pops
+        // to 200×34.  Width/height snap instantly to stay locked to the
+        // Tauri window resize — transitioning them produces a clipped
+        // pill while the window catches up.  Smoothness lives in the
+        // child opacity transitions (waveform fade, trigger fade) instead.
+        showModeSelector
+          ? "w-[200px] h-[26px]"
+          : !isIdle
+          ? "w-[200px] h-[34px]"
+          : isHovering
+          ? "w-[64px] h-[26px]"
+          : "w-[64px] h-[10px]",
         "relative flex items-center overflow-hidden shrink-0 border border-transparent rounded-full",
         "transition-[border-color,background-color,box-shadow] duration-200 ease-out",
         isProcessing ? "cursor-default" : "cursor-pointer",
@@ -951,8 +1085,24 @@ export function FloatingPill() {
         isError && "bg-[var(--color-pill-bg)] border-recording-500/35 gap-2.5 px-3.5",
       )}
     >
-      {/* ── Idle: sleek ambient waveform ── */}
-      {isIdle && <IdleWaveform color={modeColor} />}
+      {/* ── Idle ──
+          Slim-idle (default) renders no content — the pill is just a small
+          dark slit, no animation, deliberately calm.  The ambient waveform
+          fades in only once the user hovers and the window has finished
+          expanding (showContent gate), so the waves appear as the pill
+          settles into hover-idle rather than racing the resize. */}
+      {isIdle && (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          style={{
+            opacity: isHovering && showContent ? 1 : 0,
+            transition: "opacity 220ms ease",
+          }}
+        >
+          <IdleWaveform color={modeColor} maxBar={10} />
+        </div>
+      )}
 
       {/* ── Active states: full pill content with fade ── */}
       {!isIdle && (
@@ -1534,25 +1684,95 @@ export function FloatingPill() {
           0%, 100% { opacity: 0.25; }
           50% { opacity: 1; }
         }
+
+        /* ── Scratchpad trigger ──
+           Sits 4 px to the right of the pill (centered at 50%).  Pill is
+           64 wide so right edge = 50% + 32, gap = 4, trigger left = 50% + 36.
+           Vertically anchored via top calc(50% - 11px) (half the 22 px
+           trigger), not bottom, so it stays inside the outer div even when
+           the window shrinks mid-fade-out.  Background uses var(--color-pill-bg)
+           so the trigger reads as a sibling of the pill rather than an
+           amber accent — same shade, just round and small. */
+        .scratchpad-trigger {
+          position: absolute;
+          left: calc(50% + 36px);
+          top: calc(50% - 11px);
+          width: 22px;
+          height: 22px;
+          border-radius: 999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--color-pill-bg);
+          border: 1px solid transparent;
+          cursor: pointer;
+          color: rgba(255,255,255,0.7);
+          opacity: 0;
+          pointer-events: none;
+          transition:
+            opacity 220ms ease,
+            border-color 180ms ease,
+            transform 140ms ease,
+            color 160ms ease;
+        }
+        .scratchpad-trigger--visible {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .scratchpad-trigger--visible:hover {
+          border-color: rgba(255,255,255,0.12);
+          color: rgba(255,255,255,0.95);
+        }
+        .scratchpad-trigger--visible:active { transform: scale(0.92); }
+        .scratchpad-trigger-icon {
+          filter: drop-shadow(0 0 2px rgba(0,0,0,0.45));
+        }
       `}</style>
+    </button>
+
+    {/* ── Scratchpad trigger circle ──
+        Absolute-positioned sibling of the pill so the pill itself stays
+        anchored at window-centre via the outer flex layout — only the
+        trigger moves as the window expands rightward into hover-idle.
+        PR 1 wires it to a console.log placeholder; PR 2 will replace
+        handleScratchpadClick with toggle_scratchpad. */}
+    <button
+      type="button"
+      className={cn(
+        "scratchpad-trigger",
+        showHoverIdle && showContent && "scratchpad-trigger--visible"
+      )}
+      onClick={handleScratchpadClick}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      tabIndex={showHoverIdle && showContent ? 0 : -1}
+      aria-hidden={!(showHoverIdle && showContent)}
+      title="Scratchpad"
+    >
+      <StickyNote size={12} strokeWidth={2} className="scratchpad-trigger-icon" />
     </button>
     </div>
   );
 }
 
-/* ── Idle waveform: subtle ambient bars ── */
-function IdleWaveform({ color }: { color: string }) {
+/* ── Idle waveform: subtle ambient bars ──
+   Rendered only inside hover-idle now (the slim-idle slit is intentionally
+   empty), so `maxBar` is a single value — 10 px peak inside the 26 px pill.
+   Keyframes scale between 0.4× and 1× of that for a 4–10 px breathing range. */
+function IdleWaveform({ color, maxBar = 10 }: { color: string; maxBar?: number }) {
   const BAR_COUNT = 5;
 
   return (
-    <div className="flex items-center justify-center gap-[3px] w-full h-full">
+    <div className="flex items-center justify-center gap-[3px]">
       {Array.from({ length: BAR_COUNT }).map((_, i) => (
         <div
           key={i}
           className="rounded-full"
           style={{
             width: 2,
-            height: 10,
+            height: maxBar,
             backgroundColor: color,
             opacity: 0.25,
             willChange: "transform, opacity",
