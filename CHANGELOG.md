@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.7
+
+### Bug Fixes
+
+- **Type output mode now preserves your pre-copied clipboard.** Every output mode (Clipboard, Type, Both) was silently writing the dictation to your clipboard and leaving it there, so a snippet you copied before dictating would get clobbered the moment the transcription landed. Type now captures the clipboard before pasting, waits out the 250 ms deferred-read guard that protects against apps which read the clipboard *after* Ctrl+V returns, then restores whatever you had copied. Both still keeps the dictation on the clipboard by design (that's the "I want a copy too" mode). Clipboard is unchanged. The three modes now have genuinely distinct semantics — previously Type and Both were the same code path.
+- **Mode descriptions added to Settings → Output.** A one-liner under the toggle group spells out what each mode does, so the difference between Type and Both is obvious without reading the source.
+
 ## v0.2.5
 
 ### New Features

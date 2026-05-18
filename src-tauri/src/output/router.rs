@@ -28,11 +28,14 @@ use crate::postprocess::voice_commands::{segments_to_string, OutputSegment, Voic
 /// Routes transcribed text to the user's focused application.
 ///
 /// Supports three output modes:
-/// - **Clipboard**: Copies text to the system clipboard. User pastes manually.
-/// - **TypeSimulation**: Pastes text via clipboard + Ctrl+V and leaves the
-///   transcription on the clipboard so deferred paste handlers cannot read
-///   stale user clipboard contents.
-/// - **Both**: Sets clipboard permanently and also pastes into the focused app.
+/// - **Clipboard**: Copies dictation to the clipboard. User pastes manually.
+/// - **TypeSimulation**: Pastes via Ctrl+V, then restores the user's prior
+///   clipboard so a pre-copied snippet survives the dictation. Paste itself
+///   still uses the clipboard internally — the restore happens after the
+///   250 ms deferred-read guard, by which point well-behaved apps have
+///   already consumed the pasted text.
+/// - **Both**: Pastes AND leaves the dictation on the clipboard for repeat
+///   pasting. The explicit "I want a copy too" mode.
 pub struct OutputRouter;
 
 impl OutputRouter {
@@ -49,8 +52,11 @@ impl OutputRouter {
             OutputMode::Clipboard => {
                 self.set_clipboard(text)?;
             }
-            OutputMode::TypeSimulation | OutputMode::Both => {
-                self.paste_text(text)?;
+            OutputMode::TypeSimulation => {
+                self.paste_text(text, true)?;
+            }
+            OutputMode::Both => {
+                self.paste_text(text, false)?;
             }
         }
 
@@ -60,8 +66,10 @@ impl OutputRouter {
     /// Send a sequence of text segments and voice commands to the focused app.
     ///
     /// In **TypeSimulation** mode, text segments are pasted and commands execute
-    /// keystrokes. In **Clipboard** mode, segments are collapsed to a string.
-    /// In **Both** mode, clipboard gets the string and keystrokes execute.
+    /// keystrokes; the user's prior clipboard is restored at the end.
+    /// In **Clipboard** mode, segments are collapsed to a string and copied.
+    /// In **Both** mode, segments are pasted/executed and the concatenated
+    /// dictation is left on the clipboard.
     pub fn send_segments(&self, segments: &[OutputSegment], config: &OutputConfig) -> AppResult<()> {
         if segments.is_empty() {
             return Ok(());
@@ -74,8 +82,11 @@ impl OutputRouter {
                     self.set_clipboard(&text)?;
                 }
             }
-            OutputMode::TypeSimulation | OutputMode::Both => {
-                self.execute_segments(segments)?;
+            OutputMode::TypeSimulation => {
+                self.execute_segments(segments, true)?;
+            }
+            OutputMode::Both => {
+                self.execute_segments(segments, false)?;
             }
         }
 
@@ -83,12 +94,30 @@ impl OutputRouter {
     }
 
     /// Execute a sequence of text + command segments via paste + keystrokes.
-    fn execute_segments(&self, segments: &[OutputSegment]) -> AppResult<()> {
+    ///
+    /// When `restore_prior_clipboard` is true the user's prior clipboard text
+    /// (if any) is restored after the final deferred-read guard, so the
+    /// dictation does not linger in clipboard. When false, the concatenated
+    /// dictation is written to the clipboard for re-pasting (Both mode).
+    fn execute_segments(
+        &self,
+        segments: &[OutputSegment],
+        restore_prior_clipboard: bool,
+    ) -> AppResult<()> {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
 
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
+
+        // Snapshot the user's clipboard BEFORE we overwrite it. Only used in
+        // TypeSimulation mode; captured eagerly so it's still the *prior*
+        // contents (not a half-written dictation) by the time we restore.
+        let saved_clipboard = if restore_prior_clipboard {
+            Self::capture_clipboard_text(&mut clipboard)
+        } else {
+            None
+        };
 
         for seg in segments {
             match seg {
@@ -129,22 +158,41 @@ impl OutputRouter {
             }
         }
 
-        // Leave the complete paste-ready transcription on the clipboard. Some
-        // target apps read clipboard contents after the Ctrl+V key event
-        // returns, so restoring the user's previous clipboard can leak stale
-        // text into the selected input.
-        let final_text = segments_to_string(segments);
-        if !final_text.is_empty() {
-            Self::set_clipboard_verified(&mut clipboard, &final_text)?;
+        if restore_prior_clipboard {
+            // TypeSimulation: return the clipboard to whatever the user had
+            // before dictating. If we couldn't read text (image, empty, error)
+            // we leave the last-pasted segment in place — safer than clearing
+            // their (possibly non-text) clipboard.
+            if let Some(prior) = saved_clipboard {
+                let _ = Self::set_clipboard_verified(&mut clipboard, &prior);
+            }
+        } else {
+            // Both: write the full concatenated dictation so the user can
+            // re-paste it. Also defends deferred-read apps from seeing only
+            // the trailing segment.
+            let final_text = segments_to_string(segments);
+            if !final_text.is_empty() {
+                Self::set_clipboard_verified(&mut clipboard, &final_text)?;
+            }
         }
 
         Ok(())
     }
 
-    /// Paste text into the focused app and leave that text on the clipboard.
-    fn paste_text(&self, text: &str) -> AppResult<()> {
+    /// Paste text into the focused app via Ctrl+V.
+    ///
+    /// When `restore_prior_clipboard` is true (TypeSimulation), the user's
+    /// prior clipboard text is captured first and restored after the
+    /// deferred-read guard so pre-copied snippets survive dictation.
+    fn paste_text(&self, text: &str, restore_prior_clipboard: bool) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
+
+        let saved_clipboard = if restore_prior_clipboard {
+            Self::capture_clipboard_text(&mut clipboard)
+        } else {
+            None
+        };
 
         // Refuse to press Ctrl+V unless the clipboard readback matches this
         // dictation. Otherwise a transient clipboard race can paste the user's
@@ -154,10 +202,24 @@ impl OutputRouter {
         self.send_paste_keystroke()?;
 
         // Keep the clipboard stable long enough for target apps that read it
-        // on a deferred tick after Ctrl+V. The text remains afterward by design.
+        // on a deferred tick after Ctrl+V.
         thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
 
+        if restore_prior_clipboard {
+            if let Some(prior) = saved_clipboard {
+                let _ = Self::set_clipboard_verified(&mut clipboard, &prior);
+            }
+        }
+
         Ok(())
+    }
+
+    /// Best-effort snapshot of the clipboard's text contents prior to a paste.
+    /// Returns None for non-text clipboards (images, files, errors) — in that
+    /// case the caller should leave the post-paste clipboard alone rather than
+    /// clearing whatever non-text content was there.
+    fn capture_clipboard_text(clipboard: &mut Clipboard) -> Option<String> {
+        clipboard.get_text().ok()
     }
 
     fn set_clipboard(&self, text: &str) -> AppResult<()> {
