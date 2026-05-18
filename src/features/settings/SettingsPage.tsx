@@ -24,9 +24,24 @@ import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const outputModes = [
-  { id: "clipboard", label: "Clipboard", icon: Clipboard },
-  { id: "type_simulation", label: "Type", icon: Type },
-  { id: "both", label: "Both", icon: null },
+  {
+    id: "clipboard",
+    label: "Clipboard",
+    icon: Clipboard,
+    description: "Copy dictation to the clipboard. Paste it yourself with Ctrl+V.",
+  },
+  {
+    id: "type_simulation",
+    label: "Type",
+    icon: Type,
+    description: "Auto-paste into the focused app, then restore whatever you had on your clipboard.",
+  },
+  {
+    id: "both",
+    label: "Both",
+    icon: null,
+    description: "Auto-paste AND keep dictation on the clipboard so you can paste it again.",
+  },
 ] as const;
 
 type OutputMode = (typeof outputModes)[number]["id"];
@@ -756,6 +771,10 @@ export function SettingsPage() {
               );
             })}
           </div>
+
+          <p className="mt-3 max-w-[440px] text-xs leading-relaxed text-text-muted">
+            {outputModes.find((m) => m.id === activeMode)?.description}
+          </p>
         </section>
 
         {/* ── Writing Style ── */}
