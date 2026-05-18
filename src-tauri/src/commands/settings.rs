@@ -266,6 +266,116 @@ pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Recover the floating overlay pill from any "lost" state — invisible due
+/// to ghost mode, parked on a disconnected monitor, hidden by another
+/// always-on-top app, etc.  Invoked from the tray menu's "Reset Pill" item.
+///
+/// What it does, in order:
+///   1. Force `ghost_mode = false` in the DB and broadcast a settings-changed
+///      event so the FloatingPill un-ghosts.
+///   2. Show the overlay window, re-assert always-on-top, and unminimize.
+///   3. Reposition to the primary monitor's center-bottom via the same
+///      `SetWindowPos` path `resize_overlay` uses — survives monitor
+///      changes that left the pill parked off-screen.
+///
+/// If the overlay window has been destroyed entirely (rare — WebView2
+/// process kill), this returns an error and the user has to fully restart
+/// the app.  Rebuilding a Tauri window from an AppHandle mid-runtime is
+/// possible but pulls in enough complexity that it's not worth it for the
+/// once-in-a-blue-moon case.
+#[tauri::command]
+pub async fn recover_overlay(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // 1. Force ghost mode off so the pill isn't invisible after we show it.
+    let mut settings = crate::storage::settings::get_settings(&state.db)
+        .map_err(|e| e.to_string())?;
+    if settings.ghost_mode {
+        settings.ghost_mode = false;
+        crate::storage::settings::update_settings(&state.db, &settings)
+            .map_err(|e| e.to_string())?;
+        let _ = app.emit("settings-changed", &settings);
+    }
+
+    let window = app
+        .get_webview_window("overlay")
+        .ok_or("overlay window not found — fully quit and relaunch OmniVox to recreate it")?;
+
+    // 2. Recover from hidden / z-order-lost states.  set_always_on_top is
+    //    idempotent; calling it again forces the OS to re-evaluate z-order
+    //    in case a fullscreen app stole the spot.
+    let _ = window.unminimize();
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.set_always_on_top(true);
+
+    // 3. Reposition to primary monitor center-bottom.  We deliberately use
+    //    the primary monitor (not the cursor monitor) for recovery because
+    //    the cursor may itself be on a disconnected monitor in the bad
+    //    state we're trying to escape.
+    let target = app
+        .primary_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("no primary monitor")?;
+
+    let scale = target.scale_factor();
+    let mon_pos = target.position();
+    let mon_size = target.size();
+
+    // Idle pill size (matches FloatingPill.tsx IDLE_W/IDLE_H).
+    let pill_w_logical = 56.0_f64;
+    let pill_h_logical = 26.0_f64;
+    let phys_w = pill_w_logical * scale;
+    let phys_h = pill_h_logical * scale;
+    let taskbar_phys = TASKBAR_H * scale;
+    let margin_phys = MARGIN * scale;
+
+    let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
+    let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
+    let xi = x as i32;
+    let yi = y.max(0.0) as i32;
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        };
+
+        if let Ok(hwnd_raw) = window.hwnd() {
+            let hwnd: HWND = hwnd_raw.0 as HWND;
+            let w_phys = phys_w.round() as i32;
+            let h_phys = phys_h.round() as i32;
+            // SAFETY: hwnd is valid (just retrieved from Tauri), flags are
+            // well-formed, no z-order or activation change beyond what
+            // set_always_on_top above already requested.
+            let ok = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    xi,
+                    yi,
+                    w_phys,
+                    h_phys,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+            if ok != 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    window
+        .set_size(tauri::LogicalSize::new(pill_w_logical, pill_h_logical))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(tauri::PhysicalPosition::new(xi, yi))
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Persist a new hotkey config and activate it immediately.
 #[tauri::command]
 pub async fn update_hotkey(
