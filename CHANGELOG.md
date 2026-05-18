@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.8
+
+### Bug Fixes
+
+- **Recover-from-lost-pill escape hatch in the tray.** The floating pill could vanish for several reasons — ghost mode accidentally toggled on (pill is opacity-0 with a 56×26 px invisible click target, effectively unrecoverable by clicking blindly), a connected monitor unplugged with the pill parked on it, a fullscreen app stealing the always-on-top z-order, or a long-running WebView2 process going stale. None of these had a recovery path: the tray only had "Show OmniVox" (which shows the main window, not the pill) and "Quit". The tray now has a **Reset Pill** item that force-disables ghost mode in the DB, broadcasts the settings change so the overlay un-ghosts, repositions the pill to the primary monitor's center-bottom via `SetWindowPos`, and re-asserts `show` + `always_on_top` so it climbs back out of any z-order pit. Survives every reason the pill might "disappear" except an outright destroyed window (rare WebView2 process death — that still needs a full app restart).
+
 ## v0.2.7
 
 ### Bug Fixes

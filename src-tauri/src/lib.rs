@@ -17,8 +17,14 @@ use tauri::Manager;
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox", true, None::<&str>)?;
+    // Recovery escape hatch when the floating pill goes missing — ghost
+    // mode stuck on, parked on a disconnected monitor, z-order stolen by
+    // a fullscreen app, etc.  Always present in the tray so the user has
+    // a guaranteed way back even when the pill itself is unreachable.
+    let reset_pill_item =
+        tauri::menu::MenuItem::with_id(app, "reset_pill", "Reset Pill", true, None::<&str>)?;
     let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = tauri::menu::Menu::with_items(app, &[&show_item, &quit_item])?;
+    let menu = tauri::menu::Menu::with_items(app, &[&show_item, &reset_pill_item, &quit_item])?;
 
     tauri::tray::TrayIconBuilder::new()
         .menu(&menu)
@@ -29,6 +35,19 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
+            }
+            "reset_pill" => {
+                // recover_overlay needs an AppState handle; spawn so the
+                // tray menu handler returns promptly and the menu closes.
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<state::AppState>();
+                    if let Err(e) =
+                        commands::recover_overlay(app_handle.clone(), state).await
+                    {
+                        eprintln!("Reset Pill failed: {e}");
+                    }
+                });
             }
             "quit" => {
                 app.exit(0);
@@ -490,6 +509,7 @@ pub fn run() {
             commands::update_hotkey,
             commands::resize_overlay,
             commands::show_main_window,
+            commands::recover_overlay,
             // Notes commands (4)
             commands::add_note,
             commands::update_note,
