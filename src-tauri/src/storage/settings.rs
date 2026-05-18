@@ -140,6 +140,16 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.structured_voice_command);
 
+    let use_screen_context = map
+        .get("use_screen_context")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.use_screen_context);
+
+    let structured_use_screen_context = map
+        .get("structured_use_screen_context")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.structured_use_screen_context);
+
     Ok(AppSettings {
         theme,
         language,
@@ -166,6 +176,8 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         llm_timeout_secs,
         structured_min_chars,
         structured_voice_command,
+        use_screen_context,
+        structured_use_screen_context,
     })
 }
 
@@ -197,7 +209,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     let llm_timeout_str = settings.llm_timeout_secs.to_string();
     let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 24] = [
+    let pairs: [(&str, &str); 26] = [
         ("theme", settings.theme.as_str()),
         ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
@@ -222,6 +234,8 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("llm_timeout_secs", llm_timeout_str.as_str()),
         ("structured_min_chars", structured_min_chars_str.as_str()),
         ("structured_voice_command", b(settings.structured_voice_command)),
+        ("use_screen_context", b(settings.use_screen_context)),
+        ("structured_use_screen_context", b(settings.structured_use_screen_context)),
     ];
 
     let conn = db.conn()?;

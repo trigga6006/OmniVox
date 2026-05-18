@@ -1,106 +1,133 @@
 @theme {
   /* ═══════════════════════════════════════════════════════════
-     OmniVox — "Studio Monitor" Design System
-     Warm charcoal surfaces, amber/gold accents, crimson recording.
-     Inspired by high-end audio equipment and vintage VU meters.
+     OmniVox — Design System
+     Premium, software-grade surfaces with a restrained amber
+     brand accent. Inspired by the type and tonal restraint of
+     Linear, Vercel, and Anthropic.
      ═══════════════════════════════════════════════════════════ */
 
-  /* Amber / Gold — primary accent (hue ~55, warm gold) */
-  --color-amber-50: oklch(0.98 0.02 75);
-  --color-amber-100: oklch(0.94 0.04 72);
-  --color-amber-200: oklch(0.88 0.08 68);
-  --color-amber-300: oklch(0.80 0.12 62);
-  --color-amber-400: oklch(0.72 0.15 58);
-  --color-amber-500: oklch(0.65 0.16 55);
-  --color-amber-600: oklch(0.55 0.14 50);
-  --color-amber-700: oklch(0.45 0.11 48);
-  --color-amber-800: oklch(0.35 0.08 45);
-  --color-amber-900: oklch(0.25 0.05 45);
+  /* Amber / Gold — brand accent (kept warm but desaturated so it
+     feels "honey" instead of "highlighter"). Used sparingly:
+     active nav state, primary action, recording indicator. */
+  --color-amber-50:  oklch(0.985 0.012 80);
+  --color-amber-100: oklch(0.955 0.028 78);
+  --color-amber-200: oklch(0.910 0.060 75);
+  --color-amber-300: oklch(0.855 0.095 72);
+  --color-amber-400: oklch(0.795 0.115 68);
+  --color-amber-500: oklch(0.735 0.130 62);
+  --color-amber-600: oklch(0.640 0.125 55);
+  --color-amber-700: oklch(0.525 0.105 50);
+  --color-amber-800: oklch(0.405 0.080 48);
+  --color-amber-900: oklch(0.290 0.055 48);
 
-  /* Recording — deep crimson with warm undertone */
-  --color-recording-300: oklch(0.72 0.16 22);
-  --color-recording-400: oklch(0.62 0.2 20);
-  --color-recording-500: oklch(0.52 0.22 18);
-  --color-recording-600: oklch(0.42 0.18 16);
+  /* Recording — warm vermilion. Saturated enough to read as
+     "live mic" against the lighter neutral surfaces. */
+  --color-recording-300: oklch(0.760 0.155 25);
+  --color-recording-400: oklch(0.680 0.190 22);
+  --color-recording-500: oklch(0.595 0.215 22);
+  --color-recording-600: oklch(0.495 0.190 20);
 
-  /* Surfaces — warm charcoal, not cold gray */
-  --color-surface-0: oklch(0.11 0.006 60);
-  --color-surface-1: oklch(0.14 0.006 55);
-  --color-surface-2: oklch(0.17 0.008 52);
-  --color-surface-3: oklch(0.21 0.01 50);
-  --color-surface-4: oklch(0.25 0.012 50);
+  /* Surfaces — sophisticated near-neutral with a whisper of
+     warmth (hue 70, very low chroma). Materially brighter than
+     the previous "studio monitor" palette so the app reads as
+     premium-modern rather than dim. */
+  --color-surface-0: oklch(0.175 0.005 70);
+  --color-surface-1: oklch(0.218 0.006 70);
+  --color-surface-2: oklch(0.258 0.007 70);
+  --color-surface-3: oklch(0.305 0.008 70);
+  --color-surface-4: oklch(0.360 0.009 70);
 
-  /* Text — warm whites and muted tones */
-  --color-text-primary: oklch(0.93 0.008 70);
-  --color-text-secondary: oklch(0.68 0.01 60);
-  --color-text-muted: oklch(0.42 0.008 55);
+  /* Text — generous contrast, no fully-white glare. */
+  --color-text-primary:   oklch(0.970 0.004 70);
+  --color-text-secondary: oklch(0.785 0.006 70);
+  --color-text-muted:     oklch(0.580 0.008 70);
 
-  /* Borders */
-  --color-border: oklch(0.20 0.008 55);
-  --color-border-hover: oklch(0.28 0.015 55);
-  --color-border-active: oklch(0.45 0.08 55);
+  /* Borders — visible enough to define cards without ringing. */
+  --color-border:        oklch(0.305 0.008 70);
+  --color-border-hover:  oklch(0.395 0.012 70);
+  --color-border-active: oklch(0.555 0.080 65);
 
   /* Semantic */
-  --color-success: oklch(0.65 0.15 145);
-  --color-error: oklch(0.55 0.2 20);
+  --color-success: oklch(0.755 0.135 155);
+  --color-error:   oklch(0.640 0.205 25);
 
-  /* Background gradient (main content area) */
-  --color-gradient-from: oklch(0.14 0.015 55);
-  --color-gradient-to: oklch(0.11 0.006 60);
+  /* Background gradient (main content area) — extremely subtle
+     so it reads as a polished panel, not a vignette. */
+  --color-gradient-from: oklch(0.215 0.008 70);
+  --color-gradient-to:   oklch(0.175 0.005 70);
 
-  /* Overlay pill background */
-  --color-pill-bg: #1a1a1a;
+  /* Overlay pill background (kept dark for desktop transparency) */
+  --color-pill-bg: #18181b;
 
   /* Spacing */
   --spacing-sidebar: 4.5rem;
 
   /* Typography */
   --font-display: 'Archivo', system-ui, sans-serif;
-  --font-sans: 'Outfit', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+  --font-sans:    'Outfit', system-ui, sans-serif;
+  --font-mono:    'IBM Plex Mono', 'JetBrains Mono', Consolas, monospace;
+
+  /* Type scale — refined ratio (1.2) for tight, intentional hierarchy. */
+  --text-xs:   0.75rem;     /* 12 */
+  --text-sm:   0.875rem;    /* 14 */
+  --text-base: 0.9375rem;   /* 15 */
+  --text-lg:   1.0625rem;   /* 17 */
+  --text-xl:   1.25rem;     /* 20 */
+  --text-2xl:  1.5rem;      /* 24 */
+  --text-3xl:  1.875rem;    /* 30 */
 
   /* Animations */
-  --animate-recording-pulse: recording-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  --animate-recording-ring: recording-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  --animate-breathe: breathe 3s ease-in-out infinite;
-  --animate-fade-in: fade-in 0.4s ease-out forwards;
-  --animate-slide-up: slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  --animate-scale-in: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-recording-pulse: recording-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-recording-ring:  recording-ring  2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-breathe:         breathe 3s ease-in-out infinite;
+  --animate-fade-in:         fade-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  --animate-slide-up:        slide-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  --animate-scale-in:        scale-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+
+  /* Easing curves */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Shadows — soft, layered, never harsh. */
+  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.18);
+  --shadow:     0 2px 6px -2px rgb(0 0 0 / 0.22), 0 1px 2px rgb(0 0 0 / 0.16);
+  --shadow-md:  0 8px 18px -8px rgb(0 0 0 / 0.32), 0 3px 8px -4px rgb(0 0 0 / 0.18);
+  --shadow-lg:  0 18px 38px -12px rgb(0 0 0 / 0.40), 0 6px 14px -8px rgb(0 0 0 / 0.22);
 }
 
-/* ── Light Theme: Warm Stone ──────────────────────────────── */
+/* ── Light Theme: Warm Paper ─────────────────────────────────
+   Anthropic-adjacent cream. Off-white, never blue-gray. */
 
 [data-theme="light"] {
-  /* Surfaces — soft warm stone, very low chroma */
-  --color-surface-0: oklch(0.955 0.007 65);
-  --color-surface-1: oklch(0.925 0.009 60);
-  --color-surface-2: oklch(0.895 0.011 58);
-  --color-surface-3: oklch(0.855 0.014 55);
-  --color-surface-4: oklch(0.810 0.017 52);
+  --color-surface-0: oklch(0.985 0.005 80);
+  --color-surface-1: oklch(0.970 0.007 78);
+  --color-surface-2: oklch(0.945 0.009 75);
+  --color-surface-3: oklch(0.905 0.012 72);
+  --color-surface-4: oklch(0.860 0.014 70);
 
-  /* Text — warm dark tones */
-  --color-text-primary: oklch(0.22 0.008 55);
-  --color-text-secondary: oklch(0.40 0.010 55);
-  --color-text-muted: oklch(0.56 0.008 55);
+  --color-text-primary:   oklch(0.215 0.012 65);
+  --color-text-secondary: oklch(0.410 0.014 65);
+  --color-text-muted:     oklch(0.580 0.012 65);
 
-  /* Borders — subtle stone edges */
-  --color-border: oklch(0.87 0.010 58);
-  --color-border-hover: oklch(0.79 0.016 55);
-  --color-border-active: oklch(0.58 0.07 55);
+  --color-border:        oklch(0.890 0.012 72);
+  --color-border-hover:  oklch(0.815 0.018 70);
+  --color-border-active: oklch(0.605 0.085 60);
 
-  /* Semantic — slightly deeper for light bg contrast */
-  --color-success: oklch(0.52 0.14 145);
-  --color-error: oklch(0.48 0.2 20);
+  --color-success: oklch(0.555 0.140 150);
+  --color-error:   oklch(0.520 0.200 25);
 
-  /* Background gradient */
-  --color-gradient-from: oklch(0.935 0.010 62);
-  --color-gradient-to: oklch(0.955 0.007 65);
+  --color-gradient-from: oklch(0.975 0.008 78);
+  --color-gradient-to:   oklch(0.990 0.005 80);
 
-  /* Overlay pill */
-  --color-pill-bg: oklch(0.925 0.009 60);
+  --color-pill-bg: oklch(0.970 0.007 78);
+
+  --shadow-sm: 0 1px 2px 0 rgb(80 60 30 / 0.06);
+  --shadow:    0 2px 6px -2px rgb(80 60 30 / 0.08), 0 1px 2px rgb(80 60 30 / 0.06);
+  --shadow-md: 0 8px 18px -8px rgb(80 60 30 / 0.14), 0 3px 8px -4px rgb(80 60 30 / 0.08);
+  --shadow-lg: 0 18px 38px -12px rgb(80 60 30 / 0.18), 0 6px 14px -8px rgb(80 60 30 / 0.10);
 }
 
-/* ── Keyframes ────────────────────────────────────────────── */
+/* ── Keyframes ──────────────────────────────────────────────── */
 
 @keyframes recording-pulse {
   0%, 100% {
@@ -108,37 +135,37 @@
     transform: scale(1);
   }
   50% {
-    opacity: 0.8;
-    transform: scale(1.04);
+    opacity: 0.85;
+    transform: scale(1.035);
   }
 }
 
 @keyframes recording-ring {
   0% {
-    box-shadow: 0 0 0 0 oklch(0.52 0.22 18 / 0.5);
+    box-shadow: 0 0 0 0 oklch(0.595 0.215 22 / 0.45);
   }
   70% {
-    box-shadow: 0 0 0 20px oklch(0.52 0.22 18 / 0);
+    box-shadow: 0 0 0 22px oklch(0.595 0.215 22 / 0);
   }
   100% {
-    box-shadow: 0 0 0 0 oklch(0.52 0.22 18 / 0);
+    box-shadow: 0 0 0 0 oklch(0.595 0.215 22 / 0);
   }
 }
 
 @keyframes breathe {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
 }
 
 @keyframes fade-in {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
 
 @keyframes slide-up {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -149,7 +176,7 @@
 @keyframes scale-in {
   from {
     opacity: 0;
-    transform: scale(0.92);
+    transform: scale(0.94);
   }
   to {
     opacity: 1;
@@ -159,12 +186,12 @@
 
 @keyframes bar-bounce {
   0%, 100% { transform: scaleY(0.3); }
-  50% { transform: scaleY(1); }
+  50%      { transform: scaleY(1); }
 }
 
 @keyframes spin-slow {
   from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  to   { transform: rotate(360deg); }
 }
 
 @keyframes grain {

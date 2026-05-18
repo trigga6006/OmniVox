@@ -2,15 +2,15 @@ import { X } from "lucide-react";
 import { useToastStore } from "@/stores/toastStore";
 
 const levelStyles = {
-  error: "border-red-500/30 bg-red-500/10 text-red-300",
-  warn: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  info: "border-blue-500/30 bg-blue-500/10 text-blue-300",
+  error: "border-error/30 bg-error/[0.10] text-error",
+  warn: "border-amber-400/30 bg-amber-500/[0.10] text-amber-200",
+  info: "border-border bg-surface-1/95 text-text-primary",
 };
 
 const actionStyles = {
-  error: "bg-red-500/20 hover:bg-red-500/30 text-red-200",
+  error: "bg-error/20 hover:bg-error/30 text-error",
   warn: "bg-amber-500/20 hover:bg-amber-500/30 text-amber-200",
-  info: "bg-blue-500/20 hover:bg-blue-500/30 text-blue-200",
+  info: "bg-surface-2 hover:bg-surface-3 text-text-primary",
 };
 
 export function ToastContainer() {
@@ -20,17 +20,17 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    <div className="fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2">
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`flex flex-col gap-2 rounded-lg border px-3 py-2.5 shadow-lg backdrop-blur-sm animate-in slide-in-from-right-2 ${levelStyles[toast.level]}`}
+          className={`flex flex-col gap-2 rounded-xl border px-3.5 py-3 shadow-lg backdrop-blur-md animate-slide-up ${levelStyles[toast.level]}`}
         >
           <div className="flex items-start gap-2">
-            <p className="flex-1 text-xs leading-relaxed">{toast.message}</p>
+            <p className="flex-1 text-[13px] leading-relaxed">{toast.message}</p>
             <button
               onClick={() => removeToast(toast.id)}
-              className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+              className="shrink-0 rounded-md p-0.5 opacity-60 transition-opacity hover:bg-white/[0.05] hover:opacity-100"
             >
               <X size={12} />
             </button>

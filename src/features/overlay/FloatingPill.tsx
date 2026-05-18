@@ -107,6 +107,7 @@ export function FloatingPill() {
   // realistic gap between two adjacent Tauri event emits.
   const dictatingInPanelRef = useRef(false);
   const dictatingGraceTimerRef = useRef<number | null>(null);
+  const degradedTimerRef = useRef<number | null>(null);
   const handleDictatingChange = useCallback((active: boolean) => {
     if (dictatingGraceTimerRef.current !== null) {
       window.clearTimeout(dictatingGraceTimerRef.current);
@@ -163,11 +164,28 @@ export function FloatingPill() {
   // horizontally but no menu".  Collapsing into a single effect
   // guarantees exactly one resize per state transition.
   //
-  // showContent fade timing (80 ms in / 200 ms out) is preserved but
-  // only triggered on the idle↔expanded boundary, so intra-expanded
-  // transitions (e.g. opening the menu while the pill is already
-  // recording) reshape the window without flashing the content.
+  // `showContent` is reset to false on EVERY size change (not just
+  // idle↔expanded), then flipped back to true 80 ms later.  This
+  // masks a one-frame WebView2 composition race: SetWindowPos resizes
+  // the window atomically on the Windows thread, but WebView2 can
+  // paint the pre-resize React layout into the new window bounds for
+  // a single frame before re-laying-out — showing the pill/menu at
+  // the top-left of the expanded region.  Hiding content for 80 ms
+  // (which also gates ModeSelector / StructuredPanel / degraded
+  // banner mounts below) skips past that race.  200 ms out for
+  // expanded→idle so the fade-out completes before the window shrinks.
   const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
+  // Pending showContent timer lives in a ref rather than being released by
+  // the effect's cleanup.  Reason: the effect's deps include `pillState`,
+  // which changes AFTER `structuredPayload` is set (the pipeline emits
+  // `structured-output-ready` and then `recording-state-change: idle`
+  // back-to-back).  The second re-run sees `sizeChanged === false` and
+  // returns early — but React has already invoked the first run's cleanup,
+  // which would `clearTimeout` the pending `setShowContent(true)` call.
+  // The panel then stays unmounted forever because `showContent` is stuck
+  // at false.  Owning the timer manually means incidental re-runs no
+  // longer nuke an in-flight show.
+  const showContentTimerRef = useRef<number | null>(null);
   useEffect(() => {
     let targetW: number;
     let targetH: number;
@@ -198,26 +216,66 @@ export function FloatingPill() {
     const wasExpanded = prevExpandedRef.current;
     const prev = prevTargetRef.current;
     const sizeChanged = prev.w !== targetW || prev.h !== targetH;
-    prevExpandedRef.current = expanded;
-    prevTargetRef.current = { w: targetW, h: targetH };
 
     if (!sizeChanged) return;
 
-    if (expanded && !wasExpanded) {
-      // idle → expanded: resize immediately, fade content in after.
-      resizeOverlay(targetW, targetH);
-      const t = setTimeout(() => setShowContent(true), 80);
-      return () => clearTimeout(t);
+    prevExpandedRef.current = expanded;
+    prevTargetRef.current = { w: targetW, h: targetH };
+
+    // Starting a fresh hide→resize→show cycle, so cancel any prior
+    // show-timer ourselves.  (See the ref-declaration comment above for
+    // why this isn't delegated to the effect cleanup.)
+    if (showContentTimerRef.current !== null) {
+      window.clearTimeout(showContentTimerRef.current);
+      showContentTimerRef.current = null;
     }
+
     if (!expanded && wasExpanded) {
-      // expanded → idle: fade content out, then shrink.
+      // expanded → idle.
+      //
+      // The old branch delayed the resize 200 ms "to let the content
+      // fade out."  That was load-bearing back when the opacity fade
+      // ran in both directions (200 ms out / 200 ms in).  Since the
+      // hide side is now instant (see the opacity style on the pill's
+      // active-content wrapper), the 200 ms wait was pure dead space
+      // — it left a tiny idle-sized pill sitting inside a still-
+      // expanded transparent window for a fifth of a second after the
+      // menu / panel closed.  Resize immediately instead.  Content is
+      // either already unmounted (idle path) or gated to opacity 0 on
+      // the same tick, so nothing flashes.
       setShowContent(false);
-      const t = setTimeout(() => resizeOverlay(targetW, targetH), 200);
-      return () => clearTimeout(t);
+      resizeOverlay(targetW, targetH);
+      return;
     }
-    // expanded → expanded (size change only): just apply the new size.
+    // idle → expanded OR expanded → expanded (new dims): hide content,
+    // resize, then fade content back in.  Same 80 ms delay in both
+    // paths so WebView2 has time to re-layout before content paints.
+    setShowContent(false);
     resizeOverlay(targetW, targetH);
+    showContentTimerRef.current = window.setTimeout(() => {
+      setShowContent(true);
+      showContentTimerRef.current = null;
+    }, 80);
   }, [pillState, structuredPayload, structuredDegraded, showModeSelector, modes.length]);
+
+  // Clean up the pending showContent timer on unmount so it doesn't
+  // fire against a torn-down component.
+  useEffect(() => {
+    return () => {
+      if (showContentTimerRef.current !== null) {
+        window.clearTimeout(showContentTimerRef.current);
+        showContentTimerRef.current = null;
+      }
+      if (dictatingGraceTimerRef.current !== null) {
+        window.clearTimeout(dictatingGraceTimerRef.current);
+        dictatingGraceTimerRef.current = null;
+      }
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+        degradedTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Mount: transparent bg, force dark theme, shrink to idle
   useEffect(() => {
@@ -319,7 +377,13 @@ export function FloatingPill() {
       console.warn("[structured-mode] degraded:", reason);
       setStructuredDegraded(reason);
       // Keep the banner visible long enough to actually be read.
-      window.setTimeout(() => setStructuredDegraded(null), 15000);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 15000);
     });
 
     return () => {
@@ -485,7 +549,22 @@ export function FloatingPill() {
       if (ghostMode) {
         exitGhostMode();
       }
-      if (pillState === "idle") {
+      // The degraded banner clips the menu if left in place — the user's
+      // intent when right-clicking is "show me the menu," so dismiss any
+      // banner that's currently up so the menu has room to appear.
+      if (structuredDegraded) {
+        setStructuredDegraded(null);
+      }
+      // Allow the menu from any non-active pill state.  The `success` /
+      // `error` states are transient tails of a completed recording
+      // (2.5 s) — blocking the menu during them felt arbitrary to the
+      // user, and the degraded banner commonly shows while pillState is
+      // still `success`, so this is also part of the bug-2 fix.
+      const canOpenMenu =
+        pillState === "idle" ||
+        pillState === "success" ||
+        pillState === "error";
+      if (canOpenMenu) {
         setShowModeSelector((prev) => {
           // Close nested popups when toggling mode selector
           if (!prev) {
@@ -496,7 +575,7 @@ export function FloatingPill() {
         });
       }
     },
-    [pillState, ghostMode, exitGhostMode]
+    [pillState, ghostMode, exitGhostMode, structuredDegraded]
   );
 
   const handleModeSelect = useCallback(async (id: string) => {
@@ -525,8 +604,12 @@ export function FloatingPill() {
           single unified surface.  Zero bottom margin is deliberate (the
           "reverse Dynamic Island" expansion effect): the panel's flat
           bottom merges visually into the pill's rounded top so they read
-          as one connected shape instead of two floating bubbles. */}
-      {structuredPayload && !ghostMode && (
+          as one connected shape instead of two floating bubbles.
+          Gated on showContent so WebView2 finishes re-laying-out after
+          the window resize before the panel mounts — otherwise a
+          one-frame paint of the old layout in the new window bounds
+          flashes the panel at the top-left of the expanded region. */}
+      {showContent && structuredPayload && !ghostMode && (
         <div className="shrink-0">
           <StructuredPanel
             payload={structuredPayload}
@@ -536,8 +619,9 @@ export function FloatingPill() {
         </div>
       )}
 
-      {/* Transient degraded banner — LLM timed out / not loaded */}
-      {structuredDegraded && !structuredPayload && !ghostMode && (
+      {/* Transient degraded banner — LLM timed out / not loaded.
+          Gated on showContent for the same anti-flicker reason. */}
+      {showContent && structuredDegraded && !structuredPayload && !ghostMode && (
         <div
           className="mb-1.5 shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-[380px] cursor-pointer group"
           onClick={() => setStructuredDegraded(null)}
@@ -580,8 +664,12 @@ export function FloatingPill() {
         </div>
       )}
 
-      {/* Mode selector dropdown — centered above the pill */}
-      {showModeSelector && modes.length > 0 && (
+      {/* Mode selector dropdown — centered above the pill.  Gated on
+          showContent so the menu only mounts after the window has
+          resized to 600×~200 + WebView2 has re-laid-out, preventing
+          the one-frame flicker where the menu painted at the top-left
+          of the old 56×26 bounds. */}
+      {showContent && showModeSelector && modes.length > 0 && (
         <div className="relative shrink-0 flex justify-center w-full">
           <ModeSelector
             modes={modes}
@@ -831,28 +919,36 @@ export function FloatingPill() {
         transition: "opacity 0.25s ease",
       }}
       className={cn(
-        // The pill — sized to match resizeOverlay dimensions
+        // The pill — sized to match resizeOverlay dimensions.  Every
+        // state carries `border border-transparent` so the 1 px border
+        // is always present; only its COLOR changes between states.
+        // Without this, idle→active would transition border-width
+        // from 0→1 px, which can't interpolate and snaps instead —
+        // producing a visible one-frame jolt.  Colour + background
+        // transitions below pick up those same class changes and
+        // smooth them over 200 ms.
         isIdle && !showModeSelector ? "w-[56px] h-[26px]" : "w-[200px] h-[34px]",
-        "relative flex items-center overflow-hidden shrink-0",
+        "relative flex items-center overflow-hidden shrink-0 border border-transparent rounded-full",
+        "transition-[border-color,background-color,box-shadow] duration-200 ease-out",
         isProcessing ? "cursor-default" : "cursor-pointer",
 
-        // Idle
-        isIdle && "bg-[var(--color-pill-bg)] rounded-full",
+        // Idle (just the base background; border inherits transparent).
+        isIdle && "bg-[var(--color-pill-bg)]",
 
         // Recording
-        isRecording && "bg-[var(--color-pill-bg)] border border-recording-500/30 rounded-full gap-2.5 px-3.5",
+        isRecording && "bg-[var(--color-pill-bg)] border-recording-500/30 gap-2.5 px-3.5",
 
         // Processing
-        isProcessing && "bg-[var(--color-pill-bg)] border border-amber-500/25 rounded-full gap-2.5 px-3.5",
+        isProcessing && "bg-[var(--color-pill-bg)] border-amber-500/25 gap-2.5 px-3.5",
 
         // Structuring (Structured Mode — LLM slot extraction in flight)
-        isStructuring && "bg-[var(--color-pill-bg)] border border-violet-400/30 rounded-full gap-2.5 px-3.5",
+        isStructuring && "bg-[var(--color-pill-bg)] border-violet-400/30 gap-2.5 px-3.5",
 
         // Success
-        isSuccess && "bg-[var(--color-pill-bg)] border border-success/30 rounded-full gap-2.5 px-3.5",
+        isSuccess && "bg-[var(--color-pill-bg)] border-success/30 gap-2.5 px-3.5",
 
         // Error
-        isError && "bg-[var(--color-pill-bg)] border border-recording-500/35 rounded-full gap-2.5 px-3.5",
+        isError && "bg-[var(--color-pill-bg)] border-recording-500/35 gap-2.5 px-3.5",
       )}
     >
       {/* ── Idle: sleek ambient waveform ── */}
@@ -864,7 +960,21 @@ export function FloatingPill() {
           className="flex items-center w-full h-full gap-2.5"
           style={{
             opacity: showContent ? 1 : 0,
-            transition: "opacity 0.2s ease",
+            // Asymmetric transition — key polish fix.
+            // Before: `opacity 0.2s ease` applied in both directions,
+            // which meant the 80 ms hide window (set before resize)
+            // cut off the fade-out at ~60 % opacity, then React flipped
+            // showContent back to true and the fade reversed.  User
+            // perception: "content dims and brightens for no reason"
+            // = the one-frame flicker.
+            // Now: hide is instant (transition: "none" when going
+            // false), so no partial fade is ever visible.  Show uses a
+            // 40 ms delay to give WebView2 a margin beyond the 80 ms
+            // resize window before the pixels arrive, then fades in
+            // cleanly over 220 ms.
+            transition: showContent
+              ? "opacity 220ms cubic-bezier(0.4, 0, 0.2, 1) 40ms"
+              : "none",
           }}
         >
           {isProcessing && (

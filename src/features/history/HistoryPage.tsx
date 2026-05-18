@@ -47,7 +47,6 @@ export function HistoryPage() {
     [query, records.length]
   );
 
-  // Load on mount
   useEffect(() => {
     mountedRef.current = true;
     load();
@@ -56,7 +55,6 @@ export function HistoryPage() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reload when search query changes (debounced) — reset pagination
   useEffect(() => {
     if (!mountedRef.current) return;
     setHasMore(true);
@@ -64,10 +62,8 @@ export function HistoryPage() {
     return () => clearTimeout(timer);
   }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-reload when a new transcription arrives while on this page
   useEffect(() => {
     const unlisten = onTranscriptionResult(() => {
-      // Small delay for DB write to complete
       setTimeout(() => load(), 300);
     });
     return () => {
@@ -102,16 +98,18 @@ export function HistoryPage() {
   };
 
   return (
-    <div className="flex h-full flex-col p-6">
+    <div className="flex h-full flex-col px-8 py-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-semibold text-2xl text-text-primary">History</h1>
-          <p className="text-sm text-text-muted mt-1">Transcription archive</p>
+          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
+            History
+          </h1>
+          <p className="mt-1 text-sm text-text-muted">Transcription archive</p>
         </div>
         <button
           onClick={() => load()}
-          className="p-2 rounded-lg hover:bg-surface-2 text-text-muted hover:text-text-secondary transition-colors"
+          className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-2/70 hover:text-text-secondary"
           title="Refresh"
         >
           <RefreshCw size={16} strokeWidth={1.75} />
@@ -119,15 +117,15 @@ export function HistoryPage() {
       </div>
 
       {/* Search */}
-      <div className="mt-4">
-        <div className="flex items-center gap-2 bg-surface-1 rounded-lg px-3 py-2 border border-border focus-within:border-amber-500/40 transition-colors">
-          <Search size={14} strokeWidth={1.75} className="text-text-muted shrink-0" />
+      <div className="mt-5">
+        <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-1/70 px-3.5 py-2.5 transition-colors focus-within:border-amber-400/40 focus-within:bg-surface-1">
+          <Search size={14} strokeWidth={1.75} className="shrink-0 text-text-muted" />
           <input
             type="text"
             placeholder="Search transcriptions…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none"
+            className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
           />
         </div>
       </div>
@@ -136,14 +134,14 @@ export function HistoryPage() {
       {!loading && records.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
           <div className="relative flex items-center justify-center">
-            <div className="absolute h-20 w-20 rounded-full bg-amber-500/5 border border-amber-700/20" />
-            <Clock size={40} strokeWidth={1.5} className="relative text-text-muted" />
+            <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
+            <Clock size={36} strokeWidth={1.5} className="relative text-text-muted" />
           </div>
-          <div className="text-center mt-2">
+          <div className="mt-2 text-center">
             <p className="text-sm font-medium text-text-secondary">
               {query ? "No matching transcriptions" : "No transcriptions yet"}
             </p>
-            <p className="text-xs text-text-muted mt-1">
+            <p className="mt-1 text-xs text-text-muted">
               {query
                 ? "Try a different search term"
                 : "Your dictation history will appear here"}
@@ -151,32 +149,32 @@ export function HistoryPage() {
           </div>
         </div>
       ) : (
-        <div className="mt-4 flex flex-col gap-2 overflow-y-auto flex-1 pr-1">
+        <div className="mt-5 flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
           {records.map((rec) => (
             <div
               key={rec.id}
-              className="group bg-surface-1 rounded-lg border border-border hover:border-border-hover p-4 transition-colors"
+              className="group rounded-xl border border-border bg-surface-1/80 px-4 py-3.5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
             >
               <div className="flex items-start justify-between gap-3">
-                <p className="text-sm text-text-primary leading-relaxed select-text flex-1">
+                <p className="flex-1 select-text text-[14.5px] leading-[1.55] text-text-primary">
                   {rec.text}
                 </p>
 
-                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     onClick={() => handleCopy(rec.text, rec.id)}
-                    className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-text-secondary transition-colors"
+                    className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
                     title="Copy"
                   >
                     {copiedId === rec.id ? (
-                      <Check size={14} className="text-green-400" />
+                      <Check size={14} className="text-success" />
                     ) : (
                       <Copy size={14} />
                     )}
                   </button>
                   <button
                     onClick={() => handleDelete(rec.id)}
-                    className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted hover:text-recording-400 transition-colors"
+                    className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
                     title="Delete"
                   >
                     <Trash2 size={14} />
@@ -184,7 +182,7 @@ export function HistoryPage() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 mt-2 text-xs text-text-muted">
+              <div className="mt-2 flex items-center gap-2.5 text-[11px] tabular-nums text-text-muted">
                 <span>{formatDate(rec.created_at)}</span>
                 <span className="opacity-40">·</span>
                 <span>{formatDuration(rec.duration_ms)}</span>
@@ -195,9 +193,9 @@ export function HistoryPage() {
             <button
               onClick={() => load(undefined, true)}
               disabled={loading}
-              className="py-2 text-xs text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+              className="py-3 text-xs text-text-muted transition-colors hover:text-text-secondary disabled:opacity-50"
             >
-              {loading ? "Loading..." : "Load more"}
+              {loading ? "Loading…" : "Load more"}
             </button>
           )}
         </div>

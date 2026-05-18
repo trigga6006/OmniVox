@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  Layers,
   Plus,
   Trash2,
   Pencil,
@@ -168,22 +167,19 @@ export function ContextModesPage() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-10">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-8">
+      <div className="mb-8 flex items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Layers size={18} className="text-amber-400" />
-            <h1 className="text-lg font-semibold text-text-primary">
-              Context Modes
-            </h1>
-          </div>
-          <p className="text-sm text-text-muted">
+          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
+            Context Modes
+          </h1>
+          <p className="mt-1 text-sm text-text-muted">
             Switch between profiles that customize writing style, dictionary entries,
             snippets, and app bindings.
           </p>
         </div>
         <button
           onClick={() => setCreating(true)}
-          className="shrink-0 mt-0.5 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
+          className="mt-1 inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-3 py-1.5 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.18]"
         >
           <Plus size={14} />
           New Mode
@@ -192,9 +188,9 @@ export function ContextModesPage() {
 
       {/* Mode Cards */}
       {loading ? (
-        <div className="text-sm text-text-muted text-center py-12">Loading...</div>
+        <div className="py-12 text-center text-sm text-text-muted">Loading…</div>
       ) : (
-        <div className="grid gap-3">
+        <div className="grid gap-2.5">
           {modes.map((mode, i) => {
             const Icon = getIconComponent(mode.icon);
             const colorCls = getColorClass(mode.color);
@@ -204,14 +200,13 @@ export function ContextModesPage() {
               <div
                 key={mode.id}
                 className={cn(
-                  "bg-surface-1 rounded-xl border p-4 transition-all animate-slide-up",
+                  "rounded-xl border bg-surface-1/85 p-4 opacity-0 transition-all duration-200 hover:bg-surface-1 animate-slide-up",
                   isActive
-                    ? "border-amber-500/30"
+                    ? "border-amber-400/35 shadow-[0_0_0_1px_rgb(232_180_95_/_0.06)]"
                     : "border-border hover:border-border-hover"
                 )}
                 style={{
-                  opacity: 0,
-                  animationDelay: `${i * 0.05}s`,
+                  animationDelay: `${i * 0.04}s`,
                   animationFillMode: "forwards",
                 }}
               >
@@ -219,29 +214,29 @@ export function ContextModesPage() {
                   {/* Icon */}
                   <div
                     className={cn(
-                      "flex h-9 w-9 items-center justify-center rounded-lg",
+                      "flex h-10 w-10 items-center justify-center rounded-xl",
                       colorCls + "/15"
                     )}
                   >
-                    <Icon size={16} className={colorCls.replace("bg-", "text-")} />
+                    <Icon size={17} className={colorCls.replace("bg-", "text-")} />
                   </div>
 
                   {/* Info */}
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-text-primary truncate">
+                      <span className="truncate text-[14px] font-medium text-text-primary">
                         {mode.name}
                       </span>
                       {isActive && (
-                        <span className="text-[10px] font-medium text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                          ACTIVE
+                        <span className="rounded-md border border-amber-400/25 bg-amber-500/[0.10] px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-[0.10em] text-amber-300">
+                          Active
                         </span>
                       )}
                       {mode.is_builtin && (
-                        <span className="text-[10px] text-text-muted">Built-in</span>
+                        <span className="text-[10.5px] text-text-muted">Built-in</span>
                       )}
                     </div>
-                    <p className="text-xs text-text-muted truncate">
+                    <p className="mt-0.5 truncate text-xs text-text-muted">
                       {mode.description}
                     </p>
                   </div>
@@ -251,7 +246,7 @@ export function ContextModesPage() {
                     {!isActive && (
                       <button
                         onClick={() => handleActivate(mode.id)}
-                        className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-text-secondary hover:text-amber-400 hover:bg-amber-500/10 border border-transparent hover:border-amber-500/20 transition-colors"
+                        className="inline-flex items-center gap-1 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-amber-400/25 hover:bg-amber-500/[0.10] hover:text-amber-300"
                       >
                         <Check size={12} />
                         Activate
@@ -259,7 +254,7 @@ export function ContextModesPage() {
                     )}
                     <button
                       onClick={() => setEditing(mode)}
-                      className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
                       title="Edit"
                     >
                       <Pencil size={13} />
@@ -267,7 +262,7 @@ export function ContextModesPage() {
                     {!mode.is_builtin && (
                       <button
                         onClick={() => handleDelete(mode.id)}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted hover:text-recording-400 hover:bg-recording-500/10 transition-colors"
+                        className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
                         title="Delete"
                       >
                         <Trash2 size={13} />
@@ -424,14 +419,14 @@ function ModeForm({
   return (
     <div className="mx-auto max-w-3xl px-8 py-10">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="mb-7 flex items-center gap-3">
         <button
           onClick={onCancel}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
         >
           <X size={16} />
         </button>
-        <h1 className="text-lg font-semibold text-text-primary">
+        <h1 className="font-display text-xl font-semibold tracking-[-0.02em] text-text-primary">
           {isEdit ? "Edit Mode" : "New Context Mode"}
         </h1>
       </div>
@@ -439,34 +434,34 @@ function ModeForm({
       <div className="space-y-5">
         {/* Name */}
         <div>
-          <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+          <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
             Name
           </label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Programming"
-            className="w-full rounded-lg bg-surface-2 border border-border px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-amber-500/40"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-amber-400/45 focus:bg-surface-1"
           />
         </div>
 
         {/* Description */}
         <div>
-          <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+          <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
             Description
           </label>
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Brief description of what this mode is for"
-            className="w-full rounded-lg bg-surface-2 border border-border px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-amber-500/40"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-amber-400/45 focus:bg-surface-1"
           />
         </div>
 
         {/* Icon + Color row */}
         <div className="flex gap-6">
           <div>
-            <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Icon
             </label>
             <div className="flex flex-wrap gap-1">
@@ -475,10 +470,10 @@ function ModeForm({
                   key={n}
                   onClick={() => setIcon(n)}
                   className={cn(
-                    "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
+                    "flex h-9 w-9 items-center justify-center rounded-lg transition-all duration-150",
                     icon === n
-                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                      : "text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent"
+                      ? "border border-amber-400/35 bg-amber-500/[0.12] text-amber-300"
+                      : "border border-transparent text-text-muted hover:bg-surface-2 hover:text-text-secondary"
                   )}
                 >
                   <Icon size={14} />
@@ -488,7 +483,7 @@ function ModeForm({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Color
             </label>
             <div className="flex gap-1.5">
@@ -497,11 +492,11 @@ function ModeForm({
                   key={n}
                   onClick={() => setColor(n)}
                   className={cn(
-                    "h-7 w-7 rounded-full transition-all",
+                    "h-7 w-7 rounded-full transition-all duration-200",
                     cls,
                     color === n
-                      ? "ring-2 ring-white/40 ring-offset-2 ring-offset-surface-0 scale-110"
-                      : "opacity-60 hover:opacity-100"
+                      ? "scale-110 ring-2 ring-white/45 ring-offset-2 ring-offset-surface-0"
+                      : "opacity-70 hover:opacity-100"
                   )}
                 />
               ))}
@@ -511,7 +506,7 @@ function ModeForm({
 
         {/* Writing Style */}
         <div>
-          <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+          <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
             Writing Style
           </label>
           <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
@@ -525,11 +520,12 @@ function ModeForm({
               <button
                 key={id}
                 onClick={() => setWritingStyle(id)}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                   writingStyle === id
-                    ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                    : "text-text-muted hover:text-text-secondary border border-transparent"
-                }`}
+                    ? "border border-amber-400/30 bg-amber-500/[0.10] text-amber-300"
+                    : "border border-transparent text-text-muted hover:text-text-secondary"
+                )}
               >
                 {label}
               </button>
@@ -569,10 +565,10 @@ function ModeForm({
         {/* Mode-scoped Dictionary Entries */}
         {isEdit && (
           <div>
-            <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Custom Words ({dictEntries.length})
             </label>
-            <div className="rounded-lg bg-surface-2 border border-border overflow-hidden">
+            <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
               {dictEntries.length > 0 && (
                 <div className="max-h-48 overflow-y-auto divide-y divide-border">
                   {dictEntries.map((entry) => (
@@ -616,7 +612,7 @@ function ModeForm({
                 <button
                   onClick={handleAddDictEntry}
                   disabled={!newPhrase.trim() || !newReplacement.trim()}
-                  className="shrink-0 text-amber-400 disabled:text-text-muted disabled:opacity-30"
+                  className="shrink-0 rounded-md p-1 text-amber-300 transition-colors hover:bg-amber-500/[0.10] disabled:text-text-muted disabled:opacity-40 disabled:hover:bg-transparent"
                 >
                   <Plus size={14} />
                 </button>
@@ -631,10 +627,10 @@ function ModeForm({
         {/* Mode-scoped Snippets */}
         {isEdit && (
           <div>
-            <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               Snippets ({modeSnippets.length})
             </label>
-            <div className="rounded-lg bg-surface-2 border border-border overflow-hidden">
+            <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
               {modeSnippets.length > 0 && (
                 <div className="max-h-48 overflow-y-auto divide-y divide-border">
                   {modeSnippets.map((snippet) => (
@@ -678,7 +674,7 @@ function ModeForm({
                 <button
                   onClick={handleAddSnippet}
                   disabled={!newTrigger.trim() || !newContent.trim()}
-                  className="shrink-0 text-amber-400 disabled:text-text-muted disabled:opacity-30"
+                  className="shrink-0 rounded-md p-1 text-amber-300 transition-colors hover:bg-amber-500/[0.10] disabled:text-text-muted disabled:opacity-40 disabled:hover:bg-transparent"
                 >
                   <Plus size={14} />
                 </button>
@@ -693,10 +689,10 @@ function ModeForm({
         {/* App Bindings — auto-switch mode when this app is focused */}
         {isEdit && (
           <div>
-            <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1.5">
+            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               App Bindings ({bindings.length})
             </label>
-            <div className="rounded-lg bg-surface-2 border border-border overflow-hidden">
+            <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
               {bindings.length > 0 && (
                 <div className="max-h-48 overflow-y-auto divide-y divide-border">
                   {bindings.map((binding) => (
@@ -728,7 +724,7 @@ function ModeForm({
                 <button
                   onClick={handleAddBinding}
                   disabled={!newProcessName.trim()}
-                  className="shrink-0 text-amber-400 disabled:text-text-muted disabled:opacity-30"
+                  className="shrink-0 rounded-md p-1 text-amber-300 transition-colors hover:bg-amber-500/[0.10] disabled:text-text-muted disabled:opacity-40 disabled:hover:bg-transparent"
                 >
                   <Plus size={14} />
                 </button>
@@ -743,7 +739,7 @@ function ModeForm({
 
         {/* Error */}
         {error && (
-          <div className="text-sm text-recording-400 bg-recording-500/10 border border-recording-500/20 rounded-lg px-3 py-2">
+          <div className="rounded-lg border border-recording-500/25 bg-recording-500/[0.08] px-3 py-2 text-sm text-recording-400">
             {error}
           </div>
         )}
@@ -756,16 +752,16 @@ function ModeForm({
             className={cn(
               "inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
               saving
-                ? "bg-amber-500/10 text-amber-400/50"
-                : "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25"
+                ? "bg-amber-500/[0.08] text-amber-300/60"
+                : "border border-amber-400/35 bg-amber-500/[0.14] text-amber-300 hover:border-amber-400/60 hover:bg-amber-500/[0.22]"
             )}
           >
             <Check size={14} />
-            {saving ? "Saving..." : isEdit ? "Save Changes" : "Create & Continue"}
+            {saving ? "Saving…" : isEdit ? "Save Changes" : "Create & Continue"}
           </button>
           <button
             onClick={onCancel}
-            className="rounded-lg px-4 py-2 text-sm text-text-muted hover:text-text-secondary transition-colors"
+            className="rounded-lg px-4 py-2 text-sm text-text-muted transition-colors hover:text-text-secondary"
           >
             Cancel
           </button>

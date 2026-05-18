@@ -172,11 +172,38 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         max_tokens: 384,
     };
 
+    // Drop the previous runner before loading a replacement so llama.cpp does
+    // not hold old and new GGUF weights in RAM/VRAM at the same time.
+    {
+        let mut runner = state.llm_runner.lock().unwrap();
+        if runner.as_ref().map(|runner| runner.is_busy()).unwrap_or(false) {
+            return Err(
+                "Wait for the current Structured Mode extraction before switching LLM models"
+                    .into(),
+            );
+        }
+        *runner = None;
+    }
+    *state.active_llm_model_id.lock().unwrap() = None;
+
     // Load on a wide-stack thread to survive llama.cpp's debug stack frames.
     let engine = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
         .spawn(move || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| LlamaEngine::load(config)))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match LlamaEngine::load(config.clone()) {
+                    Ok(engine) => Ok(engine),
+                    Err(e) if config.use_gpu => {
+                        eprintln!(
+                            "GPU LLM load failed; retrying on CPU. Original error: {e}"
+                        );
+                        let mut cpu_config = config;
+                        cpu_config.use_gpu = false;
+                        LlamaEngine::load(cpu_config)
+                    }
+                    Err(e) => Err(e),
+                }
+            }))
         })
         .map_err(|e| format!("Failed to spawn LLM loader: {e}"))?
         .join()

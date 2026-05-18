@@ -41,6 +41,12 @@ pub async fn delete_model(
             drop(active);
             *state.engine.lock().unwrap() = None;
             *state.active_model_id.lock().unwrap() = None;
+            if let Ok(mut settings) = crate::storage::settings::get_settings(&state.db) {
+                if settings.active_model_id.as_deref() == Some(&model_id) {
+                    settings.active_model_id = None;
+                    let _ = crate::storage::settings::update_settings(&state.db, &settings);
+                }
+            }
         }
     }
 
@@ -141,13 +147,36 @@ pub fn load_and_activate_model(
         temperature_inc: None, // default: 0.2 (fallback on low confidence)
     };
 
+    // Drop the previous model before loading the replacement. Loading GGML
+    // weights can use multiple GB, so keeping old + new resident at once can
+    // OOM smaller GPUs or 16 GB systems during a model switch.
+    {
+        let audio = state.audio.lock().map_err(|_| "Audio state lock poisoned".to_string())?;
+        if audio.is_recording() {
+            return Err("Stop recording before switching Whisper models".into());
+        }
+        *state.engine.lock().unwrap() = None;
+    }
+    *state.active_model_id.lock().unwrap() = None;
+
     // Load on a thread with a larger stack — whisper.cpp + GGML backends
     // need extra stack space, especially in debug builds on Windows.
     let engine = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024) // 256 MB — debug builds have much larger stack frames (especially with llama.cpp + whisper.cpp)
         .spawn(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                WhisperEngine::load(config)
+                match WhisperEngine::load(config.clone()) {
+                    Ok(engine) => Ok(engine),
+                    Err(e) if config.use_gpu => {
+                        eprintln!(
+                            "GPU Whisper load failed; retrying on CPU. Original error: {e}"
+                        );
+                        let mut cpu_config = config;
+                        cpu_config.use_gpu = false;
+                        WhisperEngine::load(cpu_config)
+                    }
+                    Err(e) => Err(e),
+                }
             }))
         })
         .map_err(|e| format!("Failed to spawn model loader: {e}"))?

@@ -115,6 +115,19 @@ export interface AppSettings {
    * behind the "send" word.
    */
   structured_voice_command: boolean;
+  /**
+   * Read visible text from the foreground app and use it to bias Whisper
+   * toward verbatim file paths, identifiers, and commands.  Local only —
+   * captured text never leaves the device.
+   */
+  use_screen_context: boolean;
+  /**
+   * Also pass screen-context tokens into Structured Mode's LLM so it can
+   * substitute phonetic guesses with verbatim screen text on multi-token
+   * strings.  Independent of `use_screen_context` — the Whisper-only
+   * path covers most cases on its own.
+   */
+  structured_use_screen_context: boolean;
 }
 
 export interface AppBinding {

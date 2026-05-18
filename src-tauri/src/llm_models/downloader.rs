@@ -118,6 +118,14 @@ impl LlmModelDownloader {
                 .map_err(|e| AppError::Llm(format!("LLM write error: {e}")))?;
 
             downloaded += chunk.len() as u64;
+            if downloaded > MAX_LLM_DOWNLOAD_BYTES {
+                drop(file);
+                let _ = fs::remove_file(&part_path).await;
+                return Err(AppError::Llm(format!(
+                    "Downloaded LLM bytes ({downloaded}) exceed maximum ({MAX_LLM_DOWNLOAD_BYTES})"
+                )));
+            }
+
             let percent = if total_bytes > 0 {
                 ((downloaded as f64 / total_bytes as f64) * 100.0) as u32
             } else {

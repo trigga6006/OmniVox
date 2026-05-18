@@ -94,7 +94,7 @@ function PageRouter() {
     <Suspense
       fallback={
         <div className="flex h-full items-center justify-center">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-text-muted/20 border-t-amber-500" />
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-text-muted/25 border-t-amber-400" />
         </div>
       }
     >
@@ -126,13 +126,13 @@ function MainApp() {
   useGlobalTranscriptionSync();
 
   return (
-    <div className="flex h-screen w-screen bg-surface-0">
+    <div className="flex h-screen w-screen bg-surface-0 text-text-primary">
       <Sidebar />
       <main
-        className="flex-1 overflow-auto"
+        className="relative flex-1 overflow-auto"
         style={{
           background:
-            "radial-gradient(ellipse at 50% 80%, var(--color-gradient-from) 0%, var(--color-gradient-to) 60%)",
+            "radial-gradient(ellipse 90% 70% at 50% 100%, var(--color-gradient-from) 0%, var(--color-gradient-to) 70%)",
         }}
       >
         <PageRouter />

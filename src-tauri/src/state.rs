@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::oneshot;
+
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioConfig;
 use crate::llm::runner::LlmRunner;
@@ -61,6 +63,17 @@ pub struct AppState {
     pub llm_downloader: LlmModelDownloader,
     /// Directory where GGUF LLM files live (sibling of `models_dir`).
     pub llm_models_dir: PathBuf,
+
+    // ── Screen-context side ───────────────────────────────────────────────
+    /// Receiver for the screen-context capture spawned at recording start.
+    /// The pipeline drains this just before transcription so capture cost
+    /// (~50–250 ms) is hidden under the user's speaking time.  `None` when
+    /// the feature is disabled or no capture has been spawned yet.
+    pub screen_context_rx: Mutex<Option<oneshot::Receiver<crate::screen_context::ScreenContext>>>,
+    /// Signals when the live-preview Whisper worker has dropped its decode
+    /// state. Stop waits briefly on this before final transcription so large
+    /// models don't double-allocate preview + final decode buffers.
+    pub preview_done_rx: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl AppState {
@@ -103,6 +116,8 @@ impl AppState {
             llm_model_manager: LlmModelManager::new(llm_models_dir.clone()),
             llm_downloader: LlmModelDownloader::new(llm_models_dir.clone()),
             llm_models_dir,
+            screen_context_rx: Mutex::new(None),
+            preview_done_rx: Mutex::new(None),
         }
     }
 }

@@ -174,6 +174,20 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
     }
   };
 
+  // Escape hatch for "I don't like what the LLM did to my dictation."
+  // Pastes the pre-structuring ASR text (the same string shown in the
+  // Raw Transcript drawer), so the user never loses what they said.
+  // Reuses the same paste_structured_output command — the Rust side
+  // just invokes OutputRouter.send() on whatever string we hand it.
+  const handlePasteRaw = async () => {
+    try {
+      await pasteStructuredOutput(payload.raw_transcript);
+      onClose();
+    } catch (err) {
+      setPasteError(String(err));
+    }
+  };
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(markdown);
@@ -299,18 +313,29 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
         </div>
       )}
 
-      {/* Actions */}
-      <div className="sp-actions">
+      {/* Actions — labels + kbd hints collapse to icon-only while the
+          user is dictating into the textarea, freeing room for the mic
+          button's recording waveform without reshuffling the whole
+          footer.  ESC / ⌘↵ keep working regardless of visible hints. */}
+      <div className={cn("sp-actions", isDictating && "sp-actions--dictating")}>
         <button
           className="sp-btn sp-btn--primary"
           onClick={handlePaste}
-          title="Paste into active app"
+          title="Paste structured output into active app"
         >
           <ClipboardPaste size={11} strokeWidth={2.2} />
-          <span>Paste</span>
+          <span className="sp-btn-label">Paste</span>
           <kbd className="sp-kbd sp-kbd--primary">
             <span className="sp-kbd-mod">⌘</span>↵
           </kbd>
+        </button>
+        <button
+          className="sp-btn sp-btn--raw"
+          onClick={handlePasteRaw}
+          title="Paste raw transcript (your words, unstructured)"
+        >
+          <FileText size={11} strokeWidth={2.2} />
+          <span className="sp-btn-label">Raw</span>
         </button>
         <button
           className={cn("sp-btn", justCopied && "sp-btn--confirm")}
@@ -318,7 +343,7 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
           title="Copy Markdown to clipboard"
         >
           <Copy size={11} strokeWidth={2.2} />
-          <span>{justCopied ? "Copied" : "Copy"}</span>
+          <span className="sp-btn-label">{justCopied ? "Copied" : "Copy"}</span>
         </button>
         <button
           className={cn("sp-btn", isEditing && "sp-btn--active")}
@@ -326,16 +351,15 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
           title={isEditing ? "Finish editing" : "Edit before paste"}
         >
           <Pencil size={11} strokeWidth={2.2} />
-          <span>{isEditing ? "Done" : "Edit"}</span>
+          <span className="sp-btn-label">{isEditing ? "Done" : "Edit"}</span>
         </button>
         <div className="sp-spacer" />
         <button
           className="sp-btn sp-btn--ghost"
           onClick={onClose}
-          title="Dismiss panel"
+          title="Dismiss panel (Esc)"
         >
-          <span>Dismiss</span>
-          <kbd className="sp-kbd sp-kbd--ghost">ESC</kbd>
+          <span className="sp-btn-label">Dismiss</span>
         </button>
         <button
           className={cn(
@@ -359,9 +383,17 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
           }
         >
           {dictationPhase === "recording" ? (
-            <span className="sp-mic-wave">
-              <MiniWaveform color="rgba(248,200,130,0.95)" />
-            </span>
+            <>
+              <span className="sp-mic-wave">
+                <MiniWaveform color="rgba(248,200,130,0.95)" />
+              </span>
+              {/* Full-bar label — only visible when the mic has
+                  expanded to fill the action row (see
+                  `.sp-actions--dictating .sp-mic` rules below).  In the
+                  compact variant the label stays at max-width:0 so it
+                  collapses cleanly. */}
+              <span className="sp-mic-label">Listening · click to stop</span>
+            </>
           ) : dictationPhase === "processing" ? (
             <Loader2
               size={11}
@@ -916,6 +948,14 @@ const styles = `
   background: linear-gradient(180deg,
     rgba(0,0,0,0) 0%,
     rgba(0,0,0,0.22) 100%);
+  transition: gap 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* In-panel dictation: tighten the row so the expanded mic waveform
+   doesn't force the panel to overflow its 420 px window.  Individual
+   buttons collapse their label + kbd hints via the rules at the end
+   of this block. */
+.sp-actions--dictating {
+  gap: 3px;
 }
 .sp-btn {
   display: inline-flex;
@@ -936,7 +976,9 @@ const styles = `
     color 140ms ease,
     border-color 140ms ease,
     transform 140ms ease,
-    box-shadow 140ms ease;
+    box-shadow 140ms ease,
+    padding 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    gap 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .sp-btn:hover {
   background: rgba(255,255,255,0.07);
@@ -982,6 +1024,99 @@ const styles = `
   background: rgba(110,200,140,0.14);
   border-color: rgba(120,210,150,0.3);
   color: rgba(190,240,205,0.98);
+}
+
+/* Raw-paste fallback.  Not primary-purple (that's the structured
+   commit) and not plain grey (that's Copy / Edit / Dismiss) — a
+   warm amber echo of the Structured kicker, signaling "this is
+   still a commit action, just for the unprocessed version."  Keeps
+   visual weight below the primary button so users reach for the
+   structured Paste first. */
+.sp-btn--raw {
+  background: rgba(232,180,95,0.08);
+  border-color: rgba(232,180,95,0.22);
+  color: rgba(244,215,165,0.88);
+}
+.sp-btn--raw:hover {
+  background: rgba(232,180,95,0.14);
+  border-color: rgba(232,180,95,0.38);
+  color: rgba(250,225,180,0.98);
+}
+
+/* Smooth collapse of label text + kbd hints.  Using max-width (not
+   display:none) so the transition is continuous — buttons shrink
+   to icon pills instead of popping.  overflow:hidden clips the
+   fading text mid-collapse so it doesn't visually escape the
+   button border. */
+.sp-btn-label,
+.sp-kbd {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 140px;
+  transition:
+    max-width 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease,
+    margin-left 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Full-bar dictation mode.
+   Rejected the earlier "collapse every button to icon-only" design —
+   it shrank the Paste / Raw / Copy / Edit / Dismiss buttons but kept
+   them in the flex row, producing a lot of cold dead space between
+   the micro-icons and the mic button.  Replaced with a cleaner
+   intent: when the user is dictating, the ONLY affordance that
+   matters is "stop," and the visual focus should be the live
+   waveform.  So every non-mic child is folded out of the layout
+   entirely (display:none), the spacer collapses, and the mic
+   button becomes the full-width bar with its own label.  ESC still
+   dismisses the panel via the keyboard handler.
+*/
+.sp-actions--dictating > :not(.sp-mic) {
+  display: none;
+}
+.sp-actions--dictating .sp-mic {
+  flex: 1 1 auto;
+  width: auto;
+  height: 30px;
+  margin-left: 0;
+  padding: 0 14px;
+  gap: 10px;
+  border-radius: 9px;
+  justify-content: center;
+}
+/* Waveform stays at its natural 14px height inside the taller pill.
+   Without the explicit flex-basis the wave would stretch to the full
+   bar width and drown out the text label. */
+.sp-actions--dictating .sp-mic .sp-mic-wave {
+  flex: 0 0 auto;
+  padding: 0;
+  width: auto;
+  height: 16px;
+}
+/* Label only renders visibly in the full-bar variant.  In the compact
+   (non-dictating) variant the label is still in the DOM but clipped
+   to max-width:0 so entering dictation mode slides it open rather
+   than popping. */
+.sp-mic-label {
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: rgba(244,215,165,0.82);
+  white-space: nowrap;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    max-width 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease 80ms;
+}
+.sp-actions--dictating .sp-mic-label {
+  max-width: 220px;
+  opacity: 1;
 }
 
 .sp-btn--ghost {

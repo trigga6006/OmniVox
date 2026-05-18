@@ -1,0 +1,59 @@
+[graph]
+all-features = false
+
+[advisories]
+ignore = [
+  # Tauri's Linux GTK3/WebKit stack currently pulls these unmaintained crates.
+  # OmniVox is built and tested on Windows here; keep them visible as warnings
+  # in cargo-audit output, but do not block the Windows release branch.
+  { id = "RUSTSEC-2024-0411", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0412", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0413", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0414", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0415", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0416", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0417", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0418", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0419", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0420", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0429", reason = "Transitive Linux GTK3 stack through Tauri/wry; not used by the Windows build target." },
+  { id = "RUSTSEC-2024-0370", reason = "Transitive GTK macro dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2025-0057", reason = "Transitive Tauri HTML/CSS parsing dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2025-0075", reason = "Transitive Tauri urlpattern dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2025-0080", reason = "Transitive Tauri urlpattern dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2025-0081", reason = "Transitive Tauri urlpattern dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2025-0098", reason = "Transitive Tauri urlpattern dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2025-0100", reason = "Transitive Tauri urlpattern dependency; no direct OmniVox usage." },
+  { id = "RUSTSEC-2026-0097", reason = "Transitive code-generation dependency; OmniVox does not use rand::rng with a custom logger." },
+  { crate = "unicode-segmentation@1.13.1", reason = "Yanked transitive Tauri/tao dependency; no fixed upstream lock path yet." },
+]
+
+[licenses]
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
