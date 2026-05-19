@@ -1,0 +1,228 @@
+OmniVox License (Source-Available, Proprietary)
+
+Copyright (c) 2026 Benjamin Fowler. All rights reserved.
+
+PREAMBLE
+
+OmniVox is proprietary software developed by Benjamin Fowler (and, upon
+formation, Omni Impact LLC). The source code is made publicly available on
+GitHub to enable installation via standard tooling and to allow users to
+verify the software's stated behavior — including that all processing occurs
+locally and that no user data is transmitted off-device. This License permits
+personal use and source inspection, but is not an open-source license. All
+commercial rights are reserved.
+
+
+1. DEFINITIONS
+
+1.1 "Software" means the OmniVox application, including all source code,
+    compiled binaries, configuration files, documentation, models, prompts,
+    scripts, installer scripts, and related materials made available under
+    this License at https://github.com/trigga6006/OmniVox.
+
+1.2 "Licensor" means Benjamin Fowler, individually, until such time as the
+    Software is assigned to Omni Impact LLC, at which time "Licensor" means
+    Omni Impact LLC.
+
+1.3 "You" means the individual or entity exercising rights under this
+    License.
+
+1.4 "Personal Use" means use of the Software by a single natural person on
+    devices owned or controlled by that person, for that person's own
+    purposes — including personal productivity tasks regardless of whether
+    those tasks are work-related.
+
+1.5 "Commercial Use" means any use that is not Personal Use, including
+    without limitation: deployment by an organization on multiple users'
+    devices; integration into another product or service offered to third
+    parties; resale, sublicensing, or hosting as a service; or use in
+    connection with paid consulting where the Software is delivered to or
+    operated for a client.
+
+
+2. LICENSE GRANT (PERSONAL USE)
+
+Subject to Your compliance with this License, Licensor grants You a
+non-exclusive, non-transferable, non-sublicensable, revocable, royalty-free
+license to:
+
+(a) Download the Software from the official distribution channels operated
+    by Licensor (currently https://github.com/trigga6006/OmniVox);
+
+(b) Install the Software on devices You own or control;
+
+(c) Use the Software for Personal Use;
+
+(d) Inspect, read, and analyze the source code of the Software for any
+    lawful purpose not prohibited by Section 3, including security
+    verification, education, and personal curiosity;
+
+(e) Make backup copies of the Software for Personal Use.
+
+
+3. RESTRICTIONS
+
+Without Licensor's prior written consent, You may NOT:
+
+(a) Redistribute, resell, sublicense, lease, rent, or otherwise transfer the
+    Software (in source or binary form) to any third party, including by
+    posting the Software in any public or shared location other than the
+    official distribution channels;
+
+(b) Modify, adapt, translate, port, or create derivative works of the
+    Software;
+
+(c) Use the Software for any Commercial Use;
+
+(d) Remove, alter, obscure, or fail to reproduce any copyright, trademark,
+    license, or attribution notices in or accompanying the Software;
+
+(e) Reverse-engineer, decompile, or disassemble the Software, except and
+    only to the extent such activity is expressly permitted by applicable
+    law notwithstanding this restriction;
+
+(f) Bypass, disable, or interfere with any license-enforcement, integrity-
+    verification, or telemetry mechanisms in the Software (if any are
+    present);
+
+(g) Use the Software in violation of applicable law or in a manner that
+    infringes any third party's rights.
+
+
+4. OWNERSHIP
+
+The Software is licensed, not sold. Licensor retains all right, title, and
+interest in and to the Software, including all intellectual property rights
+worldwide. This License does not grant You any rights in or to Licensor's
+trademarks, service marks, trade names, or logos. All rights not expressly
+granted in this License are reserved.
+
+
+5. THIRD-PARTY COMPONENTS
+
+The Software may include or depend on third-party open-source components,
+each of which is governed by its own license. Such components are not
+covered by this License and retain their original licensing terms. A list
+of third-party components and their licenses, where applicable, is
+included with or accompanies the Software.
+
+
+6. CONTRIBUTIONS NOT ACCEPTED
+
+Licensor does not accept external contributions, pull requests, patches, or
+other code submissions to the Software at this time. If You nonetheless
+submit any such contribution, You irrevocably assign to Licensor all right,
+title, and interest in such contribution, and Licensor may use it without
+obligation, attribution, or compensation to You.
+
+
+7. SOURCE INSPECTION WELCOME
+
+For the avoidance of doubt: this License explicitly permits You to read,
+inspect, and analyze the source code of the Software for any purpose not
+prohibited by Section 3. The Software is made source-available so that
+users may independently verify the Software's stated behaviors, including
+(without limitation) the claim that the Software operates entirely on
+the user's device and does not transmit user data to Licensor or any
+third party.
+
+
+8. UPDATES; CHANGES TO THIS LICENSE
+
+8.1 Licensor may release updates, new versions, or modifications to the
+    Software at any time. Such updates may be governed by an updated
+    version of this License accompanying the update.
+
+8.2 Existing copies of the Software remain governed by the version of this
+    License under which they were obtained, unless You install an update,
+    in which case the License accompanying the update governs Your
+    continued use of the updated version.
+
+8.3 The current version of this License is always available at
+    https://github.com/trigga6006/OmniVox/blob/main/LICENSE.
+
+
+9. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED. LICENSOR DISCLAIMS ALL WARRANTIES, INCLUDING
+WITHOUT LIMITATION IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. LICENSOR DOES NOT WARRANT
+THAT THE SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE, SECURE, OR FREE OF
+DEFECTS. YOU ASSUME ALL RISK ASSOCIATED WITH YOUR USE OF THE SOFTWARE.
+
+
+10. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL,
+EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA,
+USE, GOODWILL, OR OTHER INTANGIBLE LOSSES, ARISING OUT OF OR RELATED TO
+YOUR USE OF, OR INABILITY TO USE, THE SOFTWARE. LICENSOR'S TOTAL CUMULATIVE
+LIABILITY UNDER OR RELATED TO THIS LICENSE WILL NOT EXCEED THE GREATER OF
+(A) ZERO U.S. DOLLARS, OR (B) THE AMOUNT (IF ANY) YOU HAVE PAID LICENSOR
+FOR THE SOFTWARE IN THE TWELVE (12) MONTHS PRECEDING THE EVENT GIVING RISE
+TO LIABILITY.
+
+SOME JURISDICTIONS DO NOT ALLOW THE EXCLUSION OF CERTAIN WARRANTIES OR THE
+LIMITATION OF CERTAIN DAMAGES. IN SUCH JURISDICTIONS, THE EXCLUSIONS AND
+LIMITATIONS IN SECTIONS 9 AND 10 APPLY TO THE MAXIMUM EXTENT PERMITTED BY
+APPLICABLE LAW.
+
+
+11. TERM AND TERMINATION
+
+11.1 This License is effective upon Your first use of the Software and
+     continues until terminated.
+
+11.2 This License terminates automatically, without notice, if You breach
+     any of its terms.
+
+11.3 Licensor may terminate this License at any time, with or without
+     cause, by notice to You or by ceasing to make the Software available.
+
+11.4 Upon termination for any reason, You must cease all use of the
+     Software and destroy all copies in Your possession or control.
+
+11.5 Sections 3, 4, 5, 6, 9, 10, 11.4, 12, and 13 survive termination of
+     this License.
+
+
+12. COMMERCIAL LICENSING
+
+If You wish to use the Software for Commercial Use, please contact Licensor
+at licensing@omniimpact.com to discuss a separate commercial license.
+Licensor is not obligated to grant any commercial license and may charge
+fees and impose terms different from this License.
+
+
+13. GENERAL PROVISIONS
+
+13.1 Governing Law. This License is governed by the laws of the State of
+     [STATE], without regard to its conflict of laws principles.
+
+13.2 Entire Agreement. This License constitutes the entire agreement
+     between You and Licensor regarding the Software and supersedes any
+     prior or contemporaneous agreements on this subject.
+
+13.3 Severability. If any provision of this License is held invalid or
+     unenforceable, the remainder remains in full force and effect, and
+     the invalid or unenforceable provision will be modified to the
+     minimum extent necessary to render it enforceable while preserving
+     the parties' original intent.
+
+13.4 No Waiver. Failure by Licensor to enforce any provision of this
+     License is not a waiver of the right to enforce it later.
+
+13.5 Assignment. You may not assign this License, in whole or in part,
+     without Licensor's prior written consent. Licensor may assign this
+     License freely, including (without limitation) to Omni Impact LLC
+     upon its formation.
+
+13.6 Notices. Notices to Licensor should be sent to
+     licensing@omniimpact.com.
+
+13.7 No Endorsement. Nothing in this License grants You any right to
+     state or imply that any of Your products or services are endorsed,
+     sponsored, or affiliated with Licensor, Omni Impact LLC, or Benjamin
+     Fowler.
