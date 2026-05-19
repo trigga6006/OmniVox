@@ -47,6 +47,12 @@ export interface TranscriptionRecord {
   created_at: string;
   /** Original dictation before Structured Mode post-processing. */
   raw_transcript?: string | null;
+  /** `"live"` or `"import"`. NULL on pre-migration rows is read as `"live"`. */
+  source?: string | null;
+  /** Original filename for imported transcriptions. */
+  source_filename?: string | null;
+  /** Media duration of the source file in ms (imports). */
+  source_duration_ms?: number | null;
 }
 
 export interface DictionaryEntry {
@@ -217,6 +223,62 @@ export const deleteHistoryRecord = (id: string) =>
   invoke<void>("delete_history_record", { id });
 export const exportHistory = (format: string) =>
   invoke<string>("export_history", { format });
+
+// ── Import Audio ─────────────────────────────────────────────────────────
+export interface ImportProgress {
+  import_id: string;
+  /** Whisper hasn't started yet during "decoding"; "transcribing" runs inference. */
+  phase: "decoding" | "transcribing";
+  percent: number; // 0–100 within the current phase
+  /**
+   * Source media duration in ms.  NULL during decoding (unknown until the
+   * decoder finishes); always populated on transcribing-phase events.
+   */
+  duration_ms: number | null;
+}
+
+export interface ImportTranscriptionReady {
+  import_id: string;
+  text: string;
+  source_filename: string;
+  duration_ms: number;
+}
+
+export interface ImportErrorPayload {
+  import_id: string;
+  message: string;
+}
+
+export interface ImportCancelledPayload {
+  import_id: string;
+}
+
+export const importTranscribe = (importId: string, path: string) =>
+  invoke<void>("import_transcribe", { importId, path });
+export const importCancel = (importId: string) =>
+  invoke<void>("import_cancel", { importId });
+
+export const onImportProgress = (
+  callback: (progress: ImportProgress) => void
+): Promise<UnlistenFn> =>
+  listen<ImportProgress>("import-progress", (e) => callback(e.payload));
+
+export const onImportTranscriptionReady = (
+  callback: (payload: ImportTranscriptionReady) => void
+): Promise<UnlistenFn> =>
+  listen<ImportTranscriptionReady>("import-transcription-ready", (e) =>
+    callback(e.payload)
+  );
+
+export const onImportError = (
+  callback: (payload: ImportErrorPayload) => void
+): Promise<UnlistenFn> =>
+  listen<ImportErrorPayload>("import-error", (e) => callback(e.payload));
+
+export const onImportCancelled = (
+  callback: (payload: ImportCancelledPayload) => void
+): Promise<UnlistenFn> =>
+  listen<ImportCancelledPayload>("import-cancelled", (e) => callback(e.payload));
 
 // Notes commands
 export interface Note {

@@ -165,6 +165,137 @@ impl WhisperEngine {
     }
 }
 
+impl WhisperEngine {
+    /// Transcribe `audio` with whisper.cpp progress + cancel callbacks
+    /// wired through. Used by the Import Audio pipeline; the live mic
+    /// path stays on the simpler `transcribe()` because dictation is
+    /// short and the user has the audio-level meter for feedback.
+    ///
+    /// - `on_progress(percent)` fires with whisper.cpp's internal
+    ///   0–100 estimate.  Not throttled here — the import pipeline
+    ///   throttles before emitting Tauri events.
+    /// - `abort_when()` is polled by whisper between decode steps;
+    ///   returning `true` aborts the run (surfaces as `Err`).  Wrap an
+    ///   `Arc<AtomicBool>` and load it inside the closure.
+    pub fn transcribe_with_progress<P, A>(
+        &self,
+        audio: &[f32],
+        on_progress: P,
+        abort_when: A,
+    ) -> AppResult<TranscriptionResult>
+    where
+        P: FnMut(i32) + Send + 'static,
+        A: FnMut() -> bool + Send + 'static,
+    {
+        if audio.is_empty() {
+            return Ok(TranscriptionResult {
+                text: String::new(),
+                segments: vec![],
+                duration_ms: 0,
+                model_name: self.config.model_path.clone(),
+            });
+        }
+
+        let mut state = self
+            .ctx
+            .create_state()
+            .map_err(|e| AppError::Asr(format!("Failed to create state: {e}")))?;
+
+        let beam_size = self.config.beam_size.unwrap_or(5);
+        let strategy = if beam_size <= 1 {
+            SamplingStrategy::Greedy { best_of: 1 }
+        } else {
+            SamplingStrategy::BeamSearch {
+                beam_size: beam_size as std::ffi::c_int,
+                patience: -1.0,
+            }
+        };
+        let mut params = FullParams::new(strategy);
+
+        match self.config.language.as_deref() {
+            Some("auto") | None => {}
+            Some(lang) => params.set_language(Some(lang)),
+        }
+
+        params.set_translate(self.config.translate);
+        params.set_n_threads(self.config.n_threads as i32);
+        params.set_print_progress(false);
+        params.set_print_special(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+
+        let temp = self.config.temperature.unwrap_or(0.0);
+        let temp_inc = self.config.temperature_inc.unwrap_or(0.2);
+        params.set_temperature(temp);
+        params.set_temperature_inc(temp_inc);
+        params.set_entropy_thold(2.4);
+        params.set_logprob_thold(-1.0);
+        params.set_no_speech_thold(0.6);
+
+        let override_prompt = self.prompt_override.read().ok().and_then(|g| g.clone());
+        let effective_prompt = override_prompt.or_else(|| self.config.initial_prompt.clone());
+        if let Some(ref prompt) = effective_prompt {
+            params.set_initial_prompt(prompt);
+        }
+
+        // Force the generic `F` parameter on both callback setters to be
+        // a boxed trait object.  This works around a soundness issue in
+        // `whisper-rs 0.16::set_abort_callback_safe`: the safe wrapper
+        // stores the closure as `Box<Box<dyn FnMut() -> bool>>` but the
+        // C trampoline it installs is `trampoline::<F>` and casts user
+        // data back to `*mut F`.  With a normal closure type that's a
+        // layout mismatch (the stored thing is a fat pointer; F is the
+        // closure itself).  Pre-boxing forces `F = Box<dyn FnMut...>`
+        // so the cast lines up.  `Send` is layout-irrelevant (marker
+        // trait) but required by our `spawn_blocking` boundary anyway.
+        //
+        // The progress side already uses `trampoline::<Box<dyn FnMut(i32)>>`
+        // explicitly inside whisper-rs, so it doesn't have the same
+        // mismatch — but we box uniformly for consistency.
+        let on_progress_boxed: Box<dyn FnMut(i32) + Send> = Box::new(on_progress);
+        let abort_when_boxed: Box<dyn FnMut() -> bool + Send> = Box::new(abort_when);
+        params.set_progress_callback_safe(on_progress_boxed);
+        params.set_abort_callback_safe(abort_when_boxed);
+
+        state
+            .full(params, audio)
+            .map_err(|e| AppError::Asr(format!("Inference failed: {e}")))?;
+
+        let n_segments = state.full_n_segments();
+        let mut segments = Vec::with_capacity(n_segments as usize);
+        let mut full_text = String::new();
+
+        for i in 0..n_segments {
+            let seg = match state.get_segment(i) {
+                Some(s) => s,
+                None => continue,
+            };
+            let text = seg
+                .to_str_lossy()
+                .unwrap_or_else(|_| std::borrow::Cow::Borrowed(""))
+                .into_owned();
+            full_text.push_str(&text);
+            segments.push(TranscriptionSegment {
+                start_ms: (seg.start_timestamp() as u64) * 10,
+                end_ms: (seg.end_timestamp() as u64) * 10,
+                text,
+                confidence: 0.0,
+            });
+        }
+
+        let duration_ms = (audio.len() as f64 / 16_000.0 * 1000.0) as u64;
+
+        Ok(TranscriptionResult {
+            text: full_text.trim().to_string(),
+            segments,
+            duration_ms,
+            model_name: self.config.model_path.clone(),
+        })
+    }
+}
+
 impl AsrEngine for WhisperEngine {
     fn transcribe(&self, audio: &[f32]) -> AppResult<TranscriptionResult> {
         if audio.is_empty() {

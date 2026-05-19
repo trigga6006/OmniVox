@@ -39,6 +39,20 @@ pub struct TranscriptionRecord {
     /// words they actually spoke.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_transcript: Option<String>,
+    /// `"live"` (microphone dictation) or `"import"` (audio file upload).
+    /// `None` on pre-migration rows is read as `"live"` by the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Original filename (no path) for imported transcriptions.  Surfaced
+    /// in the History row tooltip and used as the default note title when
+    /// the user clicks Save to Note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_filename: Option<String>,
+    /// Media duration of the source file in milliseconds.  May equal
+    /// `duration_ms` (sample-derived) for v1, but kept separate so a future
+    /// silence-trim pass doesn't lose the original length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Clock, Trash2, Copy, Check, Search, RefreshCw } from "lucide-react";
+import { Clock, Trash2, Copy, Check, Search, RefreshCw, Upload } from "lucide-react";
 import {
   recentHistory,
   searchHistory,
   deleteHistoryRecord,
   onTranscriptionResult,
+  onImportTranscriptionReady,
   type TranscriptionRecord,
 } from "@/lib/tauri";
 import { formatDuration } from "@/lib/utils";
@@ -63,11 +64,18 @@ export function HistoryPage() {
   }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const unlisten = onTranscriptionResult(() => {
+    const unlistenLive = onTranscriptionResult(() => {
+      setTimeout(() => load(), 300);
+    });
+    // Imports save to the same `transcriptions` table tagged
+    // `source = "import"`; refresh on their ready event so the new row
+    // and badge appear without manual reload.
+    const unlistenImport = onImportTranscriptionReady(() => {
       setTimeout(() => load(), 300);
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenLive.then((fn) => fn());
+      unlistenImport.then((fn) => fn());
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -186,6 +194,18 @@ export function HistoryPage() {
                 <span>{formatDate(rec.created_at)}</span>
                 <span className="opacity-40">·</span>
                 <span>{formatDuration(rec.duration_ms)}</span>
+                {rec.source === "import" && (
+                  <>
+                    <span className="opacity-40">·</span>
+                    <span
+                      title={rec.source_filename ?? "Imported audio"}
+                      className="inline-flex items-center gap-1 rounded-md border border-amber-400/25 bg-amber-500/[0.08] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-amber-300/90"
+                    >
+                      <Upload size={9} strokeWidth={2} />
+                      Imported
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           ))}

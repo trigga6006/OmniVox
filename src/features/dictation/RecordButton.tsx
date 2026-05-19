@@ -1,5 +1,7 @@
 import { Mic, Square, Loader2 } from "lucide-react";
 import { useRecordingStore } from "@/stores/recordingStore";
+import { selectImportBusy, useImportStore } from "@/stores/importStore";
+import { useToastStore } from "@/stores/toastStore";
 import { startRecording, stopRecording, cancelRecording } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/utils";
@@ -7,8 +9,18 @@ import { formatDuration } from "@/lib/utils";
 export function RecordButton() {
   const status = useRecordingStore((s) => s.status);
   const duration = useRecordingStore((s) => s.duration);
+  const importBusy = useImportStore(selectImportBusy);
+  const addToast = useToastStore((s) => s.addToast);
 
   const handleClick = async () => {
+    if (importBusy && status === "idle") {
+      addToast({
+        message: "Import in progress — cancel or wait for it to finish.",
+        level: "warn",
+        code: "import_blocks_record",
+      });
+      return;
+    }
     try {
       if (status === "idle") {
         await startRecording();
@@ -77,10 +89,13 @@ export function RecordButton() {
         {/* The button itself */}
         <button
           onClick={handleClick}
-          disabled={isProcessing}
+          disabled={isProcessing || (importBusy && isIdle)}
+          title={importBusy && isIdle ? "Import in progress" : undefined}
           aria-label={
             isIdle
-              ? "Start recording"
+              ? importBusy
+                ? "Recording disabled while import runs"
+                : "Start recording"
               : isRecording
                 ? "Stop recording"
                 : "Processing transcription"

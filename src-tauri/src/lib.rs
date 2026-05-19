@@ -8,6 +8,7 @@ pub mod llm_models;
 pub mod models;
 pub mod output;
 pub mod pipeline;
+pub mod pipeline_import;
 pub mod postprocess;
 pub mod screen_context;
 pub mod state;
@@ -374,7 +375,9 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default()
+        // Native file picker for the Import Audio page.
+        .plugin(tauri_plugin_dialog::init());
 
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -550,6 +553,9 @@ pub fn run() {
             commands::set_active_llm_model,
             commands::llm_test_extract,
             commands::paste_structured_output,
+            // Import Audio commands (2)
+            commands::import_transcribe,
+            commands::import_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

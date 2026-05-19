@@ -135,6 +135,10 @@ impl Database {
         // Migration: add raw_transcript column to transcriptions if missing
         self.migrate_add_raw_transcript()?;
 
+        // Migration: add source / source_filename / source_duration_ms
+        // columns to transcriptions for the Import Audio feature.
+        self.migrate_add_import_metadata()?;
+
         Ok(())
     }
 
@@ -184,6 +188,38 @@ impl Database {
         if !has_col {
             conn.execute_batch(
                 "ALTER TABLE context_modes ADD COLUMN writing_style TEXT NOT NULL DEFAULT 'formal';"
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Add `source` / `source_filename` / `source_duration_ms` columns to
+    /// transcriptions if missing.  Drives the "Import Audio" feature:
+    /// rows tagged `source = "import"` originated from a dropped file
+    /// rather than the microphone.  Pre-migration rows stay NULL and the
+    /// read path treats NULL as `"live"`.
+    fn migrate_add_import_metadata(&self) -> AppResult<()> {
+        let conn = self.conn()?;
+
+        let has_col = |name: &str| -> bool {
+            conn.prepare("PRAGMA table_info(transcriptions)")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(1))
+                        .map(|rows| rows.filter_map(|r| r.ok()).any(|n| n == name))
+                })
+                .unwrap_or(false)
+        };
+
+        if !has_col("source") {
+            conn.execute_batch("ALTER TABLE transcriptions ADD COLUMN source TEXT;")?;
+        }
+        if !has_col("source_filename") {
+            conn.execute_batch("ALTER TABLE transcriptions ADD COLUMN source_filename TEXT;")?;
+        }
+        if !has_col("source_duration_ms") {
+            conn.execute_batch(
+                "ALTER TABLE transcriptions ADD COLUMN source_duration_ms INTEGER;",
             )?;
         }
 

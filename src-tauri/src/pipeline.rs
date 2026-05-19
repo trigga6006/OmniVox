@@ -268,6 +268,49 @@ pub async fn stop_if_recording(app_handle: &tauri::AppHandle) {
 
 /// Begin microphone capture.
 pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
+    // Mutual-exclusion guards for the Import Audio feature.
+    //
+    // Two distinct conditions block live recording:
+    //   1. An import task is in progress (covers decode + post-processing
+    //      stages where the gate may not yet be held).
+    //   2. The transcription gate is held — i.e., a previous live
+    //      stop_and_transcribe is still running Whisper inference.
+    // Either case would otherwise let two WhisperStates exist concurrently
+    // (the live worker docs this memory pressure at lines 411-419).
+    if state.active_import.lock().map(|g| g.is_some()).unwrap_or(false) {
+        emit_error(
+            app_handle,
+            ErrorCode::Busy,
+            "Import in progress — cancel or wait for it to finish",
+        );
+        return;
+    }
+    // Acquire the gate and HOLD it through the entire startup path,
+    // including `audio.start()`.  The previous "probe + drop" pattern
+    // left a race window: an import could pass its `is_recording == false`
+    // check, claim the gate, and set `active_import` between our probe
+    // drop and `audio.start()` flipping the recording flag.
+    //
+    // The permit lives in `_startup_permit` and is dropped on function
+    // return — after `audio.start()` has succeeded (recording flag set,
+    // so subsequent `is_recording` checks block imports) OR after we've
+    // bailed via `emit_error` (no recording started, gate freed).
+    //
+    // This is correct relative to `stop_and_transcribe`'s gate acquire
+    // because `start_recording` returns before the user can release the
+    // hotkey, so `stop_and_transcribe` doesn't observe the permit held.
+    let _startup_permit = match state.transcription_gate.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            emit_error(
+                app_handle,
+                ErrorCode::Busy,
+                "Transcription still processing — try again in a moment",
+            );
+            return;
+        }
+    };
+
     // Snapshot the foreground window BEFORE we do anything that might steal focus.
     let fg = capture_foreground_window();
     if let Ok(mut prev) = state.prev_foreground.lock() {
@@ -565,6 +608,17 @@ async fn wait_for_preview_worker(state: &AppState) {
 
 /// Stop capture, run Whisper inference, post-process, and output the text.
 pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState) {
+    // Acquire the shared transcription gate FIRST, before stopping mic
+    // capture, so an import attempted in the "audio.is_recording() is
+    // false but Whisper hasn't started yet" window will see the gate
+    // held and reject cleanly.  Held until the end of this function via
+    // `_gate_permit` — drops automatically on every exit path.
+    //
+    // Acquire (not try_acquire) — if an import is somehow already
+    // running we wait for it to finish rather than dropping the user's
+    // dictation on the floor.
+    let _gate_permit = state.transcription_gate.clone().acquire_owned().await.ok();
+
     // Restore system volume immediately — don't wait for transcription.
     crate::audio::ducking::unduck();
 
@@ -1036,6 +1090,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         model_name: transcription.model_name,
         created_at: chrono::Utc::now(),
         raw_transcript,
+        // Live dictation — import metadata stays None.  History UI
+        // treats `None` as `"live"` (see HistoryPage badge).
+        source: Some("live".to_string()),
+        source_filename: None,
+        source_duration_ms: None,
     };
     if let Err(e) = crate::storage::history::save_transcription(&state.db, &record) {
         eprintln!("Failed to save transcription to history: {e}");

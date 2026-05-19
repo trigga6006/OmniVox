@@ -27,6 +27,10 @@ pub enum ErrorCode {
     LlmUnavailable,
     LlmTimeout,
     LlmInferenceFailed,
+    // Concurrency / import
+    Busy,
+    Cancelled,
+    DecodeFailed,
     // General
     InternalError,
 }
@@ -49,6 +53,12 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("Operation cancelled")]
+    Cancelled,
+    #[error("Busy: {0}")]
+    Busy(String),
+    #[error("Decode error: {0}")]
+    Decode(String),
 }
 
 impl AppError {
@@ -94,6 +104,9 @@ impl AppError {
             }
             AppError::Io(_) => ErrorCode::InternalError,
             AppError::Internal(_) => ErrorCode::InternalError,
+            AppError::Cancelled => ErrorCode::Cancelled,
+            AppError::Busy(_) => ErrorCode::Busy,
+            AppError::Decode(_) => ErrorCode::DecodeFailed,
         }
     }
 }

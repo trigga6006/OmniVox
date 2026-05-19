@@ -12,6 +12,8 @@
     "core:window:allow-set-position",
     "core:window:allow-current-monitor",
     "core:window:allow-inner-size",
-    "core:window:allow-outer-position"
+    "core:window:allow-outer-position",
+    "core:webview:default",
+    "dialog:allow-open"
   ]
 }

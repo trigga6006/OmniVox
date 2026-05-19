@@ -30,6 +30,15 @@ enigo = "0.2"
 arboard = "3"
 tauri-plugin-single-instance = "2.4.0"
 nnnoiseless = { version = "0.5", default-features = false }
+# Decode arbitrary audio containers (WAV / MP3 / M4A / FLAC / OGG / AAC)
+# for the Import Audio feature. Pure-Rust, no ffmpeg dependency.
+symphonia = { version = "0.5", default-features = false, features = [
+    "mp3", "aac", "isomp4", "vorbis", "ogg", "flac", "wav", "pcm",
+] }
+# Resample decoded audio to 16 kHz mono f32 for the Whisper engine.
+rubato = "0.16"
+# File picker for the Import Audio page.
+tauri-plugin-dialog = "2"
 # Local LLM inference (llama.cpp bindings) for Structured Mode slot extraction.
 # `default-features = false` disables openmp + android-shared-stdcxx so GPU backends
 # are added explicitly via the top-level `cuda` / `vulkan` features below.

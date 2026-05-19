@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Semaphore};
+use uuid::Uuid;
 
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioConfig;
@@ -74,6 +76,28 @@ pub struct AppState {
     /// state. Stop waits briefly on this before final transcription so large
     /// models don't double-allocate preview + final decode buffers.
     pub preview_done_rx: Mutex<Option<oneshot::Receiver<()>>>,
+
+    // ── Import Audio side ─────────────────────────────────────────────────
+    /// Currently running file-import task, if any.  Holds the import id
+    /// and a shared cancel flag the task polls between work units.
+    pub active_import: Mutex<Option<ImportSlot>>,
+    /// One-permit semaphore that serializes Whisper *final* inference
+    /// across the live mic path and the file-import path.  Live
+    /// `stop_and_transcribe` and import `transcribe_file` both acquire
+    /// this before allocating a WhisperState, so the ~500 MB decode
+    /// buffer is never claimed twice concurrently.  Acquiring this
+    /// gate does NOT block live mic capture — that's gated only by
+    /// `active_import` (so the user can't start a recording while an
+    /// import is in flight).
+    pub transcription_gate: Arc<Semaphore>,
+}
+
+/// Bookkeeping for an in-flight import task — owned by `AppState` so
+/// the `import_cancel` command can flip the flag from a different
+/// command invocation.
+pub struct ImportSlot {
+    pub id: Uuid,
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -118,6 +142,8 @@ impl AppState {
             llm_models_dir,
             screen_context_rx: Mutex::new(None),
             preview_done_rx: Mutex::new(None),
+            active_import: Mutex::new(None),
+            transcription_gate: Arc::new(Semaphore::new(1)),
         }
     }
 }

@@ -7,7 +7,17 @@ import { useRecordingStore } from "@/stores/recordingStore";
 import { DictationPanel } from "@/features/dictation/DictationPanel";
 import { ToastContainer } from "@/components/ToastContainer";
 import { useToastStore } from "@/stores/toastStore";
-import { recentHistory, onTranscriptionResult, onRecordingError, openMicSettings } from "@/lib/tauri";
+import {
+  recentHistory,
+  onTranscriptionResult,
+  onRecordingError,
+  openMicSettings,
+  onImportProgress,
+  onImportTranscriptionReady,
+  onImportError,
+  onImportCancelled,
+} from "@/lib/tauri";
+import { useImportStore } from "@/stores/importStore";
 
 // Lazy-load page components — they are only parsed/executed when navigated to,
 // saving ~20-50 MB of JS heap in the main WebView window.
@@ -25,6 +35,9 @@ const ContextModesPage = lazy(() =>
 );
 const NotesPage = lazy(() =>
   import("@/features/notes/NotesPage").then((m) => ({ default: m.NotesPage }))
+);
+const ImportsPage = lazy(() =>
+  import("@/features/imports/ImportsPage").then((m) => ({ default: m.ImportsPage }))
 );
 const SettingsPage = lazy(() =>
   import("@/features/settings/SettingsPage").then((m) => ({ default: m.SettingsPage }))
@@ -110,6 +123,8 @@ function PageRouter() {
             return <ContextModesPage />;
           case "notes":
             return <NotesPage />;
+          case "imports":
+            return <ImportsPage />;
           case "models":
             return <ModelsPage />;
           case "settings":
@@ -122,8 +137,99 @@ function PageRouter() {
   );
 }
 
+/**
+ * Mount-once listeners for the Import Audio events.  Lives at the App
+ * root so a long import keeps progressing even when the user navigates
+ * away from the Imports page — re-mounting on the page would lose every
+ * tick that fires between unmount and remount.
+ *
+ * Each handler filters by `payload.import_id === current.importId` so
+ * late events from a cancelled prior import are dropped on the floor.
+ */
+function useImportEventSync() {
+  useEffect(() => {
+    const unlistenProgress = onImportProgress((p) => {
+      const cur = useImportStore.getState().state;
+      if (cur.kind !== "decoding" && cur.kind !== "transcribing") return;
+      if (p.import_id !== cur.importId) return;
+
+      if (p.phase === "decoding") {
+        useImportStore.getState().applyState({
+          kind: "decoding",
+          importId: cur.importId,
+          filename: cur.filename,
+          percent: p.percent,
+        });
+      } else {
+        if (p.duration_ms == null) {
+          // Rust contract is "always set duration on transcribing-phase
+          // events" — log + drop rather than guess.
+          console.warn("import-progress transcribing event missing duration_ms");
+          return;
+        }
+        useImportStore.getState().applyState({
+          kind: "transcribing",
+          importId: cur.importId,
+          filename: cur.filename,
+          percent: p.percent,
+          durationMs: p.duration_ms,
+        });
+      }
+    });
+    const unlistenReady = onImportTranscriptionReady((p) => {
+      const cur = useImportStore.getState().state;
+      if (cur.kind !== "decoding" && cur.kind !== "transcribing") return;
+      if (p.import_id !== cur.importId) return;
+      useImportStore.getState().applyState({
+        kind: "complete",
+        importId: cur.importId,
+        filename: p.source_filename,
+        durationMs: p.duration_ms,
+        transcript: p.text,
+      });
+    });
+    const unlistenError = onImportError((p) => {
+      const cur = useImportStore.getState().state;
+      const filename =
+        cur.kind === "decoding" ||
+        cur.kind === "transcribing" ||
+        cur.kind === "cancelling" ||
+        cur.kind === "complete"
+          ? cur.filename
+          : null;
+      // Accept any in-flight error; backend only emits when the import is alive.
+      useImportStore.getState().applyState({
+        kind: "error",
+        importId: p.import_id,
+        filename,
+        message: p.message,
+      });
+    });
+    const unlistenCancelled = onImportCancelled((p) => {
+      const cur = useImportStore.getState().state;
+      // Only honor the cancellation event for the import the UI thinks
+      // is in flight.  Late events from a previous task are ignored.
+      if (
+        (cur.kind === "cancelling" ||
+          cur.kind === "decoding" ||
+          cur.kind === "transcribing") &&
+        cur.importId === p.import_id
+      ) {
+        useImportStore.getState().applyState({ kind: "idle" });
+      }
+    });
+    return () => {
+      unlistenProgress.then((fn) => fn());
+      unlistenReady.then((fn) => fn());
+      unlistenError.then((fn) => fn());
+      unlistenCancelled.then((fn) => fn());
+    };
+  }, []);
+}
+
 function MainApp() {
   useGlobalTranscriptionSync();
+  useImportEventSync();
 
   return (
     <div className="flex h-screen w-screen bg-surface-0 text-text-primary">

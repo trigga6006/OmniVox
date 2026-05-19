@@ -1,11 +1,13 @@
-import { Mic, Clock, BookOpen, Layers, StickyNote, BrainCircuit, Settings } from "lucide-react";
+import { Mic, Upload, Clock, BookOpen, Layers, StickyNote, BrainCircuit, Settings } from "lucide-react";
 import { useAppStore, type Page } from "@/stores/appStore";
 import { useRecordingStore } from "@/stores/recordingStore";
+import { selectImportBusy, useImportStore } from "@/stores/importStore";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 
 const navItems: { page: Page; icon: typeof Mic; label: string }[] = [
   { page: "dictation", icon: Mic, label: "Dictation" },
+  { page: "imports", icon: Upload, label: "Imports" },
   { page: "history", icon: Clock, label: "History" },
   { page: "dictionary", icon: BookOpen, label: "Dictionary" },
   { page: "modes", icon: Layers, label: "Modes" },
@@ -18,6 +20,7 @@ export function Sidebar() {
   const { currentPage, setPage } = useAppStore();
   const status = useRecordingStore((s) => s.status);
   const isRecording = status === "recording";
+  const isImporting = useImportStore(selectImportBusy);
 
   return (
     <aside className="flex h-full w-[68px] shrink-0 flex-col items-center border-r border-border/60 bg-surface-0 py-5">
@@ -63,13 +66,24 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Recording status dot */}
-      <div className="flex h-6 items-center justify-center">
+      {/* Status dots — recording (red) or import-in-progress (amber). */}
+      <div className="flex h-6 items-center justify-center gap-1.5">
         {isRecording && (
           <span
+            title="Recording"
             className="block h-1.5 w-1.5 rounded-full bg-recording-500"
             style={{
               boxShadow: "0 0 8px rgb(216 67 47 / 0.65)",
+              animation: "breathe 2.4s ease-in-out infinite",
+            }}
+          />
+        )}
+        {isImporting && (
+          <span
+            title="Import in progress"
+            className="block h-1.5 w-1.5 rounded-full bg-amber-400"
+            style={{
+              boxShadow: "0 0 8px rgb(232 180 95 / 0.55)",
               animation: "breathe 2.4s ease-in-out infinite",
             }}
           />

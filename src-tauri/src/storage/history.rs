@@ -7,9 +7,10 @@ use uuid::Uuid;
 
 /// Map a rusqlite row to a TranscriptionRecord.
 ///
-/// SELECT column order: id, text, duration_ms, model_name, created_at, raw_transcript
-/// (the raw_transcript column was added in a later migration and may be NULL
-/// for pre-migration rows).
+/// SELECT column order: id, text, duration_ms, model_name, created_at,
+/// raw_transcript, source, source_filename, source_duration_ms.
+/// (raw_transcript and the import metadata columns were added in later
+/// migrations and may be NULL for pre-migration rows.)
 fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
     let id_str: String = row.get(0)?;
     let text: String = row.get(1)?;
@@ -17,6 +18,9 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
     let model_name: String = row.get(3)?;
     let created_at_str: String = row.get(4)?;
     let raw_transcript: Option<String> = row.get(5).ok().flatten();
+    let source: Option<String> = row.get(6).ok().flatten();
+    let source_filename: Option<String> = row.get(7).ok().flatten();
+    let source_duration_ms: Option<u64> = row.get(8).ok().flatten();
 
     let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -30,6 +34,9 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
         model_name,
         created_at,
         raw_transcript,
+        source,
+        source_filename,
+        source_duration_ms,
     })
 }
 
@@ -37,8 +44,11 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptionRecord> {
 pub fn save_transcription(db: &Database, record: &TranscriptionRecord) -> AppResult<()> {
     let conn = db.conn()?;
     conn.execute(
-        "INSERT OR REPLACE INTO transcriptions (id, text, duration_ms, model_name, created_at, raw_transcript)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO transcriptions (
+            id, text, duration_ms, model_name, created_at, raw_transcript,
+            source, source_filename, source_duration_ms
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             record.id.to_string(),
             record.text,
@@ -46,6 +56,9 @@ pub fn save_transcription(db: &Database, record: &TranscriptionRecord) -> AppRes
             record.model_name,
             record.created_at.to_rfc3339(),
             record.raw_transcript,
+            record.source,
+            record.source_filename,
+            record.source_duration_ms,
         ],
     )?;
     Ok(())
@@ -60,6 +73,12 @@ pub fn save_transcription(db: &Database, record: &TranscriptionRecord) -> AppRes
 /// instead of 2.  Multiple consecutive spaces are still approximate, but the
 /// processor pipeline's `normalize_whitespace` step collapses those before
 /// save, so they shouldn't appear in practice.
+///
+/// **Imports are excluded.**  A user's "dictation milestone" should reflect
+/// what they actually spoke into the mic.  Counting a 30-minute imported
+/// meeting recording would jump them from "First Steps" to "Storyteller"
+/// in a single drop.  `source IS NULL` (pre-migration rows, all of which
+/// came from live dictation) is treated as live.
 pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::DictationStats> {
     let conn = db.conn()?;
     let stats = conn.query_row(
@@ -69,6 +88,7 @@ pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::Di
                 duration_ms
             FROM transcriptions
             WHERE TRIM(text) != ''
+              AND COALESCE(source, 'live') = 'live'
         )
         SELECT
             COALESCE(SUM(LENGTH(t) - LENGTH(REPLACE(t, ' ', '')) + 1), 0),
@@ -97,7 +117,7 @@ pub fn search_history(
     let conn = db.conn()?;
     let like_pattern = format!("%{}%", query);
     let mut stmt = conn.prepare(
-        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript
+        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript, source, source_filename, source_duration_ms
          FROM transcriptions
          WHERE text LIKE ?1
          ORDER BY created_at DESC
@@ -117,7 +137,7 @@ pub fn recent_history(
 ) -> AppResult<Vec<TranscriptionRecord>> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare(
-        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript
+        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript, source, source_filename, source_duration_ms
          FROM transcriptions
          ORDER BY created_at DESC
          LIMIT ?1 OFFSET ?2",
@@ -142,7 +162,7 @@ pub fn delete_record(db: &Database, id: &str) -> AppResult<()> {
 pub fn export_history(db: &Database, format: &str) -> AppResult<String> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare(
-        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript
+        "SELECT id, text, duration_ms, model_name, created_at, raw_transcript, source, source_filename, source_duration_ms
          FROM transcriptions
          ORDER BY created_at DESC",
     )?;
