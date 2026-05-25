@@ -108,7 +108,7 @@ pub async fn paste_structured_output(
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
     if let Some(hwnd) = prev_hwnd {
         let _ = tokio::task::spawn_blocking(move || {
-            crate::pipeline::restore_foreground_window_public(hwnd)
+            crate::focus::restore_foreground_window_public(hwnd)
         })
         .await;
     }

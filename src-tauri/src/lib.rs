@@ -2,6 +2,7 @@ pub mod audio;
 pub mod asr;
 pub mod commands;
 pub mod error;
+pub mod focus;
 pub mod hotkey;
 pub mod llm;
 pub mod llm_models;

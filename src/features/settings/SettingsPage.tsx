@@ -1,15 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, RotateCcw, Loader2, Zap, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
-  updateSettings,
-  suspendHotkey,
-  updateHotkey,
   getAudioDevices,
   setAudioDevice,
-  setActiveModel,
-  getActiveModel,
   onSettingsChanged,
   getPlatformInfo,
   openMicSettings,
@@ -19,9 +14,11 @@ import {
   type HotkeyConfig,
   type PlatformInfo,
 } from "@/lib/tauri";
-import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useSettingsPatch } from "@/hooks/useSettingsPatch";
+import { HotkeySection } from "./HotkeySection";
+import { GpuAccelerationSection } from "./GpuAccelerationSection";
 
 const outputModes = [
   {
@@ -54,342 +51,6 @@ const writingStyles = [
 
 type WritingStyleId = (typeof writingStyles)[number]["id"];
 
-/* ─────────────────── Hotkey Recorder Component ─────────────────── */
-
-type HotkeyState = "display" | "listening" | "confirming";
-
-interface CapturedKey {
-  code: string;
-  vk: number;
-  label: string;
-}
-
-function HotkeySection({
-  hotkey,
-  onSaved,
-}: {
-  hotkey: HotkeyConfig | null;
-  onSaved: (config: HotkeyConfig) => void;
-}) {
-  const [state, setState] = useState<HotkeyState>("display");
-  const [captured, setCaptured] = useState<CapturedKey[]>([]);
-  const heldRef = useRef<Set<string>>(new Set());
-
-  const currentLabels = hotkey?.labels ?? ["LCtrl", "LAlt"];
-
-  // ── Listening mode: capture keys ──────────────────────────
-  useEffect(() => {
-    if (state !== "listening") return;
-
-    // Suspend the backend hook so our keypresses don't trigger recording
-    suspendHotkey(true).catch(console.error);
-
-    const collected: CapturedKey[] = [];
-    heldRef.current = new Set();
-
-    const onDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      const code = e.code;
-      if (heldRef.current.has(code)) return; // repeat
-      heldRef.current.add(code);
-
-      const entry = CODE_TO_VK[code];
-      if (!entry) return; // unknown key
-
-      // Max 2 keys
-      if (collected.length < 2 && !collected.some((k) => k.code === code)) {
-        collected.push({ code, vk: entry.vk, label: entry.label });
-        setCaptured([...collected]);
-      }
-    };
-
-    const onUp = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      heldRef.current.delete(e.code);
-
-      // All keys released → done capturing
-      if (heldRef.current.size === 0 && collected.length > 0) {
-        setState("confirming");
-      }
-    };
-
-    window.addEventListener("keydown", onDown, true);
-    window.addEventListener("keyup", onUp, true);
-
-    return () => {
-      window.removeEventListener("keydown", onDown, true);
-      window.removeEventListener("keyup", onUp, true);
-    };
-  }, [state]);
-
-  const handleRemap = () => {
-    setCaptured([]);
-    setState("listening");
-  };
-
-  const handleRedo = () => {
-    setCaptured([]);
-    setState("listening");
-  };
-
-  const handleCancel = () => {
-    setState("display");
-    setCaptured([]);
-    suspendHotkey(false).catch(console.error);
-  };
-
-  const handleSave = () => {
-    if (captured.length === 0) return;
-    const config: HotkeyConfig = {
-      keys: captured.map((k) => k.vk),
-      labels: captured.map((k) => k.label),
-    };
-    updateHotkey(config)
-      .then(() => {
-        onSaved(config);
-        setState("display");
-      })
-      .catch(console.error);
-  };
-
-  const handleReset = () => {
-    const config: HotkeyConfig = { keys: [0xa2, 0xa4], labels: ["LCtrl", "LAlt"] };
-    updateHotkey(config)
-      .then(() => onSaved(config))
-      .catch(console.error);
-  };
-
-  const isDefault =
-    currentLabels.length === 2 &&
-    currentLabels[0] === "LCtrl" &&
-    currentLabels[1] === "LAlt";
-
-  return (
-    <section
-      className={cn(
-        "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
-        state === "listening"
-          ? "border-amber-400/45 bg-amber-500/[0.03]"
-          : state === "confirming"
-            ? "border-success/35 bg-success/[0.04]"
-            : "border-border hover:border-border-hover hover:bg-surface-1"
-      )}
-      style={{ opacity: 0, animationDelay: "0.32s", animationFillMode: "forwards" }}
-    >
-      <div className="flex items-center gap-2 mb-3">
-        <Keyboard size={14} strokeWidth={2} className="text-text-muted" />
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-          Hotkey
-        </span>
-      </div>
-
-      <label className="block text-sm text-text-secondary mb-2">
-        Push-to-talk shortcut
-      </label>
-
-      {/* ── Display state ── */}
-      {state === "display" && (
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            {currentLabels.map((key, i) => (
-              <div key={key} className="contents">
-                {i > 0 && (
-                  <span className="text-xs text-text-muted select-none">+</span>
-                )}
-                <kbd className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 font-mono text-[13px] text-text-secondary shadow-sm">
-                  {key}
-                </kbd>
-              </div>
-            ))}
-          </div>
-          <button
-            onClick={handleRemap}
-            className="ml-2 rounded-md px-2 py-1 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/[0.10] hover:text-amber-200"
-          >
-            Remap
-          </button>
-          {!isDefault && (
-            <button
-              onClick={handleReset}
-              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-            >
-              Reset
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* ── Listening state ── */}
-      {state === "listening" && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <div
-              className="flex min-w-[160px] items-center justify-center gap-2 rounded-lg border border-amber-400/35 bg-amber-500/[0.06] px-4 py-2.5"
-            >
-              {captured.length === 0 ? (
-                <span className="animate-pulse text-sm text-amber-300/80">
-                  Press your keys...
-                </span>
-              ) : (
-                captured.map((k, i) => (
-                  <div key={k.code} className="contents">
-                    {i > 0 && (
-                      <span className="text-xs text-text-muted">+</span>
-                    )}
-                    <kbd className="rounded-md border border-amber-400/30 bg-amber-500/[0.14] px-2.5 py-1 font-mono text-sm text-amber-200">
-                      {k.label}
-                    </kbd>
-                  </div>
-                ))
-              )}
-            </div>
-            <button
-              onClick={handleCancel}
-              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-          <p className="text-xs text-text-muted">
-            Press 1 or 2 keys simultaneously, then release to confirm
-          </p>
-        </div>
-      )}
-
-      {/* ── Confirming state ── */}
-      {state === "confirming" && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              {captured.map((k, i) => (
-                <div key={k.code} className="contents">
-                  {i > 0 && (
-                    <span className="text-xs text-text-muted">+</span>
-                  )}
-                  <kbd className="rounded-lg border border-success/30 bg-success/[0.10] px-3 py-1.5 font-mono text-[13px] text-success shadow-sm">
-                    {k.label}
-                  </kbd>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2 ml-2">
-              <button
-                onClick={handleSave}
-                className="inline-flex items-center gap-1 rounded-md border border-amber-400/35 bg-amber-500/[0.14] px-3 py-1 text-xs font-medium text-amber-200 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.22]"
-              >
-                Save
-              </button>
-              <button
-                onClick={handleRedo}
-                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
-                title="Try again"
-              >
-                <RotateCcw size={12} strokeWidth={2} />
-                Redo
-              </button>
-              <button
-                onClick={handleCancel}
-                className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-/* ─────────────────── GPU Acceleration Section ─────────────── */
-
-function GpuAccelerationSection({
-  enabled,
-  onToggle,
-}: {
-  enabled: boolean;
-  onToggle: (enabled: boolean) => void;
-}) {
-  const [reloading, setReloading] = useState(false);
-
-  const handleToggle = useCallback(async () => {
-    const next = !enabled;
-    setReloading(true);
-    onToggle(next);
-
-    // Reload the active Whisper model so it picks up the new GPU setting.
-    try {
-      const active = await getActiveModel();
-      if (active) {
-        await setActiveModel(active.id);
-      }
-    } catch (e) {
-      console.error("Failed to reload model after GPU toggle:", e);
-    } finally {
-      setReloading(false);
-    }
-  }, [enabled, onToggle]);
-
-  return (
-    <section
-      className={cn(
-        "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
-        enabled
-          ? "border-amber-500/20"
-          : "border-border hover:border-border-hover"
-      )}
-      style={{ opacity: 0, animationDelay: "0.19s", animationFillMode: "forwards" }}
-    >
-      <div className="flex items-center gap-2 mb-3">
-        <Zap size={14} strokeWidth={2} className="text-text-muted" />
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-          GPU Acceleration
-        </span>
-      </div>
-
-      <p className="text-xs text-text-muted mb-4 max-w-[400px]">
-        Offload Whisper inference to your GPU via Vulkan for significantly faster
-        transcription. Works with both AMD and NVIDIA GPUs.
-      </p>
-
-      <div className="flex items-center gap-3">
-        <button
-          onClick={handleToggle}
-          disabled={reloading}
-          className={cn(
-            "relative inline-flex h-[22px] w-10 items-center rounded-full transition-colors shadow-inner",
-            enabled ? "bg-amber-500" : "bg-surface-3",
-            reloading && "opacity-60"
-          )}
-        >
-          <span
-            className={cn(
-              "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
-              enabled ? "translate-x-[21px]" : "translate-x-[3px]"
-            )}
-          />
-        </button>
-        <span className="text-sm text-text-secondary">
-          {reloading ? (
-            <span className="flex items-center gap-1.5">
-              <Loader2 size={13} strokeWidth={2} className="animate-spin text-amber-300" />
-              Reloading model…
-            </span>
-          ) : enabled ? (
-            "Enabled"
-          ) : (
-            "Disabled"
-          )}
-        </span>
-      </div>
-    </section>
-  );
-}
-
 /* ─────────────────── Main Settings Page ─────────────────────── */
 
 export function SettingsPage() {
@@ -401,6 +62,7 @@ export function SettingsPage() {
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const [showVoiceCommands, setShowVoiceCommands] = useState(false);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const { replaceSettings, patchSettings } = useSettingsPatch(setSettings);
   // Version is sourced from tauri.conf.json via the Tauri app API
   // rather than hardcoded — so the About section stays correct across
   // releases without anyone remembering to hand-edit this file.  Null
@@ -411,7 +73,7 @@ export function SettingsPage() {
   useEffect(() => {
     getSettings()
       .then((s) => {
-        setSettings(s);
+        replaceSettings(s);
         const mode = outputModes.find((m) => m.id === s.output_mode);
         setActiveMode(mode ? mode.id : "clipboard");
         const style = writingStyles.find((st) => st.id === s.writing_style);
@@ -437,7 +99,7 @@ export function SettingsPage() {
 
     // Stay in sync when settings change from the overlay pill (or any window)
     const unlisten = onSettingsChanged((s) => {
-      setSettings(s);
+      replaceSettings(s);
       const mode = outputModes.find((m) => m.id === s.output_mode);
       setActiveMode(mode ? mode.id : "clipboard");
       const style = writingStyles.find((st) => st.id === s.writing_style);
@@ -446,144 +108,102 @@ export function SettingsPage() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [replaceSettings]);
 
   const handleModeChange = useCallback(
     (mode: OutputMode) => {
       setActiveMode(mode);
-      if (!settings) return;
-
-      const updated: AppSettings = { ...settings, output_mode: mode };
-      setSettings(updated);
-      updateSettings(updated).catch((e) =>
-        console.error("Failed to save settings:", e)
-      );
+      patchSettings({ output_mode: mode }).catch((e) => {
+        console.error("Failed to save settings:", e);
+        const previous = outputModes.find((m) => m.id === settings?.output_mode);
+        setActiveMode(previous?.id ?? "clipboard");
+      });
     },
-    [settings]
+    [patchSettings, settings?.output_mode]
   );
 
   const handleStyleChange = useCallback(
     (style: WritingStyleId) => {
       setActiveStyle(style);
-      if (!settings) return;
-
-      const updated: AppSettings = { ...settings, writing_style: style };
-      setSettings(updated);
-      updateSettings(updated).catch((e) =>
-        console.error("Failed to save settings:", e)
-      );
+      patchSettings({ writing_style: style }).catch((e) => {
+        console.error("Failed to save settings:", e);
+        const previous = writingStyles.find((st) => st.id === settings?.writing_style);
+        setActiveStyle(previous?.id ?? "formal");
+      });
     },
-    [settings]
+    [patchSettings, settings?.writing_style]
   );
 
   const handleGpuToggle = useCallback(
     (enabled: boolean) => {
-      if (!settings) return;
-
-      const updated: AppSettings = { ...settings, gpu_acceleration: enabled };
-      setSettings(updated);
-      updateSettings(updated).catch((e) =>
+      patchSettings({ gpu_acceleration: enabled }).catch((e) =>
         console.error("Failed to save settings:", e)
       );
     },
-    [settings]
+    [patchSettings]
   );
 
   const handleHotkeySaved = useCallback(
     (config: HotkeyConfig) => {
       if (settings) {
-        setSettings({ ...settings, hotkey: config });
+        replaceSettings({ ...settings, hotkey: config });
       }
     },
-    [settings]
+    [replaceSettings, settings]
   );
 
   const handleLivePreviewToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, live_preview: !settings.live_preview };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ live_preview: !current.live_preview })).catch(console.error);
+  }, [patchSettings]);
 
   const handleNoiseReductionToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, noise_reduction: !settings.noise_reduction };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ noise_reduction: !current.noise_reduction })).catch(console.error);
+  }, [patchSettings]);
 
   const handleScreenContextToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, use_screen_context: !settings.use_screen_context };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ use_screen_context: !current.use_screen_context })).catch(console.error);
+  }, [patchSettings]);
 
   const handleStructuredScreenContextToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = {
-      ...settings,
-      structured_use_screen_context: !settings.structured_use_screen_context,
-    };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({
+      structured_use_screen_context: !current.structured_use_screen_context,
+    })).catch(console.error);
+  }, [patchSettings]);
 
   const handleAudioDuckingToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, audio_ducking: !settings.audio_ducking };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ audio_ducking: !current.audio_ducking })).catch(console.error);
+  }, [patchSettings]);
 
   const handleDuckingAmountChange = useCallback(
     (value: number) => {
-      if (!settings) return;
-      const updated = { ...settings, ducking_amount: value };
-      setSettings(updated);
-      updateSettings(updated).catch(console.error);
+      patchSettings({ ducking_amount: value }).catch(console.error);
     },
-    [settings]
+    [patchSettings]
   );
 
   const handleVoiceCommandsToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, voice_commands: !settings.voice_commands };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ voice_commands: !current.voice_commands })).catch(console.error);
+  }, [patchSettings]);
 
   const handleCommandSendToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, command_send: !settings.command_send };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ command_send: !current.command_send })).catch(console.error);
+  }, [patchSettings]);
 
   const handleAutoSwitchToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, auto_switch_modes: !settings.auto_switch_modes };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ auto_switch_modes: !current.auto_switch_modes })).catch(console.error);
+  }, [patchSettings]);
 
   const handleShipModeToggle = useCallback(() => {
-    if (!settings) return;
-    const updated = { ...settings, ship_mode: !settings.ship_mode };
-    setSettings(updated);
-    updateSettings(updated).catch(console.error);
-  }, [settings]);
+    patchSettings((current) => ({ ship_mode: !current.ship_mode })).catch(console.error);
+  }, [patchSettings]);
 
   const currentTheme = settings?.theme ?? "dark";
   const handleThemeChange = useCallback(
     (theme: string) => {
-      if (!settings) return;
-      const updated = { ...settings, theme };
-      setSettings(updated);
-      updateSettings(updated).catch(console.error);
+      patchSettings({ theme }).catch(console.error);
       useSettingsStore.getState().setSettings({ theme });
     },
-    [settings]
+    [patchSettings]
   );
 
   return (

@@ -1,5 +1,5 @@
 use super::extract::{is_useful_for_whisper, rank_tokens};
-use super::{build_initial_prompt, ScreenContext, MAX_SCREEN_TOKENS};
+use super::{build_initial_prompt, should_skip_app, ScreenContext, MAX_SCREEN_TOKENS};
 
 #[test]
 fn extract_picks_file_with_extension() {
@@ -169,6 +169,16 @@ fn screen_context_default_has_empty_tokens() {
     let ctx = ScreenContext::default();
     assert!(ctx.is_empty());
     assert_eq!(ctx.tokens.len(), 0);
+}
+
+#[test]
+fn screen_context_skips_codex_app_before_uia_capture() {
+    for process_name in ["Codex.exe", "codex.exe"] {
+        assert!(
+            should_skip_app(process_name),
+            "expected {process_name} to skip screen-context capture"
+        );
+    }
 }
 
 #[test]

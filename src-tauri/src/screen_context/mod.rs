@@ -71,9 +71,23 @@ const WHISPER_PROMPT_TERM_CAP: usize = 180;
 /// decoder.
 const WHISPER_SCREEN_TOKEN_CAP: usize = 15;
 
-/// Process names we never capture screen context for — would either feed
-/// our own UI back into the model (loop) or has no useful technical text.
-const SKIP_APPS: &[&str] = &["omnivox.exe", "omnivoice.exe"];
+/// Process names we never capture screen context for.
+///
+/// Agent/browser-host apps can become unresponsive when we synchronously walk
+/// their UIA tree while their own browser automation is active. For those
+/// targets, plain dictation is much safer than cross-process accessibility
+/// inspection.
+const SKIP_APPS: &[&str] = &[
+    "omnivox.exe",
+    "omnivoice.exe",
+    "codex.exe",
+    "claude.exe",
+    "msedgewebview2.exe",
+];
+
+fn should_skip_app(name: &str) -> bool {
+    SKIP_APPS.iter().any(|&a| a.eq_ignore_ascii_case(name))
+}
 
 /// Capture screen context for the given foreground window handle.
 ///
@@ -92,8 +106,8 @@ pub fn capture(hwnd: Option<isize>) -> ScreenContext {
     let source_app = process_name_from_hwnd(hwnd);
 
     if let Some(name) = source_app.as_deref() {
-        if SKIP_APPS.iter().any(|&a| a.eq_ignore_ascii_case(name)) {
-            diaglog::log(&format!("capture: skipping own app ({name})"));
+        if should_skip_app(name) {
+            diaglog::log(&format!("capture: skipping unsafe app ({name})"));
             return ScreenContext {
                 source_app,
                 ..Default::default()

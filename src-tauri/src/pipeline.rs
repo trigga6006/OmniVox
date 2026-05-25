@@ -6,6 +6,9 @@ use tokio::sync::oneshot;
 
 use crate::asr::engine::AsrEngine;
 use crate::error::ErrorCode;
+use crate::focus::{
+    capture_foreground_window, get_process_name_from_hwnd, restore_foreground_window,
+};
 use crate::llm::schema::SlotExtraction;
 use crate::llm::template::render_markdown;
 use crate::postprocess::processor::TextProcessor;
@@ -40,195 +43,6 @@ fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into
     let _ = app_handle.emit("recording-state-change", "error");
 }
 
-/// Snapshot the currently focused window so we can restore it before pasting.
-/// Returns a platform-specific handle (HWND on Windows, pid on macOS).
-#[cfg(target_os = "windows")]
-fn capture_foreground_window() -> Option<isize> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.is_null() { None } else { Some(hwnd as isize) }
-}
-
-#[cfg(target_os = "macos")]
-fn capture_foreground_window() -> Option<isize> {
-    // Use NSWorkspace via the objc runtime to get the frontmost app's PID.
-    // This is a direct Cocoa call — no subprocess overhead.
-    unsafe {
-        let cls = objc::runtime::Class::get("NSWorkspace")?;
-        let workspace: *mut objc::runtime::Object = objc::msg_send![cls, sharedWorkspace];
-        let app: *mut objc::runtime::Object = objc::msg_send![workspace, frontmostApplication];
-        if app.is_null() {
-            return None;
-        }
-        let pid: i32 = objc::msg_send![app, processIdentifier];
-        if pid > 0 { Some(pid as isize) } else { None }
-    }
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn capture_foreground_window() -> Option<isize> {
-    None
-}
-
-/// Extract the process executable name (e.g. "Code.exe") from a window handle.
-#[cfg(target_os = "windows")]
-fn get_process_name_from_hwnd(hwnd: isize) -> Option<String> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-
-    unsafe {
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(hwnd as *mut std::ffi::c_void, &mut pid as *mut u32);
-        if pid == 0 {
-            return None;
-        }
-
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return None;
-        }
-
-        let mut buf = [0u16; 260]; // MAX_PATH
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
-        CloseHandle(handle);
-
-        if ok == 0 || len == 0 {
-            return None;
-        }
-
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        // Extract just the filename: "C:\...\Code.exe" -> "Code.exe"
-        path.rsplit('\\').next().map(|s| s.to_string())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn get_process_name_from_hwnd(pid: isize) -> Option<String> {
-    // Use proc_pidpath to get the executable path directly — no subprocess overhead.
-    let mut buf = [0u8; 4096]; // PROC_PIDPATHINFO_MAXSIZE
-    let ret = unsafe {
-        libc::proc_pidpath(pid as i32, buf.as_mut_ptr() as *mut _, buf.len() as u32)
-    };
-    if ret <= 0 {
-        return None;
-    }
-    let path = std::str::from_utf8(&buf[..ret as usize]).ok()?;
-    path.rsplit('/').next().map(|s| s.to_string())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn get_process_name_from_hwnd(_hwnd: isize) -> Option<String> {
-    None
-}
-
-/// Restore focus to the window that was active before recording.
-///
-/// Only calls `SetForegroundWindow` when the target window is NOT already in
-/// the foreground.  Calling it redundantly can trigger `WM_SETFOCUS` handlers
-/// that select-all text in some input controls, which causes a subsequent paste
-/// to erase existing content.
-///
-/// When focus restoration IS needed (e.g. the overlay stole focus), we
-/// additionally collapse any accidental text selection so the paste inserts
-/// rather than replaces.
-#[cfg(target_os = "windows")]
-fn restore_foreground_window(hwnd: isize) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, SetForegroundWindow,
-    };
-
-    let current = unsafe { GetForegroundWindow() };
-    if !current.is_null() && current as isize == hwnd {
-        // Already the foreground window — skip to avoid triggering focus handlers.
-        return;
-    }
-
-    unsafe {
-        SetForegroundWindow(hwnd as *mut std::ffi::c_void);
-    }
-    // Give the OS time to process the focus switch and any WM_SETFOCUS handlers.
-    // 50 ms is sufficient — Windows processes SetForegroundWindow in under 20 ms.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    // Collapse any accidental text selection caused by the focus change.
-    deselect_after_focus_restore(hwnd);
-}
-
-/// After a focus restoration, some controls select all their text.  If a text
-/// caret is active, send Right→Left arrow keys to collapse the selection without
-/// net cursor movement (when nothing was selected the two keys cancel out).
-/// Only fires when a text caret is detected — non-text controls are left alone.
-#[cfg(target_os = "windows")]
-fn deselect_after_focus_restore(hwnd: isize) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
-    };
-
-    unsafe {
-        let thread_id = GetWindowThreadProcessId(hwnd as *mut std::ffi::c_void, std::ptr::null_mut());
-        if thread_id == 0 {
-            return;
-        }
-
-        let mut gui: GUITHREADINFO = std::mem::zeroed();
-        gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
-
-        if GetGUIThreadInfo(thread_id, &mut gui) == 0 {
-            return;
-        }
-
-        // Only deselect if a text caret is present (i.e. a text field is focused).
-        if gui.hwndCaret.is_null() {
-            return;
-        }
-    }
-
-    // Right collapses any selection to its end; Left steps back one position.
-    // Net effect when nothing is selected: zero movement.
-    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-    if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
-        let _ = enigo.key(Key::RightArrow, Direction::Click);
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let _ = enigo.key(Key::LeftArrow, Direction::Click);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn restore_foreground_window(pid: isize) {
-    // Use NSRunningApplication to activate by PID — no subprocess overhead.
-    unsafe {
-        let cls = objc::runtime::Class::get("NSRunningApplication")
-            .expect("NSRunningApplication class");
-        let app: *mut objc::runtime::Object = objc::msg_send![
-            cls,
-            runningApplicationWithProcessIdentifier: pid as i32
-        ];
-        if !app.is_null() {
-            // NSApplicationActivateIgnoringOtherApps = 1 << 1
-            let _: objc::runtime::BOOL = objc::msg_send![
-                app,
-                activateWithOptions: 0x02u64
-            ];
-        }
-    }
-    // Give the OS time to process the focus switch.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn restore_foreground_window(_hwnd: isize) {}
-
-/// Public wrapper for commands that need to restore focus (e.g. the Structured
-/// panel's Paste button).  Keeps the internal helper private while allowing
-/// reuse.
-pub fn restore_foreground_window_public(hwnd: isize) {
-    restore_foreground_window(hwnd);
-}
-
 /// Toggle recording on/off. Called by the frontend start/stop commands.
 pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
@@ -236,7 +50,11 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
     let is_recording = match state.audio.lock() {
         Ok(audio) => audio.is_recording(),
         Err(_) => {
-            emit_error(app_handle, ErrorCode::InternalError, "Audio state lock poisoned");
+            emit_error(
+                app_handle,
+                ErrorCode::InternalError,
+                "Audio state lock poisoned",
+            );
             return;
         }
     };
@@ -251,7 +69,11 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
 /// Start recording only if not already recording (used by hotkey hold/double-tap).
 pub async fn start_if_idle(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
-    let is_recording = state.audio.lock().map(|a| a.is_recording()).unwrap_or(false);
+    let is_recording = state
+        .audio
+        .lock()
+        .map(|a| a.is_recording())
+        .unwrap_or(false);
     if !is_recording {
         start_recording(app_handle, &state);
     }
@@ -260,7 +82,11 @@ pub async fn start_if_idle(app_handle: &tauri::AppHandle) {
 /// Stop recording only if currently recording (used by hotkey release/toggle-off).
 pub async fn stop_if_recording(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
-    let is_recording = state.audio.lock().map(|a| a.is_recording()).unwrap_or(false);
+    let is_recording = state
+        .audio
+        .lock()
+        .map(|a| a.is_recording())
+        .unwrap_or(false);
     if is_recording {
         stop_and_transcribe(app_handle, &state).await;
     }
@@ -282,7 +108,10 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     // Auto-switch context mode based on the foreground application.
     if let Some(hwnd) = fg {
-        let auto_switch = settings.as_ref().map(|s| s.auto_switch_modes).unwrap_or(false);
+        let auto_switch = settings
+            .as_ref()
+            .map(|s| s.auto_switch_modes)
+            .unwrap_or(false);
 
         if auto_switch {
             if let Some(process_name) = get_process_name_from_hwnd(hwnd) {
@@ -338,7 +167,11 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
     // the time stop_and_transcribe runs, the receiver typically already has
     // a value — capture cost (UIA tree walk, ~50–200 ms) is fully hidden
     // under the user's utterance.
-    if settings.as_ref().map(|s| s.use_screen_context).unwrap_or(true) {
+    if settings
+        .as_ref()
+        .map(|s| s.use_screen_context)
+        .unwrap_or(true)
+    {
         let (tx, rx) = oneshot::channel::<ScreenContext>();
         if let Ok(mut guard) = state.screen_context_rx.lock() {
             *guard = Some(rx);
@@ -371,7 +204,11 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     if let Err(e) = audio.start() {
         eprintln!("Failed to start recording: {e}");
-        emit_error(app_handle, e.code(), format!("Failed to start recording: {e}"));
+        emit_error(
+            app_handle,
+            e.code(),
+            format!("Failed to start recording: {e}"),
+        );
         return;
     }
 
@@ -445,18 +282,17 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                     use std::sync::mpsc::RecvTimeoutError;
                     let mut preview_state: Option<whisper_rs::WhisperState> = None;
                     loop {
-                        let audio = match rx_audio
-                            .recv_timeout(std::time::Duration::from_millis(250))
-                        {
-                            Ok(audio) => audio,
-                            Err(RecvTimeoutError::Timeout) => {
-                                if !worker_is_rec.load(Ordering::Relaxed) {
-                                    break;
+                        let audio =
+                            match rx_audio.recv_timeout(std::time::Duration::from_millis(250)) {
+                                Ok(audio) => audio,
+                                Err(RecvTimeoutError::Timeout) => {
+                                    if !worker_is_rec.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    continue;
                                 }
-                                continue;
-                            }
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        };
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            };
                         // Cancellation check — if user stopped recording
                         // between send and receive, skip inference.
                         if !worker_is_rec.load(Ordering::Relaxed) {
@@ -617,7 +453,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to stop recording: {e}");
-                emit_error(app_handle, e.code(), format!("Failed to stop recording: {e}"));
+                emit_error(
+                    app_handle,
+                    e.code(),
+                    format!("Failed to stop recording: {e}"),
+                );
                 return;
             }
         }
@@ -635,7 +475,10 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
     // 1b. Conditionally denoise audio with RNNoise before Whisper.
     let mut samples = samples;
-    let noise_reduction = settings.as_ref().map(|s| s.noise_reduction).unwrap_or(false);
+    let noise_reduction = settings
+        .as_ref()
+        .map(|s| s.noise_reduction)
+        .unwrap_or(false);
     if noise_reduction {
         crate::audio::denoise::denoise(&mut samples);
     }
@@ -656,7 +499,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             None => {
                 drop(guard);
                 eprintln!("No model loaded — cannot transcribe");
-                emit_error(app_handle, ErrorCode::NoModelLoaded, "No model loaded — go to Models to download one");
+                emit_error(
+                    app_handle,
+                    ErrorCode::NoModelLoaded,
+                    "No model loaded — go to Models to download one",
+                );
                 return;
             }
         }
@@ -677,29 +524,35 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     }
 
     let engine_for_transcribe = Arc::clone(&engine);
-    let transcription = match tokio::task::spawn_blocking(move || {
-        engine_for_transcribe.transcribe(&samples)
-    })
-    .await
-    {
-        Ok(Ok(t)) => t,
-        Ok(Err(e)) => {
-            if prompt_was_overridden {
-                engine.set_initial_prompt(saved_initial_prompt.clone());
+    let transcription =
+        match tokio::task::spawn_blocking(move || engine_for_transcribe.transcribe(&samples)).await
+        {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                if prompt_was_overridden {
+                    engine.set_initial_prompt(saved_initial_prompt.clone());
+                }
+                eprintln!("Transcription failed: {e}");
+                emit_error(
+                    app_handle,
+                    ErrorCode::TranscriptionFailed,
+                    format!("Transcription failed: {e}"),
+                );
+                return;
             }
-            eprintln!("Transcription failed: {e}");
-            emit_error(app_handle, ErrorCode::TranscriptionFailed, format!("Transcription failed: {e}"));
-            return;
-        }
-        Err(e) => {
-            if prompt_was_overridden {
-                engine.set_initial_prompt(saved_initial_prompt.clone());
+            Err(e) => {
+                if prompt_was_overridden {
+                    engine.set_initial_prompt(saved_initial_prompt.clone());
+                }
+                eprintln!("Transcription task panicked: {e}");
+                emit_error(
+                    app_handle,
+                    ErrorCode::TranscriptionPanicked,
+                    format!("Transcription crashed: {e}"),
+                );
+                return;
             }
-            eprintln!("Transcription task panicked: {e}");
-            emit_error(app_handle, ErrorCode::TranscriptionPanicked, format!("Transcription crashed: {e}"));
-            return;
-        }
-    };
+        };
 
     if prompt_was_overridden {
         engine.set_initial_prompt(saved_initial_prompt);
@@ -737,7 +590,10 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // proceed.  If it's absent, we fall through to plain output even
     // though `structured_mode` is on.  Mirrors how `command_send` gates
     // Ship Mode behind the "send" word.
-    let structured_enabled = settings.as_ref().map(|s| s.structured_mode).unwrap_or(false);
+    let structured_enabled = settings
+        .as_ref()
+        .map(|s| s.structured_mode)
+        .unwrap_or(false);
     let voice_command_gate = settings
         .as_ref()
         .map(|s| s.structured_voice_command)
@@ -796,7 +652,8 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 }
                 Err(e) => {
                     crate::llm::diaglog::log(&format!("runner: lazy-load FAILED: {e}"));
-                    let _ = app_handle.emit("structured-mode-degraded", &format!("Load failed: {e}"));
+                    let _ =
+                        app_handle.emit("structured-mode-degraded", &format!("Load failed: {e}"));
                     None
                 }
             }
@@ -810,7 +667,10 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
     const STRUCTURED_INPUT_CHAR_CAP: usize = 1600;
     let structured_input = if processed_text.chars().count() > STRUCTURED_INPUT_CHAR_CAP {
-        let clipped: String = processed_text.chars().take(STRUCTURED_INPUT_CHAR_CAP).collect();
+        let clipped: String = processed_text
+            .chars()
+            .take(STRUCTURED_INPUT_CHAR_CAP)
+            .collect();
         crate::llm::diaglog::log(&format!(
             "pipeline: truncating structured input from {} to {} chars",
             processed_text.chars().count(),
@@ -821,31 +681,32 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         processed_text.clone()
     };
 
-    let structured: Option<(String, SlotExtraction)> =
-        if should_structure && processed_text.chars().count() >= min_chars {
-            if let Some(runner) = runner_opt {
-                let _ = app_handle.emit("recording-state-change", "structuring");
-                let t0 = std::time::Instant::now();
+    let structured: Option<(String, SlotExtraction)> = if should_structure
+        && processed_text.chars().count() >= min_chars
+    {
+        if let Some(runner) = runner_opt {
+            let _ = app_handle.emit("recording-state-change", "structuring");
+            let t0 = std::time::Instant::now();
 
-                // Phase 2: when both Structured Mode and the screen-context
-                // sub-toggle are on, feed the captured tokens into Qwen so
-                // it can substitute phonetic guesses with verbatim screen
-                // text.  Otherwise pass empty tokens — the runner falls
-                // through to the legacy single-arg prompt path.
-                let pass_screen_tokens = settings
+            // Phase 2: when both Structured Mode and the screen-context
+            // sub-toggle are on, feed the captured tokens into Qwen so
+            // it can substitute phonetic guesses with verbatim screen
+            // text.  Otherwise pass empty tokens — the runner falls
+            // through to the legacy single-arg prompt path.
+            let pass_screen_tokens = settings
+                .as_ref()
+                .map(|s| s.use_screen_context && s.structured_use_screen_context)
+                .unwrap_or(false);
+            let (sm_tokens, sm_app) = if pass_screen_tokens {
+                screen_context
                     .as_ref()
-                    .map(|s| s.use_screen_context && s.structured_use_screen_context)
-                    .unwrap_or(false);
-                let (sm_tokens, sm_app) = if pass_screen_tokens {
-                    screen_context
-                        .as_ref()
-                        .map(|c| (c.tokens.clone(), c.source_app.clone()))
-                        .unwrap_or_default()
-                } else {
-                    (Vec::new(), None)
-                };
+                    .map(|c| (c.tokens.clone(), c.source_app.clone()))
+                    .unwrap_or_default()
+            } else {
+                (Vec::new(), None)
+            };
 
-                crate::llm::diaglog::log(&format!(
+            crate::llm::diaglog::log(&format!(
                     "pipeline: starting extraction input_chars={} llm_input_chars={} timeout={}s min_chars={} screen_tokens={}",
                     processed_text.chars().count(),
                     structured_input.chars().count(),
@@ -853,61 +714,61 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                     min_chars,
                     sm_tokens.len(),
                 ));
-                match runner
-                    .extract_with_context_and_timeout(
-                        structured_input.clone(),
-                        sm_tokens,
-                        sm_app,
-                        Duration::from_secs(llm_timeout as u64),
-                    )
-                    .await
-                {
-                    Ok(slots) => {
-                        crate::llm::diaglog::log(&format!(
-                            "pipeline: extraction OK in {}ms slots={:?}",
-                            t0.elapsed().as_millis(),
-                            slots
-                        ));
-                        let md = render_markdown(&slots);
-                        Some((md, slots))
-                    }
-                    Err(e) => {
-                        crate::llm::diaglog::log(&format!(
-                            "pipeline: extraction FAILED after {}ms: {e}",
-                            t0.elapsed().as_millis()
-                        ));
-                        let _ = app_handle.emit(
-                            "structured-mode-degraded",
-                            &format!("Extraction failed: {e}"),
-                        );
-                        None
-                    }
+            match runner
+                .extract_with_context_and_timeout(
+                    structured_input.clone(),
+                    sm_tokens,
+                    sm_app,
+                    Duration::from_secs(llm_timeout as u64),
+                )
+                .await
+            {
+                Ok(slots) => {
+                    crate::llm::diaglog::log(&format!(
+                        "pipeline: extraction OK in {}ms slots={:?}",
+                        t0.elapsed().as_millis(),
+                        slots
+                    ));
+                    let md = render_markdown(&slots);
+                    Some((md, slots))
                 }
-            } else {
-                let _ = app_handle.emit(
-                    "structured-mode-degraded",
-                    "No LLM model available for Structured Mode. Using plain dictation.",
-                );
-                None
+                Err(e) => {
+                    crate::llm::diaglog::log(&format!(
+                        "pipeline: extraction FAILED after {}ms: {e}",
+                        t0.elapsed().as_millis()
+                    ));
+                    let _ = app_handle.emit(
+                        "structured-mode-degraded",
+                        &format!("Extraction failed: {e}"),
+                    );
+                    None
+                }
             }
-        } else if should_structure {
-            crate::llm::diaglog::log(&format!(
-                "pipeline: SKIPPED (input too short {} < {} chars)",
-                processed_text.chars().count(),
-                min_chars
-            ));
+        } else {
             let _ = app_handle.emit(
                 "structured-mode-degraded",
-                &format!(
-                    "Dictation too short ({} chars) — need at least {}. Using plain output.",
-                    processed_text.chars().count(),
-                    min_chars
-                ),
+                "No LLM model available for Structured Mode. Using plain dictation.",
             );
             None
-        } else {
-            None
-        };
+        }
+    } else if should_structure {
+        crate::llm::diaglog::log(&format!(
+            "pipeline: SKIPPED (input too short {} < {} chars)",
+            processed_text.chars().count(),
+            min_chars
+        ));
+        let _ = app_handle.emit(
+            "structured-mode-degraded",
+            &format!(
+                "Dictation too short ({} chars) — need at least {}. Using plain output.",
+                processed_text.chars().count(),
+                min_chars
+            ),
+        );
+        None
+    } else {
+        None
+    };
 
     // 4. Apply deterministic list formatting (bullet lists for enumerated
     //     items).  Structural formatting is handled here at zero cost.
@@ -927,7 +788,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     let voice_commands_enabled = settings.as_ref().map(|s| s.voice_commands).unwrap_or(false);
     let command_send_enabled = settings.as_ref().map(|s| s.command_send).unwrap_or(true);
     let voice_segments = if voice_commands_enabled && structured.is_none() {
-        Some(crate::postprocess::voice_commands::parse_commands_with_options(&final_text, command_send_enabled))
+        Some(
+            crate::postprocess::voice_commands::parse_commands_with_options(
+                &final_text,
+                command_send_enabled,
+            ),
+        )
     } else {
         None
     };
@@ -986,11 +852,8 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             // Wait for all keystrokes to land in the target app.
             std::thread::sleep(std::time::Duration::from_millis(1500));
             if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
-                let _ = enigo::Keyboard::key(
-                    &mut enigo,
-                    enigo::Key::Return,
-                    enigo::Direction::Click,
-                );
+                let _ =
+                    enigo::Keyboard::key(&mut enigo, enigo::Key::Return, enigo::Direction::Click);
             }
         })
         .await;
@@ -1055,9 +918,5 @@ pub fn cancel_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
 /// Get the current audio level for the VU meter (0.0–1.0).
 pub fn current_audio_level(state: &AppState) -> f32 {
-    state
-        .audio
-        .lock()
-        .map(|a| a.current_level())
-        .unwrap_or(0.0)
+    state.audio.lock().map(|a| a.current_level()).unwrap_or(0.0)
 }

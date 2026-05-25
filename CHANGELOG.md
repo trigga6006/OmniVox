@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.9
+
+### Bug Fixes
+
+- **Codex/browser-use freeze guard.** Screen Context now skips unsafe agent and browser-host processes (`codex.exe`, `claude.exe`, and `msedgewebview2.exe`) before touching Windows UI Automation. These apps can become unresponsive when OmniVox walks their accessibility tree while browser automation is active, which made dictated messages into Codex threads freeze the entire Codex app. Dictation still works normally; OmniVox just avoids cross-process UIA capture for those targets.
+- **Screen Context fail-safe default for the local install.** For the hotfix install path, both Screen Context toggles are disabled in the user settings DB so even older binaries avoid the risky UIA path until the packaged `v0.2.9` build is installed.
+
 ## v0.2.8
 
 ### Bug Fixes
