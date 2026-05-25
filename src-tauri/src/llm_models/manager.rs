@@ -17,10 +17,10 @@ pub struct LlmModelManager {
 
 /// Recommended starter LLM for first-time enable of Structured Mode.
 ///
-/// Qwen 1.7B Q4 is the currently validated extraction path. It is larger than
+/// Qwen 1.7B Q8 is the currently validated extraction path. It is larger than
 /// the earlier smaller-model experiments, but it is the model that is actually
 /// producing stable slot JSON in the live pipeline.
-pub const DEFAULT_LLM_ID: &str = "qwen3-1.7b-instruct-q4";
+pub const DEFAULT_LLM_ID: &str = "qwen3-1.7b-instruct-q8";
 
 impl LlmModelManager {
     pub fn new(llm_models_dir: PathBuf) -> Self {
@@ -89,31 +89,55 @@ impl LlmModelManager {
     fn catalog() -> Vec<LlmModelInfo> {
         vec![
             LlmModelInfo {
-                id: "qwen3-0.6b-instruct-q4".into(),
-                name: "Qwen3 0.6B Instruct (Q4)".into(),
-                size_bytes: 400_000_000,
-                quantization: "Q4_K_M".into(),
+                id: "qwen3-0.6b-instruct-q8".into(),
+                name: "Qwen3 0.6B Instruct (Q8)".into(),
+                size_bytes: 639_446_688,
+                quantization: "Q8_0".into(),
                 context_length: 32_768,
                 description: "Smaller Qwen option. Faster to download, but less reliable than 1.7B for structured extraction.".into(),
                 huggingface_repo: "Qwen/Qwen3-0.6B-GGUF".into(),
-                huggingface_file: "Qwen3-0.6B-Q4_K_M.gguf".into(),
+                huggingface_file: "Qwen3-0.6B-Q8_0.gguf".into(),
                 is_downloaded: false,
                 path: None,
                 is_default: false,
             },
             LlmModelInfo {
-                id: "qwen3-1.7b-instruct-q4".into(),
-                name: "Qwen3 1.7B Instruct (Q4)".into(),
-                size_bytes: 1_000_000_000,
-                quantization: "Q4_K_M".into(),
+                id: "qwen3-1.7b-instruct-q8".into(),
+                name: "Qwen3 1.7B Instruct (Q8)".into(),
+                size_bytes: 1_834_426_016,
+                quantization: "Q8_0".into(),
                 context_length: 32_768,
                 description: "Default. Best structure quality in the current pipeline, 16 GB RAM+ recommended.".into(),
                 huggingface_repo: "Qwen/Qwen3-1.7B-GGUF".into(),
-                huggingface_file: "Qwen3-1.7B-Q4_K_M.gguf".into(),
+                huggingface_file: "Qwen3-1.7B-Q8_0.gguf".into(),
                 is_downloaded: false,
                 path: None,
                 is_default: true,
             },
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmModelManager;
+
+    #[test]
+    fn qwen_catalog_uses_existing_official_gguf_filenames() {
+        let models = LlmModelManager::catalog();
+
+        let small = models
+            .iter()
+            .find(|m| m.id == "qwen3-0.6b-instruct-q8")
+            .expect("0.6B model should be in catalog");
+        assert_eq!(small.huggingface_file, "Qwen3-0.6B-Q8_0.gguf");
+        assert_eq!(small.quantization, "Q8_0");
+
+        let default = models
+            .iter()
+            .find(|m| m.id == "qwen3-1.7b-instruct-q8")
+            .expect("1.7B model should be in catalog");
+        assert_eq!(default.huggingface_file, "Qwen3-1.7B-Q8_0.gguf");
+        assert_eq!(default.quantization, "Q8_0");
     }
 }

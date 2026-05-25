@@ -41,6 +41,7 @@ export function LlmModelsSection() {
   const [models, setModels] = useState<LlmModelInfo[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<Record<string, number>>({});
+  const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -88,6 +89,14 @@ export function LlmModelsSection() {
     });
     const unlistenProgress = onLlmDownloadProgress((p) => {
       if (!mountedRef.current) return;
+      if (p.status === "downloading") {
+        setDownloadErrors((prev) => {
+          if (!prev[p.model_id]) return prev;
+          const next = { ...prev };
+          delete next[p.model_id];
+          return next;
+        });
+      }
       setDownloading((prev) => {
         const next = { ...prev };
         if (p.status === "downloading") {
@@ -183,10 +192,20 @@ export function LlmModelsSection() {
 
   const handleDownload = async (id: string) => {
     setDownloading((prev) => ({ ...prev, [id]: 0 }));
+    setDownloadErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     try {
       await downloadLlmModel(id);
     } catch (err) {
       console.error("LLM download failed:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setDownloadErrors((prev) => ({
+        ...prev,
+        [id]: message || "Download failed",
+      }));
       setDownloading((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -337,6 +356,7 @@ export function LlmModelsSection() {
           const progress = downloading[m.id];
           const isDownloading = progress !== undefined;
           const isActive = activeId === m.id;
+          const downloadError = downloadErrors[m.id];
 
           return (
             <div
@@ -378,6 +398,11 @@ export function LlmModelsSection() {
                       style={{ width: `${progress ?? 0}%` }}
                     />
                   </div>
+                )}
+                {downloadError && (
+                  <p className="mt-2 line-clamp-2 text-[11px] leading-snug text-error">
+                    {downloadError}
+                  </p>
                 )}
               </div>
 

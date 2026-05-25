@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.10
+
+### Bug Fixes
+
+- **Structured Mode model downloads work again.** The LLM catalog pointed at Qwen `Q4_K_M` GGUF filenames that do not exist in the official HuggingFace repos, so clicking Download failed immediately and the UI snapped back to its idle state. The catalog now uses the official `Q8_0` files, with corrected sizes and quantization labels, and includes a regression test for those filenames.
+- **LLM download failures now stay visible.** If a Structured Mode model download fails again, the model row keeps an inline error message instead of silently resetting after logging to the developer console.
+
 ## v0.2.9
 
 ### Bug Fixes
