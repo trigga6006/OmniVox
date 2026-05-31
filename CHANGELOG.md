@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.0
+
+### Improvements
+
+- **Settings, redesigned.** The Settings page is reorganized into grouped cards with clean, scannable rows (label + description + control) instead of one oversized card per option. The most important controls now lead: the push-to-talk **Shortcut** and **Performance (GPU acceleration)** sit at the top instead of the bottom. Everything is laid out in a width-filling two-column layout, roughly halving the scroll. All controls are preserved — segmented toggles, input-device picker, ducking slider, screen-context sub-toggle, and the voice-commands reference.
+- **Steady record button.** On the dictation screen, the record button no longer shifts upward when you start recording or jumps during transcription. The mic, stop, and processing icons now share one fixed center point, and the processing ring is properly centered.
+- **Sidebar order.** Analytics moved to the end of the main tabs, and Settings is pinned to the bottom, visually separated from the primary navigation.
+- **Tighter page headers.** Reduced the dead space around page titles across History, Dictionary, Modes, Notes, Models, and Analytics.
+
+### Internal
+
+- Applied a `cargo fmt` formatting pass across the Rust backend (no behavior changes).
+
 ## v0.2.11
 
 ### Features

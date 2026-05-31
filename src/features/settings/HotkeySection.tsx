@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Keyboard, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { suspendHotkey, updateHotkey, type HotkeyConfig } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
@@ -127,17 +127,16 @@ export function HotkeySection({
             ? "border-success/35 bg-success/[0.04]"
             : "border-border hover:border-border-hover hover:bg-surface-1"
       )}
-      style={{ opacity: 0, animationDelay: "0.32s", animationFillMode: "forwards" }}
+      style={{ opacity: 0, animationDelay: "0.06s", animationFillMode: "forwards" }}
     >
-      <div className="flex items-center gap-2 mb-3">
-        <Keyboard size={14} strokeWidth={2} className="text-text-muted" />
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-          Hotkey
+      <div className="mb-3">
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+          Shortcut
         </span>
       </div>
 
-      <label className="block text-sm text-text-secondary mb-2">
-        Push-to-talk shortcut
+      <label className="block text-[13.5px] font-medium text-text-primary mb-2.5">
+        Push-to-talk hotkey
       </label>
 
       {/* ── Display state ── */}

@@ -202,7 +202,7 @@ export function NotesPage() {
      Grid View
      ──────────────────────────────────────────────────────────── */
   return (
-    <div className="flex h-full flex-col px-8 py-8">
+    <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

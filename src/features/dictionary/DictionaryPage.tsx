@@ -726,7 +726,7 @@ export function DictionaryPage() {
   const [activeTab, setActiveTab] = useState<Tab>("Vocabulary");
 
   return (
-    <div className="flex h-full flex-col px-8 py-8">
+    <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
       <div>
         <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
@@ -738,7 +738,7 @@ export function DictionaryPage() {
       </div>
 
       {/* Tabs */}
-      <div className="mt-6 flex gap-6 border-b border-border/70">
+      <div className="mt-5 flex gap-6 border-b border-border/70">
         {tabs.map((tab) => {
           const isActive = activeTab === tab;
           return (

@@ -165,9 +165,9 @@ export function ContextModesPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-8 py-10">
+    <div className="mx-auto max-w-3xl px-8 pt-6 pb-10">
       {/* Header */}
-      <div className="mb-8 flex items-start justify-between gap-4">
+      <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
             Context Modes

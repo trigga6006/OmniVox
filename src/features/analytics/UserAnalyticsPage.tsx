@@ -53,7 +53,7 @@ export function UserAnalyticsPage() {
   );
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 py-8">
+    <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -105,7 +105,7 @@ function EmptyState() {
 
 function Dashboard({ data }: { data: AnalyticsData }) {
   return (
-    <div className="mt-6 flex flex-col gap-4 pb-4">
+    <div className="mt-5 flex flex-col gap-4 pb-4">
       <OverviewCard data={data} />
 
       {/* Heatmap */}

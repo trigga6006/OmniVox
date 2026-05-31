@@ -23,7 +23,7 @@ export function ModelsPage() {
   const [tab, setTab] = useState<Tab>("speech");
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 py-8">
+    <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-8">
       {/* Header */}
       <div
         className="opacity-0 animate-slide-up"

@@ -98,7 +98,7 @@ export function HistoryPage() {
   };
 
   return (
-    <div className="flex h-full flex-col px-8 py-8">
+    <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -117,7 +117,7 @@ export function HistoryPage() {
       </div>
 
       {/* Search */}
-      <div className="mt-5">
+      <div className="mt-4">
         <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-1/70 px-3.5 py-2.5 transition-colors focus-within:border-amber-400/40 focus-within:bg-surface-1">
           <Search size={14} strokeWidth={1.75} className="shrink-0 text-text-muted" />
           <input

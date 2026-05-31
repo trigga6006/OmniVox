@@ -33,7 +33,12 @@ export function RecordButton() {
   const isProcessing = status === "processing";
 
   return (
-    <div className="flex flex-col items-center gap-5">
+    <div className="flex flex-col items-center">
+      {/* Reserved top spacer — mirrors the metadata slot below so the button
+          stays vertically centered and never moves between idle / recording /
+          processing states. */}
+      <div className="h-[64px]" aria-hidden="true" />
+
       {/* Button container — holds the button and the animated ring layers */}
       <div className="relative flex items-center justify-center">
         {/* Recording: expanding ring animation */}
@@ -55,7 +60,7 @@ export function RecordButton() {
         {/* Processing: spinning amber ring */}
         {isProcessing && (
           <svg
-            className="absolute h-[112px] w-[112px]"
+            className="absolute left-1/2 top-1/2 h-[112px] w-[112px] -translate-x-1/2 -translate-y-1/2"
             viewBox="0 0 112 112"
             aria-hidden="true"
             style={{ animation: "spin-slow 2s linear infinite" }}
@@ -130,24 +135,28 @@ export function RecordButton() {
         </button>
       </div>
 
-      {/* Recording metadata: timer + cancel */}
-      {isRecording && (
-        <div className="flex flex-col items-center gap-2 animate-fade-in">
-          <span className="font-mono text-lg tracking-wider text-recording-300 tabular-nums">
-            {formatDuration(duration)}
-          </span>
-          <button
-            onClick={handleCancel}
-            className={cn(
-              "text-[11px] font-medium tracking-[0.14em] uppercase text-text-muted",
-              "transition-colors duration-150",
-              "hover:text-text-secondary"
-            )}
-          >
-            Cancel
-          </button>
-        </div>
-      )}
+      {/* Recording metadata: timer + cancel — lives in a fixed-height slot
+          that is always reserved, so showing/hiding it never shifts the
+          button above it. */}
+      <div className="flex h-[64px] flex-col items-center gap-1.5 pt-4">
+        {isRecording && (
+          <div className="flex flex-col items-center gap-1.5 animate-fade-in">
+            <span className="font-mono text-lg tracking-wider text-recording-300 tabular-nums">
+              {formatDuration(duration)}
+            </span>
+            <button
+              onClick={handleCancel}
+              className={cn(
+                "text-[11px] font-medium tracking-[0.14em] uppercase text-text-muted",
+                "transition-colors duration-150",
+                "hover:text-text-secondary"
+              )}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

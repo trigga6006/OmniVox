@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Loader2, Zap } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { getActiveModel, setActiveModel } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -40,15 +40,17 @@ export function GpuAccelerationSection({
           ? "border-amber-500/20"
           : "border-border hover:border-border-hover"
       )}
-      style={{ opacity: 0, animationDelay: "0.19s", animationFillMode: "forwards" }}
+      style={{ opacity: 0, animationDelay: "0.08s", animationFillMode: "forwards" }}
     >
-      <div className="flex items-center gap-2 mb-3">
-        <Zap size={14} strokeWidth={2} className="text-text-muted" />
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-          GPU Acceleration
+      <div className="mb-3">
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+          Performance
         </span>
       </div>
 
+      <p className="text-[13.5px] font-medium text-text-primary mb-1.5">
+        GPU acceleration
+      </p>
       <p className="text-xs text-text-muted mb-4 max-w-[400px]">
         Offload Whisper inference to your GPU via Vulkan for significantly faster
         transcription. Works with both AMD and NVIDIA GPUs.
