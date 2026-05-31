@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.11
+
+### Features
+
+- **Analytics page.** A dedicated Analytics view (new sidebar entry) turns your dictation history into stats. A single overview card splits into _Output_ — lifetime words, characters, estimated tokens, dictations, sessions (grouped by 30-minute activity gaps), and total time recorded — and _Consistency_ — current and longest day streaks, active days, average speaking pace (words per minute), words per active day, and your most-used model. Below it: a GitHub-style contribution heatmap of daily activity across the year, a peak-hours histogram, a models-used breakdown, and a 30-day words-per-day trend, all with hover tooltips. Everything is computed locally from existing transcription history through a new lightweight backend query that keeps full transcript text in the backend — only per-record counts cross the IPC boundary.
+
+### Bug Fixes
+
+- **Amber accents are legible in light mode.** The brand amber scale was tuned for dark surfaces, so amber text and accents (active nav, labels, highlights, streak figures, heatmap, charts) washed out to near-invisible on the light "warm paper" theme. The light theme now remaps the lighter amber shades to a darker, saturated honey-gold, fixing contrast across the whole app at once — not just the Analytics page. Dark mode is unchanged, and the always-dark floating pill overlay is unaffected.
+
 ## v0.2.10
 
 ### Bug Fixes

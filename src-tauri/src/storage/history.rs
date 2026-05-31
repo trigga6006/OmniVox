@@ -87,6 +87,43 @@ pub fn get_dictation_stats(db: &Database) -> AppResult<crate::storage::types::Di
     Ok(stats)
 }
 
+/// Get lean per-transcription rows for the analytics page.
+///
+/// Returns every non-empty transcription in chronological order, with word and
+/// character counts computed here so the full `text` stays in the backend.
+/// `split_whitespace` already treats newlines/tabs (from voice commands like
+/// "new line") as separators, so word counts match `get_dictation_stats`.
+pub fn get_analytics_records(
+    db: &Database,
+) -> AppResult<Vec<crate::storage::types::AnalyticsRecord>> {
+    let conn = db.conn()?;
+    let mut stmt = conn.prepare(
+        "SELECT text, duration_ms, model_name, created_at
+         FROM transcriptions
+         WHERE TRIM(text) != ''
+         ORDER BY created_at ASC",
+    )?;
+    let records = stmt
+        .query_map([], |row| {
+            let text: String = row.get(0)?;
+            let duration_ms: u64 = row.get(1)?;
+            let model_name: String = row.get(2)?;
+            let created_at_str: String = row.get(3)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(crate::storage::types::AnalyticsRecord {
+                created_at,
+                word_count: text.split_whitespace().count() as u64,
+                char_count: text.chars().count() as u64,
+                duration_ms,
+                model_name,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
 /// Search transcription history by query string (case-insensitive substring match).
 pub fn search_history(
     db: &Database,

@@ -2,6 +2,11 @@
 @import "./tokens.css";
 @import "tw-animate-css";
 
+/* Light-theme variant — `light:text-amber-700` applies only when an ancestor
+   (the <html> element) carries data-theme="light". Lets us darken amber TEXT
+   for contrast on the warm-paper surfaces; dark mode keeps the default scale. */
+@custom-variant light ([data-theme="light"] &);
+
 /* ── Theme Variables (shadcn-compatible) ──────────────────── */
 
 :root {

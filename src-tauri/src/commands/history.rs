@@ -10,6 +10,13 @@ pub async fn get_dictation_stats(
 }
 
 #[tauri::command]
+pub async fn get_analytics_records(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::storage::types::AnalyticsRecord>, String> {
+    crate::storage::history::get_analytics_records(&state.db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn search_history(
     query: String,
     limit: Option<u32>,

@@ -202,6 +202,17 @@ export interface DictationStats {
 }
 export const getDictationStats = () =>
   invoke<DictationStats>("get_dictation_stats");
+
+/** One lean row per transcription for the analytics page (no full text). */
+export interface AnalyticsRecord {
+  created_at: string;
+  word_count: number;
+  char_count: number;
+  duration_ms: number;
+  model_name: string;
+}
+export const getAnalyticsRecords = () =>
+  invoke<AnalyticsRecord[]>("get_analytics_records");
 export const searchHistory = (query: string, limit?: number, offset?: number) =>
   invoke<TranscriptionRecord[]>("search_history", {
     query,

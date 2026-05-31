@@ -24,6 +24,20 @@ pub struct DictationStats {
     pub total_duration_ms: u64,
 }
 
+/// A single transcription distilled to the fields the analytics page needs.
+///
+/// Word/character counts are computed in Rust so the (potentially large) full
+/// `text` of every record never has to cross the IPC boundary — the frontend
+/// only receives these lean rows and derives sessions, streaks, heatmaps, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyticsRecord {
+    pub created_at: DateTime<Utc>,
+    pub word_count: u64,
+    pub char_count: u64,
+    pub duration_ms: u64,
+    pub model_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptionRecord {
     pub id: Uuid,

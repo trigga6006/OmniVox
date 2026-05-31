@@ -503,6 +503,7 @@ pub fn run() {
             commands::delete_history_record,
             commands::export_history,
             commands::get_dictation_stats,
+            commands::get_analytics_records,
             // Settings & hotkey commands (5)
             commands::get_settings,
             commands::update_settings,

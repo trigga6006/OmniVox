@@ -93,6 +93,19 @@
   --shadow:     0 2px 6px -2px rgb(0 0 0 / 0.22), 0 1px 2px rgb(0 0 0 / 0.16);
   --shadow-md:  0 8px 18px -8px rgb(0 0 0 / 0.32), 0 3px 8px -4px rgb(0 0 0 / 0.18);
   --shadow-lg:  0 18px 38px -12px rgb(0 0 0 / 0.40), 0 6px 14px -8px rgb(0 0 0 / 0.22);
+
+  /* Analytics — heatmap intensity ramp + chart bar fills.
+     Amber on dark surfaces; the light theme overrides these with darker,
+     more saturated ambers so the warmth stays visible on warm-paper white. */
+  --heat-0: var(--color-surface-2);
+  --heat-1: color-mix(in oklch, var(--color-amber-500) 26%, var(--color-surface-2));
+  --heat-2: color-mix(in oklch, var(--color-amber-500) 52%, var(--color-surface-1));
+  --heat-3: color-mix(in oklch, var(--color-amber-400) 80%, var(--color-surface-1));
+  --heat-4: var(--color-amber-400);
+
+  --bar-empty:       var(--color-surface-2);
+  --bar-fill:        color-mix(in oklch, var(--color-amber-500) 40%, var(--color-surface-2));
+  --bar-fill-strong: var(--color-amber-400);
 }
 
 /* ── Light Theme: Warm Paper ─────────────────────────────────
@@ -104,6 +117,16 @@
   --color-surface-2: oklch(0.945 0.009 75);
   --color-surface-3: oklch(0.905 0.012 72);
   --color-surface-4: oklch(0.860 0.014 70);
+
+  /* Amber accent — the dark-theme scale's light shades (200–400) are tuned to
+     glow on dark surfaces and wash out on warm-paper white. Remap just those
+     low shades to a darker, saturated honey-gold so amber TEXT and small solid
+     accents (nav rail, dots, underlines, waveform) stay legible on cream. The
+     500–900 fill/border/primary shades are already mid/dark and kept as-is.
+     The overlay pill window pins data-theme="dark", so it never sees these. */
+  --color-amber-200: oklch(0.500 0.115 56);
+  --color-amber-300: oklch(0.525 0.122 57);
+  --color-amber-400: oklch(0.565 0.130 58);
 
   --color-text-primary:   oklch(0.215 0.012 65);
   --color-text-secondary: oklch(0.410 0.014 65);
@@ -125,6 +148,16 @@
   --shadow:    0 2px 6px -2px rgb(80 60 30 / 0.08), 0 1px 2px rgb(80 60 30 / 0.06);
   --shadow-md: 0 8px 18px -8px rgb(80 60 30 / 0.14), 0 3px 8px -4px rgb(80 60 30 / 0.08);
   --shadow-lg: 0 18px 38px -12px rgb(80 60 30 / 0.18), 0 6px 14px -8px rgb(80 60 30 / 0.10);
+
+  /* Analytics — darker, saturated amber ramp so heatmap + bars stay legible
+     on the light surfaces (heat-0 / bar-empty inherit surface-2 from above). */
+  --heat-1: color-mix(in oklch, var(--color-amber-500) 34%, var(--color-surface-2));
+  --heat-2: color-mix(in oklch, var(--color-amber-600) 58%, var(--color-surface-2));
+  --heat-3: color-mix(in oklch, var(--color-amber-600) 82%, var(--color-surface-1));
+  --heat-4: var(--color-amber-700);
+
+  --bar-fill:        color-mix(in oklch, var(--color-amber-600) 55%, var(--color-surface-2));
+  --bar-fill-strong: var(--color-amber-600);
 }
 
 /* ── Keyframes ──────────────────────────────────────────────── */

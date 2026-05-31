@@ -14,6 +14,11 @@ import { recentHistory, onTranscriptionResult, onRecordingError, openMicSettings
 const HistoryPage = lazy(() =>
   import("@/features/history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
 );
+const UserAnalyticsPage = lazy(() =>
+  import("@/features/analytics/UserAnalyticsPage").then((m) => ({
+    default: m.UserAnalyticsPage,
+  }))
+);
 const DictionaryPage = lazy(() =>
   import("@/features/dictionary/DictionaryPage").then((m) => ({ default: m.DictionaryPage }))
 );
@@ -104,6 +109,8 @@ function PageRouter() {
             return <DictationPanel />;
           case "history":
             return <HistoryPage />;
+          case "analytics":
+            return <UserAnalyticsPage />;
           case "dictionary":
             return <DictionaryPage />;
           case "modes":
@@ -129,7 +136,7 @@ function MainApp() {
     <div className="flex h-screen w-screen bg-surface-0 text-text-primary">
       <Sidebar />
       <main
-        className="relative flex-1 overflow-auto"
+        className="relative flex-1 overflow-x-hidden overflow-y-auto"
         style={{
           background:
             "radial-gradient(ellipse 90% 70% at 50% 100%, var(--color-gradient-from) 0%, var(--color-gradient-to) 70%)",
