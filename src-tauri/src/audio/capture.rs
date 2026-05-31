@@ -63,9 +63,7 @@ impl AudioCapture {
 
     fn enumerate_devices_inner() -> AppResult<Vec<AudioDevice>> {
         let host = cpal::default_host();
-        let default_name = host
-            .default_input_device()
-            .and_then(|d| d.name().ok());
+        let default_name = host.default_input_device().and_then(|d| d.name().ok());
 
         let input_devices = host
             .input_devices()
@@ -176,8 +174,7 @@ impl AudioCapture {
                                 }
                             }
                         } else {
-                            let estimated =
-                                (n_frames as f64 * resample_ratio) as usize + 1;
+                            let estimated = (n_frames as f64 * resample_ratio) as usize + 1;
                             buf.reserve(estimated);
 
                             while resample_pos < n_frames as f64 {

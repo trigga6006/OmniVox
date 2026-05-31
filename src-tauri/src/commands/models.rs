@@ -30,10 +30,7 @@ pub async fn download_model(
 }
 
 #[tauri::command]
-pub async fn delete_model(
-    model_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_model(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
     // If this is the active model, unload it first
     {
         let active = state.active_model_id.lock().unwrap();
@@ -66,10 +63,7 @@ pub async fn get_active_model(state: State<'_, AppState>) -> Result<Option<Model
 }
 
 #[tauri::command]
-pub async fn set_active_model(
-    model_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn set_active_model(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
     load_and_activate_model(&model_id, &state)
 }
 
@@ -102,10 +96,7 @@ pub async fn get_hardware_info() -> Result<HardwareInfo, String> {
 
 /// Shared logic: verify model exists on disk, load Whisper engine, set as active.
 /// Used by both `set_active_model` command and the first-launch setup.
-pub fn load_and_activate_model(
-    model_id: &str,
-    state: &AppState,
-) -> Result<(), String> {
+pub fn load_and_activate_model(model_id: &str, state: &AppState) -> Result<(), String> {
     let model_path = state
         .model_manager
         .model_path(model_id)
@@ -127,7 +118,11 @@ pub fn load_and_activate_model(
     // English-only models (.en suffix) force English; multilingual models
     // use auto-detection so users can dictate in any language.
     let is_multilingual = is_model_multilingual(model_id);
-    let language = if is_multilingual { None } else { Some("en".into()) };
+    let language = if is_multilingual {
+        None
+    } else {
+        Some("en".into())
+    };
 
     // Build an initial prompt to bias Whisper's decoder.
     // English models get a rich English vocabulary prompt.
@@ -151,7 +146,10 @@ pub fn load_and_activate_model(
     // weights can use multiple GB, so keeping old + new resident at once can
     // OOM smaller GPUs or 16 GB systems during a model switch.
     {
-        let audio = state.audio.lock().map_err(|_| "Audio state lock poisoned".to_string())?;
+        let audio = state
+            .audio
+            .lock()
+            .map_err(|_| "Audio state lock poisoned".to_string())?;
         if audio.is_recording() {
             return Err("Stop recording before switching Whisper models".into());
         }
@@ -168,9 +166,7 @@ pub fn load_and_activate_model(
                 match WhisperEngine::load(config.clone()) {
                     Ok(engine) => Ok(engine),
                     Err(e) if config.use_gpu => {
-                        eprintln!(
-                            "GPU Whisper load failed; retrying on CPU. Original error: {e}"
-                        );
+                        eprintln!("GPU Whisper load failed; retrying on CPU. Original error: {e}");
                         let mut cpu_config = config;
                         cpu_config.use_gpu = false;
                         WhisperEngine::load(cpu_config)
@@ -319,7 +315,10 @@ fn collect_dict_replacements(state: &AppState, active_mode: Option<&str>) -> Vec
 ///  - **Reinforcement appended once**, capped at 200 chars.  The previous
 ///    code appended it twice, which on users with large vocab doubled the
 ///    reinforcement and pushed everything else past the truncation limit.
-pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool) -> Option<String> {
+pub(crate) fn build_whisper_vocab_prompt(
+    state: &AppState,
+    is_multilingual: bool,
+) -> Option<String> {
     use std::collections::HashSet;
 
     // Snapshot active mode once so we don't hold the lock during DB queries.
@@ -333,7 +332,11 @@ pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool
     let vocab_words = collect_vocab_words(state, active_mode_ref);
     let dict_terms = collect_dict_replacements(state, active_mode_ref);
 
-    let static_vocab = if is_multilingual { MULTILINGUAL_VOCAB } else { ENGLISH_VOCAB };
+    let static_vocab = if is_multilingual {
+        MULTILINGUAL_VOCAB
+    } else {
+        ENGLISH_VOCAB
+    };
 
     // Dedup case-insensitively, preserving insertion order.  Priority order:
     // user vocab (first — highest bias value) → user dictionary →
@@ -350,7 +353,9 @@ pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool
     }
     for term in static_vocab.split(", ") {
         let trimmed = term.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         if seen.insert(trimmed.to_lowercase()) {
             ordered_terms.push(trimmed.to_string());
         }
@@ -374,7 +379,11 @@ pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool
     let reinforcement = reinforcement.trim_end();
 
     // Term-list budget = total - ". " separator - reinforcement.
-    let suffix_len = if reinforcement.is_empty() { 0 } else { 2 + reinforcement.len() };
+    let suffix_len = if reinforcement.is_empty() {
+        0
+    } else {
+        2 + reinforcement.len()
+    };
     let term_budget = PROMPT_BUDGET.saturating_sub(suffix_len);
 
     // Fill the term list up to the budget, stopping at the last term that
@@ -403,5 +412,9 @@ pub(crate) fn build_whisper_vocab_prompt(state: &AppState, is_multilingual: bool
         prompt.push_str(reinforcement);
     }
 
-    if prompt.is_empty() { None } else { Some(prompt) }
+    if prompt.is_empty() {
+        None
+    } else {
+        Some(prompt)
+    }
 }

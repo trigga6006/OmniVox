@@ -222,8 +222,8 @@ mod win {
 
     use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT,
-        MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG,
+        WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
 
     use super::state_machine;
@@ -232,10 +232,8 @@ mod win {
         if code >= 0 {
             let kb = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
             let vk = kb.vkCode as u16;
-            let is_down =
-                wparam == WM_KEYDOWN as usize || wparam == WM_SYSKEYDOWN as usize;
-            let is_up =
-                wparam == WM_KEYUP as usize || wparam == WM_SYSKEYUP as usize;
+            let is_down = wparam == WM_KEYDOWN as usize || wparam == WM_SYSKEYDOWN as usize;
+            let is_up = wparam == WM_KEYUP as usize || wparam == WM_SYSKEYUP as usize;
 
             if state_machine::process_key_event(vk, is_down, is_up) {
                 return 1; // swallow
@@ -258,12 +256,8 @@ mod win {
         thread::Builder::new()
             .name("omnivox-hotkey".into())
             .spawn(|| unsafe {
-                let hook = SetWindowsHookExW(
-                    WH_KEYBOARD_LL,
-                    Some(hook_proc),
-                    std::ptr::null_mut(),
-                    0,
-                );
+                let hook =
+                    SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), std::ptr::null_mut(), 0);
                 if hook.is_null() {
                     eprintln!("Failed to install keyboard hook");
                     return;
@@ -293,41 +287,76 @@ mod rdev_impl {
         use rdev::Key::*;
         Some(match key {
             // Modifier keys
-            ControlLeft  => 0xA2, // VK_LCONTROL
+            ControlLeft => 0xA2,  // VK_LCONTROL
             ControlRight => 0xA3, // VK_RCONTROL
-            Alt          => 0xA4, // VK_LMENU
-            AltGr        => 0xA5, // VK_RMENU
-            ShiftLeft    => 0xA0, // VK_LSHIFT
-            ShiftRight   => 0xA1, // VK_RSHIFT
-            MetaLeft     => 0x5B, // VK_LWIN (Cmd on macOS)
-            MetaRight    => 0x5C, // VK_RWIN
+            Alt => 0xA4,          // VK_LMENU
+            AltGr => 0xA5,        // VK_RMENU
+            ShiftLeft => 0xA0,    // VK_LSHIFT
+            ShiftRight => 0xA1,   // VK_RSHIFT
+            MetaLeft => 0x5B,     // VK_LWIN (Cmd on macOS)
+            MetaRight => 0x5C,    // VK_RWIN
 
             // Function keys
-            F1  => 0x70, F2  => 0x71, F3  => 0x72, F4  => 0x73,
-            F5  => 0x74, F6  => 0x75, F7  => 0x76, F8  => 0x77,
-            F9  => 0x78, F10 => 0x79, F11 => 0x7A, F12 => 0x7B,
+            F1 => 0x70,
+            F2 => 0x71,
+            F3 => 0x72,
+            F4 => 0x73,
+            F5 => 0x74,
+            F6 => 0x75,
+            F7 => 0x76,
+            F8 => 0x77,
+            F9 => 0x78,
+            F10 => 0x79,
+            F11 => 0x7A,
+            F12 => 0x7B,
 
             // Common keys
-            Space     => 0x20,
-            Return    => 0x0D,
-            Escape    => 0x1B,
-            Tab       => 0x09,
+            Space => 0x20,
+            Return => 0x0D,
+            Escape => 0x1B,
+            Tab => 0x09,
             Backspace => 0x08,
-            CapsLock  => 0x14,
+            CapsLock => 0x14,
 
             // Letters (A–Z)
-            KeyA => 0x41, KeyB => 0x42, KeyC => 0x43, KeyD => 0x44,
-            KeyE => 0x45, KeyF => 0x46, KeyG => 0x47, KeyH => 0x48,
-            KeyI => 0x49, KeyJ => 0x4A, KeyK => 0x4B, KeyL => 0x4C,
-            KeyM => 0x4D, KeyN => 0x4E, KeyO => 0x4F, KeyP => 0x50,
-            KeyQ => 0x51, KeyR => 0x52, KeyS => 0x53, KeyT => 0x54,
-            KeyU => 0x55, KeyV => 0x56, KeyW => 0x57, KeyX => 0x58,
-            KeyY => 0x59, KeyZ => 0x5A,
+            KeyA => 0x41,
+            KeyB => 0x42,
+            KeyC => 0x43,
+            KeyD => 0x44,
+            KeyE => 0x45,
+            KeyF => 0x46,
+            KeyG => 0x47,
+            KeyH => 0x48,
+            KeyI => 0x49,
+            KeyJ => 0x4A,
+            KeyK => 0x4B,
+            KeyL => 0x4C,
+            KeyM => 0x4D,
+            KeyN => 0x4E,
+            KeyO => 0x4F,
+            KeyP => 0x50,
+            KeyQ => 0x51,
+            KeyR => 0x52,
+            KeyS => 0x53,
+            KeyT => 0x54,
+            KeyU => 0x55,
+            KeyV => 0x56,
+            KeyW => 0x57,
+            KeyX => 0x58,
+            KeyY => 0x59,
+            KeyZ => 0x5A,
 
             // Number row
-            Num0 => 0x30, Num1 => 0x31, Num2 => 0x32, Num3 => 0x33,
-            Num4 => 0x34, Num5 => 0x35, Num6 => 0x36, Num7 => 0x37,
-            Num8 => 0x38, Num9 => 0x39,
+            Num0 => 0x30,
+            Num1 => 0x31,
+            Num2 => 0x32,
+            Num3 => 0x33,
+            Num4 => 0x34,
+            Num5 => 0x35,
+            Num6 => 0x36,
+            Num7 => 0x37,
+            Num8 => 0x38,
+            Num9 => 0x39,
 
             _ => return None,
         })

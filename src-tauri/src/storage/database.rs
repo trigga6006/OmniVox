@@ -159,7 +159,7 @@ impl Database {
         }
         if !has_mode_id("snippets") {
             conn.execute_batch(
-                "ALTER TABLE snippets ADD COLUMN mode_id TEXT REFERENCES context_modes(id);"
+                "ALTER TABLE snippets ADD COLUMN mode_id TEXT REFERENCES context_modes(id);",
             )?;
         }
 
@@ -209,9 +209,7 @@ impl Database {
             .unwrap_or(false);
 
         if !has_col {
-            conn.execute_batch(
-                "ALTER TABLE transcriptions ADD COLUMN raw_transcript TEXT;"
-            )?;
+            conn.execute_batch("ALTER TABLE transcriptions ADD COLUMN raw_transcript TEXT;")?;
         }
 
         Ok(())

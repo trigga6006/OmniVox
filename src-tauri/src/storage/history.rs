@@ -168,10 +168,7 @@ pub fn recent_history(
 /// Delete a single transcription record by ID.
 pub fn delete_record(db: &Database, id: &str) -> AppResult<()> {
     let conn = db.conn()?;
-    conn.execute(
-        "DELETE FROM transcriptions WHERE id = ?1",
-        params![id],
-    )?;
+    conn.execute("DELETE FROM transcriptions WHERE id = ?1", params![id])?;
     Ok(())
 }
 

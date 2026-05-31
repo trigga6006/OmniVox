@@ -242,11 +242,7 @@ fn model_url(model_id: &str) -> AppResult<String> {
         "whisper-large" => "ggml-large-v3.bin",
         "whisper-large-v3-turbo" | "whisper-large-v3-turbo-multi" => "ggml-large-v3-turbo.bin",
         "whisper-large-v3-turbo-q5" => "ggml-large-v3-turbo-q5_0.bin",
-        _ => {
-            return Err(AppError::Model(format!(
-                "Unknown model ID: '{model_id}'"
-            )))
-        }
+        _ => return Err(AppError::Model(format!("Unknown model ID: '{model_id}'"))),
     };
 
     Ok(format!(

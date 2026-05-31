@@ -76,7 +76,10 @@ impl TextProcessor for ProcessorChain {
 
         // Step 0b: Context-sensitive fillers (sentence-start "so", "well", filler "like")
         if self.config.apply_filler_removal {
-            apply_step!("contextual_filler_removal", remove_contextual_fillers(&result));
+            apply_step!(
+                "contextual_filler_removal",
+                remove_contextual_fillers(&result)
+            );
         }
 
         // Step 0c: Deduplicate repeated 2-3 word phrases ("I think I think" → "I think")
@@ -148,9 +151,7 @@ impl TextProcessor for ProcessorChain {
         }
 
         // Step 3: Capitalize first letter of sentences (Formal and Casual only)
-        if self.config.auto_capitalize
-            && self.config.writing_style != WritingStyle::VeryCasual
-        {
+        if self.config.auto_capitalize && self.config.writing_style != WritingStyle::VeryCasual {
             apply_step!("auto_capitalize", capitalize_sentences(&result));
         }
 
@@ -159,7 +160,10 @@ impl TextProcessor for ProcessorChain {
 
         // Step 5: Punctuation cleanup (double periods, space before punctuation, trailing connectors)
         if self.config.apply_filler_removal {
-            apply_step!("punctuation_cleanup", cleanup_punctuation(&result, self.config.writing_style));
+            apply_step!(
+                "punctuation_cleanup",
+                cleanup_punctuation(&result, self.config.writing_style)
+            );
         }
 
         // Step 6: Very Casual — lowercase everything, strip trailing periods (keep ? and !)
@@ -211,11 +215,9 @@ fn replace_case_insensitive_with_lower(
 
         // Check word boundaries to avoid replacing inside contractions
         // or compound words (e.g. "can" inside "can't").
-        let at_word_start =
-            abs_pos == 0 || !is_word_char(text.as_bytes()[abs_pos - 1]);
+        let at_word_start = abs_pos == 0 || !is_word_char(text.as_bytes()[abs_pos - 1]);
         let end_pos = abs_pos + phrase.len();
-        let at_word_end =
-            end_pos >= text.len() || !is_word_char(text.as_bytes()[end_pos]);
+        let at_word_end = end_pos >= text.len() || !is_word_char(text.as_bytes()[end_pos]);
 
         if at_word_start && at_word_end {
             result.push_str(&text[search_start..abs_pos]);
@@ -266,14 +268,28 @@ fn capitalize_sentences(text: &str) -> String {
 fn remove_fillers(text: &str) -> String {
     // Single-word fillers — always safe to remove
     const SINGLE_FILLERS: &[&str] = &[
-        "um", "uh", "uhh", "hmm", "hm", "er", "ah", "erm", "eh",
-        "basically", "actually", "literally",
+        "um",
+        "uh",
+        "uhh",
+        "hmm",
+        "hm",
+        "er",
+        "ah",
+        "erm",
+        "eh",
+        "basically",
+        "actually",
+        "literally",
     ];
 
     // Multi-word filler phrases — removed as a unit
     const PHRASE_FILLERS: &[&str] = &[
         "you know what i mean", // longest first to avoid partial matches
-        "you know", "i mean", "sort of", "kind of", "okay so",
+        "you know",
+        "i mean",
+        "sort of",
+        "kind of",
+        "okay so",
     ];
 
     let mut result = text.to_string();
@@ -290,10 +306,9 @@ fn remove_fillers(text: &str) -> String {
             let end_pos = abs_pos + phrase.len();
 
             // Check word boundaries
-            let at_start = abs_pos == 0
-                || !result.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let at_end = end_pos >= result.len()
-                || !result.as_bytes()[end_pos].is_ascii_alphanumeric();
+            let at_start = abs_pos == 0 || !result.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let at_end =
+                end_pos >= result.len() || !result.as_bytes()[end_pos].is_ascii_alphanumeric();
 
             if at_start && at_end {
                 new.push_str(&result[search_start..abs_pos]);
@@ -325,9 +340,7 @@ fn remove_fillers(text: &str) -> String {
         // Skip consecutive duplicate words ("I I" → "I")
         if let Some(prev) = cleaned.last() {
             let prev_bare = prev.trim_matches(|c: char| !c.is_alphanumeric());
-            if !bare.is_empty()
-                && bare.to_lowercase() == prev_bare.to_lowercase()
-            {
+            if !bare.is_empty() && bare.to_lowercase() == prev_bare.to_lowercase() {
                 continue;
             }
         }
@@ -357,9 +370,7 @@ fn remove_fillers(text: &str) -> String {
 /// - "so" / "well" / "right" / "okay" at sentence start (after . ! ? or start of text)
 /// - ", like," filler pattern (but NOT "I like pizza")
 fn remove_contextual_fillers(text: &str) -> String {
-    const SENTENCE_START_FILLERS: &[&str] = &[
-        "so basically ", "so ", "well ", "right ", "okay ",
-    ];
+    const SENTENCE_START_FILLERS: &[&str] = &["so basically ", "so ", "well ", "right ", "okay "];
 
     // Split on sentence boundaries, strip leading fillers from each sentence
     let mut result = String::with_capacity(text.len());
@@ -400,7 +411,9 @@ fn remove_contextual_fillers(text: &str) -> String {
         let replacement = if pattern.ends_with(',') { "," } else { " " };
         loop {
             let lower = cleaned.to_lowercase();
-            let Some(pos) = lower.find(pattern) else { break };
+            let Some(pos) = lower.find(pattern) else {
+                break;
+            };
             cleaned = format!(
                 "{}{}{}",
                 &cleaned[..pos],
@@ -534,7 +547,10 @@ fn cleanup_punctuation(text: &str, style: WritingStyle) -> String {
     // Casual and VeryCasual skip this — no forced trailing period.
     if style == WritingStyle::Formal && !result.is_empty() {
         let last_char = result.chars().last().unwrap();
-        if !matches!(last_char, '.' | '!' | '?' | ':' | ';' | '"' | '\'' | ')' | ']') {
+        if !matches!(
+            last_char,
+            '.' | '!' | '?' | ':' | ';' | '"' | '\'' | ')' | ']'
+        ) {
             return format!("{result}.");
         }
     }
@@ -667,22 +683,34 @@ mod tests {
     // ── Punctuation cleanup (Formal) ──────────────────────────────
     #[test]
     fn fixes_space_before_period() {
-        assert_eq!(cleanup_punctuation("Hello .", WritingStyle::Formal), "Hello.");
+        assert_eq!(
+            cleanup_punctuation("Hello .", WritingStyle::Formal),
+            "Hello."
+        );
     }
 
     #[test]
     fn fixes_space_before_comma() {
-        assert_eq!(cleanup_punctuation("Hello , world.", WritingStyle::Formal), "Hello, world.");
+        assert_eq!(
+            cleanup_punctuation("Hello , world.", WritingStyle::Formal),
+            "Hello, world."
+        );
     }
 
     #[test]
     fn fixes_double_period() {
-        assert_eq!(cleanup_punctuation("Hello..", WritingStyle::Formal), "Hello.");
+        assert_eq!(
+            cleanup_punctuation("Hello..", WritingStyle::Formal),
+            "Hello."
+        );
     }
 
     #[test]
     fn preserves_ellipsis() {
-        assert_eq!(cleanup_punctuation("Wait...", WritingStyle::Formal), "Wait...");
+        assert_eq!(
+            cleanup_punctuation("Wait...", WritingStyle::Formal),
+            "Wait..."
+        );
     }
 
     #[test]
@@ -695,43 +723,67 @@ mod tests {
 
     #[test]
     fn removes_trailing_so() {
-        assert_eq!(cleanup_punctuation("I was thinking so", WritingStyle::Formal), "I was thinking.");
+        assert_eq!(
+            cleanup_punctuation("I was thinking so", WritingStyle::Formal),
+            "I was thinking."
+        );
     }
 
     #[test]
     fn adds_trailing_period() {
-        assert_eq!(cleanup_punctuation("Hello world", WritingStyle::Formal), "Hello world.");
+        assert_eq!(
+            cleanup_punctuation("Hello world", WritingStyle::Formal),
+            "Hello world."
+        );
     }
 
     #[test]
     fn no_double_trailing_period() {
-        assert_eq!(cleanup_punctuation("Hello world.", WritingStyle::Formal), "Hello world.");
+        assert_eq!(
+            cleanup_punctuation("Hello world.", WritingStyle::Formal),
+            "Hello world."
+        );
     }
 
     #[test]
     fn preserves_trailing_question_mark() {
-        assert_eq!(cleanup_punctuation("Is this working?", WritingStyle::Formal), "Is this working?");
+        assert_eq!(
+            cleanup_punctuation("Is this working?", WritingStyle::Formal),
+            "Is this working?"
+        );
     }
 
     // ── Casual style ────────────────────────────────────────────
     #[test]
     fn casual_no_trailing_period() {
-        assert_eq!(cleanup_punctuation("Hello world", WritingStyle::Casual), "Hello world");
+        assert_eq!(
+            cleanup_punctuation("Hello world", WritingStyle::Casual),
+            "Hello world"
+        );
     }
 
     #[test]
     fn casual_keeps_existing_period() {
-        assert_eq!(cleanup_punctuation("Hello world.", WritingStyle::Casual), "Hello world.");
+        assert_eq!(
+            cleanup_punctuation("Hello world.", WritingStyle::Casual),
+            "Hello world."
+        );
     }
 
     #[test]
     fn casual_keeps_question_mark() {
-        assert_eq!(cleanup_punctuation("How are you?", WritingStyle::Casual), "How are you?");
+        assert_eq!(
+            cleanup_punctuation("How are you?", WritingStyle::Casual),
+            "How are you?"
+        );
     }
 
     #[test]
     fn casual_still_removes_trailing_connector() {
-        assert_eq!(cleanup_punctuation("I went to the store and", WritingStyle::Casual), "I went to the store");
+        assert_eq!(
+            cleanup_punctuation("I went to the store and", WritingStyle::Casual),
+            "I went to the store"
+        );
     }
 
     // ── Very Casual style ───────────────────────────────────────

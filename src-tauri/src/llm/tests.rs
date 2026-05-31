@@ -69,7 +69,10 @@ fn schema_parses_all_fields() {
     }"#;
     let s: SlotExtraction = serde_json::from_str(json).unwrap();
     assert_eq!(s.goal, "Refactor checkout");
-    assert_eq!(s.context, vec!["Current failures only happen on long prompts"]);
+    assert_eq!(
+        s.context,
+        vec!["Current failures only happen on long prompts"]
+    );
     assert_eq!(s.constraints, vec!["Do not break Stripe"]);
     assert_eq!(s.files, vec!["billing.tsx", "cart.tsx"]);
     assert_eq!(s.urgency, Some(Urgency::High));
@@ -77,7 +80,10 @@ fn schema_parses_all_fields() {
         s.expected_behavior,
         vec!["I should be able to complete checkout without the prompt failing"]
     );
-    assert_eq!(s.questions, vec!["what is the failure mode on long prompts"]);
+    assert_eq!(
+        s.questions,
+        vec!["what is the failure mode on long prompts"]
+    );
     assert_eq!(s.options, vec!["retry with backoff", "chunk the prompt"]);
 }
 
@@ -94,7 +100,10 @@ fn schema_parses_exploration_shape() {
         ]
     }"#;
     let s: SlotExtraction = serde_json::from_str(json).unwrap();
-    assert_eq!(s.goal, "explore what it would take to support more languages");
+    assert_eq!(
+        s.goal,
+        "explore what it would take to support more languages"
+    );
     assert!(s.constraints.is_empty());
     assert!(s.files.is_empty());
     assert!(s.expected_behavior.is_empty());
@@ -136,9 +145,16 @@ fn schema_parses_urgency_lowercase() {
 fn schema_normalize_dedupes_and_trims_lists() {
     let s = SlotExtraction {
         goal: "  Investigate timeout  ".into(),
-        context: vec!["  current behavior  ".into(), "current behavior".into(), "".into()],
+        context: vec![
+            "  current behavior  ".into(),
+            "current behavior".into(),
+            "".into(),
+        ],
         constraints: vec![" do not touch Qwen ".into(), "Do not touch Qwen".into()],
-        expected_behavior: vec![" the app should still run ".into(), "The app should still run".into()],
+        expected_behavior: vec![
+            " the app should still run ".into(),
+            "The app should still run".into(),
+        ],
         ..Default::default()
     }
     .normalize();
@@ -278,7 +294,10 @@ fn schema_normalize_preserves_user_interface_etc() {
     assert_eq!(s.goal, "improve the user interface");
     assert_eq!(
         s.context,
-        vec!["the user experience feels sluggish", "users on low-RAM machines see stalls"]
+        vec![
+            "the user experience feels sluggish",
+            "users on low-RAM machines see stalls"
+        ]
     );
 }
 
@@ -363,7 +382,7 @@ fn schema_normalize_with_raw_short_input_drops_ungrounded_slots() {
         constraints: vec!["do not break the login flow".into()],
         expected_behavior: vec![
             "I should be able to submit payment instantly".into(),
-            "the panel should feel buttery".into(),  // shares "panel" → survives
+            "the panel should feel buttery".into(), // shares "panel" → survives
         ],
         ..Default::default()
     }
@@ -427,9 +446,7 @@ fn template_full_render() {
         constraints: vec!["Do not break the Stripe integration".into()],
         files: vec!["billing.tsx".into(), "cart.tsx".into()],
         urgency: Some(Urgency::High),
-        expected_behavior: vec![
-            "I should be able to complete checkout on long prompts".into(),
-        ],
+        expected_behavior: vec!["I should be able to complete checkout on long prompts".into()],
         ..Default::default()
     };
     let md = render_markdown(&s);
@@ -493,16 +510,13 @@ fn schema_normalize_with_raw_guards_questions_and_options() {
             "should we migrate the billing database".into(), // fabrication
         ],
         options: vec![
-            "stick with whisper".into(),           // shares whisper
-            "rewrite the auth flow".into(),        // fabrication
+            "stick with whisper".into(),    // shares whisper
+            "rewrite the auth flow".into(), // fabrication
         ],
         ..Default::default()
     }
     .normalize_with_raw(raw);
-    assert_eq!(
-        s.questions,
-        vec!["what is the VAD story for languages"]
-    );
+    assert_eq!(s.questions, vec!["what is the VAD story for languages"]);
     assert_eq!(s.options, vec!["stick with whisper"]);
 }
 
@@ -552,16 +566,12 @@ fn prompt_with_empty_context_matches_legacy_format() {
     // Structured Mode runs unchanged when the feature is off or capture
     // returned nothing.
     let legacy = crate::llm::prompt::format_prompt("hello world");
-    let with_empty =
-        crate::llm::prompt::format_prompt_with_context("hello world", &[], None);
+    let with_empty = crate::llm::prompt::format_prompt_with_context("hello world", &[], None);
     assert_eq!(legacy, with_empty);
 
     // Same when caller passes an app name but no tokens.
-    let with_empty_app = crate::llm::prompt::format_prompt_with_context(
-        "hello world",
-        &[],
-        Some("Code.exe"),
-    );
+    let with_empty_app =
+        crate::llm::prompt::format_prompt_with_context("hello world", &[], Some("Code.exe"));
     assert_eq!(legacy, with_empty_app);
 }
 

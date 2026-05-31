@@ -21,10 +21,8 @@ fn enabled() -> bool {
 
 fn log_path() -> Option<&'static PathBuf> {
     static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
-    PATH.get_or_init(|| {
-        dirs::data_dir().map(|d| d.join("omnivox").join("structured-mode.log"))
-    })
-    .as_ref()
+    PATH.get_or_init(|| dirs::data_dir().map(|d| d.join("omnivox").join("structured-mode.log")))
+        .as_ref()
 }
 
 pub fn log(msg: &str) {

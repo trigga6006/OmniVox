@@ -28,11 +28,7 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<VocabularyEntry> {
 }
 
 /// Add a new vocabulary entry. Returns the created entry.
-pub fn add_entry(
-    db: &Database,
-    word: &str,
-    mode_id: Option<&str>,
-) -> AppResult<VocabularyEntry> {
+pub fn add_entry(db: &Database, word: &str, mode_id: Option<&str>) -> AppResult<VocabularyEntry> {
     let id = Uuid::new_v4();
     let now = Utc::now();
 
@@ -40,13 +36,7 @@ pub fn add_entry(
     conn.execute(
         "INSERT INTO vocabulary_entries (id, word, is_enabled, created_at, mode_id)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            id.to_string(),
-            word,
-            true,
-            now.to_rfc3339(),
-            mode_id,
-        ],
+        params![id.to_string(), word, true, now.to_rfc3339(), mode_id,],
     )?;
 
     Ok(VocabularyEntry {
@@ -71,10 +61,7 @@ pub fn update_entry(db: &Database, id: &str, word: &str) -> AppResult<()> {
 /// Delete a vocabulary entry by ID.
 pub fn delete_entry(db: &Database, id: &str) -> AppResult<()> {
     let conn = db.conn()?;
-    conn.execute(
-        "DELETE FROM vocabulary_entries WHERE id = ?1",
-        params![id],
-    )?;
+    conn.execute("DELETE FROM vocabulary_entries WHERE id = ?1", params![id])?;
     Ok(())
 }
 

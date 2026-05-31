@@ -76,10 +76,7 @@ pub fn update_entry(db: &Database, id: &str, phrase: &str, replacement: &str) ->
 /// Delete a dictionary entry by ID.
 pub fn delete_entry(db: &Database, id: &str) -> AppResult<()> {
     let conn = db.conn()?;
-    conn.execute(
-        "DELETE FROM dictionary_entries WHERE id = ?1",
-        params![id],
-    )?;
+    conn.execute("DELETE FROM dictionary_entries WHERE id = ?1", params![id])?;
     Ok(())
 }
 

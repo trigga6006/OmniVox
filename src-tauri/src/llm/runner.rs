@@ -134,7 +134,9 @@ impl LlmRunner {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(AppError::Llm("LLM busy — another extraction in flight".into()));
+            return Err(AppError::Llm(
+                "LLM busy — another extraction in flight".into(),
+            ));
         }
 
         let req = LlmRequest {
@@ -148,7 +150,9 @@ impl LlmRunner {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 self.busy.store(false, Ordering::Release);
-                return Err(AppError::Llm("LLM busy — another extraction in flight".into()));
+                return Err(AppError::Llm(
+                    "LLM busy — another extraction in flight".into(),
+                ));
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.busy.store(false, Ordering::Release);

@@ -121,9 +121,7 @@ impl SlotExtraction {
             .collect::<Vec<_>>();
         self.context.retain(|item| {
             let k = compact_key(item);
-            k != goal_key
-                && !behavior_keys.contains(&k)
-                && !constraint_keys.contains(&k)
+            k != goal_key && !behavior_keys.contains(&k) && !constraint_keys.contains(&k)
         });
 
         self.expected_behavior
@@ -158,21 +156,24 @@ impl SlotExtraction {
         // (1) Ungrounded files → drop.  We match on the lowercased token,
         // not the full entry, so "src/features/overlay/FloatingPill.tsx"
         // in the output still grounds if the raw said "FloatingPill".
-        s.files.retain(|entry| {
-            file_is_grounded_in_raw(entry, &raw_lower)
-        });
+        s.files
+            .retain(|entry| file_is_grounded_in_raw(entry, &raw_lower));
 
         // (2) Short-input fabrication guard.  Drop non-goal list items
         // that share no content-word with the raw input.
         const SHORT_INPUT_THRESHOLD: usize = 120;
         if raw_input.chars().count() <= SHORT_INPUT_THRESHOLD {
             let raw_words = content_words(&raw_lower);
-            s.context.retain(|item| shares_content_word(item, &raw_words));
-            s.constraints.retain(|item| shares_content_word(item, &raw_words));
+            s.context
+                .retain(|item| shares_content_word(item, &raw_words));
+            s.constraints
+                .retain(|item| shares_content_word(item, &raw_words));
             s.expected_behavior
                 .retain(|item| shares_content_word(item, &raw_words));
-            s.questions.retain(|item| shares_content_word(item, &raw_words));
-            s.options.retain(|item| shares_content_word(item, &raw_words));
+            s.questions
+                .retain(|item| shares_content_word(item, &raw_words));
+            s.options
+                .retain(|item| shares_content_word(item, &raw_words));
         }
 
         s
@@ -401,14 +402,12 @@ fn split_camel_case(s: &str) -> Vec<String> {
 /// overlap.  Adding too many words here makes the check more aggressive
 /// (more false-positives); keep this lean.
 const STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "but", "can", "could",
-    "did", "do", "does", "for", "from", "had", "has", "have", "he", "her",
-    "his", "i", "if", "in", "into", "is", "it", "its", "just", "like", "me",
-    "my", "not", "now", "of", "on", "or", "our", "out", "over", "should",
-    "so", "some", "such", "than", "that", "the", "their", "them", "then",
-    "there", "these", "they", "this", "to", "too", "up", "us", "was", "we",
-    "were", "what", "when", "which", "while", "who", "why", "will", "with",
-    "would", "you", "your",
+    "a", "an", "and", "are", "as", "at", "be", "by", "but", "can", "could", "did", "do", "does",
+    "for", "from", "had", "has", "have", "he", "her", "his", "i", "if", "in", "into", "is", "it",
+    "its", "just", "like", "me", "my", "not", "now", "of", "on", "or", "our", "out", "over",
+    "should", "so", "some", "such", "than", "that", "the", "their", "them", "then", "there",
+    "these", "they", "this", "to", "too", "up", "us", "was", "we", "were", "what", "when", "which",
+    "while", "who", "why", "will", "with", "would", "you", "your",
 ];
 
 /// Extract content words from a string (lowercase, non-stopword, length ≥ 3).

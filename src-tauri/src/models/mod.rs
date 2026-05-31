@@ -1,3 +1,3 @@
-pub mod types;
-pub mod manager;
 pub mod downloader;
+pub mod manager;
+pub mod types;

@@ -1,17 +1,17 @@
 pub mod audio;
-pub mod models;
+pub mod context_modes;
 pub mod dictionary;
 pub mod history;
 pub mod llm;
-pub mod settings;
+pub mod models;
 pub mod notes;
-pub mod context_modes;
+pub mod settings;
 
 pub use audio::*;
-pub use models::*;
+pub use context_modes::*;
 pub use dictionary::*;
 pub use history::*;
 pub use llm::*;
-pub use settings::*;
+pub use models::*;
 pub use notes::*;
-pub use context_modes::*;
+pub use settings::*;

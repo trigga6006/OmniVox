@@ -203,6 +203,7 @@ fn parse_count(word: &str) -> Option<usize> {
 
 /// Nouns that signal a list is being introduced.
 const COLLECTION_NOUNS: &[&str] = &[
+    "things",
     "items",
     "points",
     "tasks",
@@ -410,18 +411,7 @@ fn normalize_for_prefix(s: &str) -> &str {
 
 /// True if the sentence starts with an ordinal word (First, Secondly, …).
 fn starts_with_ordinal(sentence: &str) -> bool {
-    let lower = sentence.trim_start().to_lowercase();
-    for prefix in &[
-        // -ly variants first (longer match wins).
-        "firstly", "secondly", "thirdly", "fourthly", "fifthly", "first", "second", "third",
-        "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
-    ] {
-        if let Some(rest) = lower.strip_prefix(prefix) {
-            if rest.starts_with(',') || rest.starts_with(':') || rest.starts_with(' ') {
-                return true;
-            }
-        }
-    }
+    let _ = sentence;
     false
 }
 
@@ -433,6 +423,7 @@ enum ListHeader {
     Counted(usize),
     /// Implicit: "here's what I need", "these things", "the following", colon.
     /// Use all remaining sentences as items.
+    #[allow(dead_code)]
     Implicit,
 }
 
@@ -456,64 +447,6 @@ fn detect_list_header(sentence: &str) -> Option<ListHeader> {
                 }
             }
         }
-    }
-
-    // 2. Collection noun without count: "these things", "my tasks"
-    //    Requires a determiner/possessive near the collection noun.
-    let determiners = [
-        "these", "those", "the", "my", "our", "your", "some", "several",
-    ];
-    for (i, word) in words.iter().enumerate() {
-        if COLLECTION_NOUNS.contains(&word.as_str()) {
-            // Check if a determiner appears within 2 words before the noun.
-            let start = i.saturating_sub(2);
-            for det in words.iter().take(i).skip(start) {
-                if determiners.contains(&det.as_str()) {
-                    return Some(ListHeader::Implicit);
-                }
-            }
-        }
-    }
-
-    let lower = sentence.to_lowercase();
-
-    // 3. Quantifier phrases: "a couple of things", "a few items", "a number of tasks"
-    let quantifiers = [
-        "a couple of",
-        "a couple",
-        "a few",
-        "a number of",
-        "a bunch of",
-    ];
-    for qp in &quantifiers {
-        if let Some(pos) = lower.find(qp) {
-            let after = lower[pos + qp.len()..].trim_start();
-            // Skip "of" if the quantifier doesn't already end with it.
-            let check = if after.starts_with("of ") {
-                &after[3..]
-            } else {
-                after
-            };
-            let next_word = check.trim_start().split_whitespace().next().unwrap_or("");
-            if COLLECTION_NOUNS.contains(&next_word) {
-                return Some(ListHeader::Implicit);
-            }
-        }
-    }
-
-    // 4. Signal phrases: only very explicit list-introduction phrases.
-    let signals = ["the following", "as follows", "here is a list"];
-    for sig in &signals {
-        if lower.contains(sig) {
-            return Some(ListHeader::Implicit);
-        }
-    }
-
-    // 5. Sentence ends with a colon — only if the sentence is short
-    //    (likely a header, not a long statement that happens to have a colon).
-    let trimmed_end = sentence.trim_end();
-    if trimmed_end.ends_with(':') && trimmed_end.split_whitespace().count() <= 10 {
-        return Some(ListHeader::Implicit);
     }
 
     None
@@ -643,16 +576,17 @@ fn detect_repeated_prefix(sentences: &[String], start: usize) -> Option<usize> {
 /// explicitly frames the run as a list. Without this, ordinary long dictations
 /// like "I want to..." repeated five times become surprise bullet lists.
 fn has_nearby_list_cue(sentences: &[String], start: usize) -> bool {
-    if start > 0 && detect_list_header(&sentences[start - 1]).is_some() {
-        return true;
-    }
-
-    starts_with_ordinal(&sentences[start])
+    let _ = (sentences, start);
+    false
 }
 
 /// Detect an inline comma-separated list within a single sentence.
 /// Returns (prefix, items) if found — e.g., "I need" and ["milk", "eggs", "bread"].
+#[allow(unreachable_code)]
 fn detect_inline_list(sentence: &str) -> Option<(String, Vec<String>)> {
+    let _ = sentence;
+    return None;
+
     // Strip trailing punctuation for analysis.
     let trimmed = sentence.trim_end_matches(|c: char| matches!(c, '.' | '!' | '?'));
 
@@ -736,6 +670,7 @@ fn detect_inline_list(sentence: &str) -> Option<(String, Vec<String>)> {
 /// The heuristic: list items tend to have similar sentence lengths.  When a
 /// sentence is significantly longer than the running average of the items
 /// so far, it's likely a topic transition or conclusion, not another item.
+#[allow(dead_code)]
 fn find_implicit_list_end(sentences: &[String], header_idx: usize) -> usize {
     let start = header_idx + 1;
     if start >= sentences.len() {
@@ -851,17 +786,14 @@ pub fn format_lists(text: &str) -> String {
     let mut i = 0;
 
     while i < sentences.len() {
-        // Pattern 1 & 2: List header (counted or implicit).
+        // Counted list header only. Broad implicit heuristics made ordinary
+        // dictation turn into surprise bullets, so list creation now requires
+        // the user to say an explicit count such as "these three things".
         if let Some(header) = detect_list_header(&sentences[i]) {
             let remaining = sentences.len() - i - 1;
             let (items, min_items) = match header {
-                ListHeader::Counted(n) => (if remaining >= n { n } else { remaining }, 2),
-                // Implicit headers use smart termination: scan forward
-                // until a sentence is too different (much longer) from the
-                // other items, signalling a topic transition / conclusion.
-                // Require 5+ items for implicit headers to avoid false positives
-                // where casual speech like "these things" is followed by prose.
-                ListHeader::Implicit => (find_implicit_list_end(&sentences, i), 5),
+                ListHeader::Counted(n) => (if remaining >= n { n } else { 0 }, 2),
+                ListHeader::Implicit => (0, usize::MAX),
             };
             if items >= min_items {
                 parts.push(sentences[i].clone());

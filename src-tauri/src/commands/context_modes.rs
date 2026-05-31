@@ -26,8 +26,15 @@ pub async fn create_context_mode(
     writing_style: String,
     state: State<'_, AppState>,
 ) -> Result<ContextMode, String> {
-    crate::storage::context_modes::create_mode(&state.db, &name, &description, &icon, &color, &writing_style)
-        .map_err(|e| e.to_string())
+    crate::storage::context_modes::create_mode(
+        &state.db,
+        &name,
+        &description,
+        &icon,
+        &color,
+        &writing_style,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -40,23 +47,28 @@ pub async fn update_context_mode(
     writing_style: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    crate::storage::context_modes::update_mode(&state.db, &id, &name, &description, &icon, &color, &writing_style)
-        .map_err(|e| e.to_string())?;
+    crate::storage::context_modes::update_mode(
+        &state.db,
+        &id,
+        &name,
+        &description,
+        &icon,
+        &color,
+        &writing_style,
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_context_mode(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_context_mode(id: String, state: State<'_, AppState>) -> Result<(), String> {
     // If deleting the active mode, switch back to General
     let active_id = state.active_context_mode_id.lock().unwrap().clone();
     if active_id.as_deref() == Some(&id) {
         // Find the builtin General mode
-        let modes = crate::storage::context_modes::list_modes(&state.db)
-            .map_err(|e| e.to_string())?;
+        let modes =
+            crate::storage::context_modes::list_modes(&state.db).map_err(|e| e.to_string())?;
         if let Some(general) = modes.iter().find(|m| m.is_builtin) {
             activate_mode_internal(&state, &general.id.to_string())?;
         }
@@ -89,14 +101,17 @@ pub async fn set_active_context_mode(
     activate_mode_internal(&state, &id)?;
 
     // Emit event so the overlay can update
-    let mode = crate::storage::context_modes::get_mode(&state.db, &id)
-        .map_err(|e| e.to_string())?;
-    let _ = app_handle.emit("context-mode-changed", serde_json::json!({
-        "id": mode.id.to_string(),
-        "name": mode.name,
-        "icon": mode.icon,
-        "color": mode.color,
-    }));
+    let mode =
+        crate::storage::context_modes::get_mode(&state.db, &id).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(
+        "context-mode-changed",
+        serde_json::json!({
+            "id": mode.id.to_string(),
+            "name": mode.name,
+            "icon": mode.icon,
+            "color": mode.color,
+        }),
+    );
 
     Ok(())
 }
@@ -123,10 +138,7 @@ pub async fn add_app_binding(
 }
 
 #[tauri::command]
-pub async fn delete_app_binding(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_app_binding(id: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::storage::app_bindings::delete_binding(&state.db, &id).map_err(|e| e.to_string())
 }
 
@@ -135,8 +147,8 @@ pub async fn delete_app_binding(
 /// 2. Load global + mode's dictionary/snippets into ProcessorChain
 pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<(), String> {
     // Verify mode exists
-    let mode = crate::storage::context_modes::get_mode(&state.db, mode_id)
-        .map_err(|e| e.to_string())?;
+    let mode =
+        crate::storage::context_modes::get_mode(&state.db, mode_id).map_err(|e| e.to_string())?;
 
     // Persist active mode choice
     crate::storage::settings::set_setting(&state.db, "active_context_mode_id", mode_id)

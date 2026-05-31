@@ -12,7 +12,14 @@ fn extract_picks_file_with_extension() {
 fn extract_picks_dotted_extensions_for_many_langs() {
     let text = "main.rs Cargo.toml index.tsx settings.json schema.sql README.md";
     let tokens = rank_tokens(text, 20);
-    for expected in ["main.rs", "Cargo.toml", "index.tsx", "settings.json", "schema.sql", "README.md"] {
+    for expected in [
+        "main.rs",
+        "Cargo.toml",
+        "index.tsx",
+        "settings.json",
+        "schema.sql",
+        "README.md",
+    ] {
         assert!(
             tokens.iter().any(|t| t == expected),
             "missing {expected} in {tokens:?}"
@@ -211,7 +218,9 @@ fn whisper_filter_drops_numeric_dominant() {
     assert!(!is_useful_for_whisper("13:42:00"));
     assert!(!is_useful_for_whisper("83c59b2"));
     assert!(!is_useful_for_whisper("a1b2c3d4e5f6"));
-    assert!(!is_useful_for_whisper("550e8400-e29b-41d4-a716-446655440000"));
+    assert!(!is_useful_for_whisper(
+        "550e8400-e29b-41d4-a716-446655440000"
+    ));
 }
 
 #[test]
@@ -223,8 +232,8 @@ fn whisper_filter_requires_minimum_alpha() {
     assert!(!is_useful_for_whisper("ab"));
     // Boundary cases on the 40 %-alphabetic threshold.  Stems must contain
     // a non-hex letter so the all-hex SHA filter doesn't reject them.
-    assert!(is_useful_for_whisper("123code"));   // 4/7 ≈ 57 %, has 'o'
-    assert!(is_useful_for_whisper("1234zxy"));   // 3/7 ≈ 43 %, no hex
+    assert!(is_useful_for_whisper("123code")); // 4/7 ≈ 57 %, has 'o'
+    assert!(is_useful_for_whisper("1234zxy")); // 3/7 ≈ 43 %, no hex
     assert!(!is_useful_for_whisper("12345zxy")); // 3/8 = 37.5 %, fails alpha share
 }
 

@@ -42,10 +42,7 @@ pub async fn download_llm_model(
 }
 
 #[tauri::command]
-pub async fn delete_llm_model(
-    model_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_llm_model(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
     // If this is the active model, unload the runner first so the worker
     // drops its LlamaEngine before we delete the on-disk weights, AND clear
     // the persisted active_llm_model_id so a later eager-load doesn't try
@@ -176,7 +173,11 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
     // not hold old and new GGUF weights in RAM/VRAM at the same time.
     {
         let mut runner = state.llm_runner.lock().unwrap();
-        if runner.as_ref().map(|runner| runner.is_busy()).unwrap_or(false) {
+        if runner
+            .as_ref()
+            .map(|runner| runner.is_busy())
+            .unwrap_or(false)
+        {
             return Err(
                 "Wait for the current Structured Mode extraction before switching LLM models"
                     .into(),
@@ -194,9 +195,7 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
                 match LlamaEngine::load(config.clone()) {
                     Ok(engine) => Ok(engine),
                     Err(e) if config.use_gpu => {
-                        eprintln!(
-                            "GPU LLM load failed; retrying on CPU. Original error: {e}"
-                        );
+                        eprintln!("GPU LLM load failed; retrying on CPU. Original error: {e}");
                         let mut cpu_config = config;
                         cpu_config.use_gpu = false;
                         LlamaEngine::load(cpu_config)

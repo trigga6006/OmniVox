@@ -92,10 +92,7 @@ pub async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 }
 
 #[tauri::command]
-pub async fn set_audio_device(
-    device_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn set_audio_device(device_id: String, state: State<'_, AppState>) -> Result<(), String> {
     // Skip pre-validation: the UI only lets users pick devices that came from
     // a fresh `get_audio_devices()` call, and the cpal backend will return a
     // clear error at `start()` time if the device is gone (e.g. unplugged).

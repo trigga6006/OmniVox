@@ -34,25 +34,18 @@
 /// jargon-ish verb in fandom spaces but is rare enough in coding dictation
 /// to be safe.
 const TRIGGER_ALIASES: &[&str] = &[
-    "voxify",  // canonical
-    "foxify",  // /f/ for /v/ (most common Whisper miss)
-    "boxify",  // /b/ for /v/
-    "poxify",  // /p/ for /v/
-    "woxify",  // /w/ for /v/
-    "vexify",  // different vowel (e)
-    "vaxify",  // different vowel (a)
-    "oxify",   // initial consonant elided
+    "voxify", // canonical
+    "foxify", // /f/ for /v/ (most common Whisper miss)
+    "boxify", // /b/ for /v/
+    "poxify", // /p/ for /v/
+    "woxify", // /w/ for /v/
+    "vexify", // different vowel (e)
+    "vaxify", // different vowel (a)
+    "oxify",  // initial consonant elided
     // Whisper also drops the /i/ between /f/ and /aɪ/ when the user says
     // "Voxify" quickly (the vowel collapses to a schwa).  Each canonical
     // form has a no-`i` twin; all are still non-lexical.
-    "voxfy",
-    "foxfy",
-    "boxfy",
-    "poxfy",
-    "woxfy",
-    "vexfy",
-    "vaxfy",
-    "oxfy",
+    "voxfy", "foxfy", "boxfy", "poxfy", "woxfy", "vexfy", "vaxfy", "oxfy",
 ];
 
 fn matches_any_trigger(word: &str) -> bool {
@@ -115,29 +108,25 @@ mod tests {
 
     #[test]
     fn strips_trigger_at_end_with_period() {
-        let (stripped, said) =
-            detect_and_strip_trigger("Refactor the checkout flow. Voxify.");
+        let (stripped, said) = detect_and_strip_trigger("Refactor the checkout flow. Voxify.");
         assert_eq!(stripped, "Refactor the checkout flow");
         assert!(said);
     }
 
     #[test]
     fn strips_trigger_case_insensitive() {
-        let (stripped, said) =
-            detect_and_strip_trigger("Summarize the changes. VOXIFY");
+        let (stripped, said) = detect_and_strip_trigger("Summarize the changes. VOXIFY");
         assert_eq!(stripped, "Summarize the changes");
         assert!(said);
 
-        let (stripped, said) =
-            detect_and_strip_trigger("Summarize the changes. voxify");
+        let (stripped, said) = detect_and_strip_trigger("Summarize the changes. voxify");
         assert_eq!(stripped, "Summarize the changes");
         assert!(said);
     }
 
     #[test]
     fn leaves_text_alone_when_trigger_absent() {
-        let (stripped, said) =
-            detect_and_strip_trigger("Format this prompt.");
+        let (stripped, said) = detect_and_strip_trigger("Format this prompt.");
         assert_eq!(stripped, "Format this prompt.");
         assert!(!said);
     }
@@ -145,8 +134,7 @@ mod tests {
     #[test]
     fn does_not_strip_trigger_mid_sentence() {
         // "Voxify" in the middle is not a trigger — only end counts.
-        let (stripped, said) =
-            detect_and_strip_trigger("Can you voxify this for me?");
+        let (stripped, said) = detect_and_strip_trigger("Can you voxify this for me?");
         assert_eq!(stripped, "Can you voxify this for me?");
         assert!(!said);
     }
@@ -182,8 +170,7 @@ mod tests {
 
     #[test]
     fn handles_trailing_whitespace_and_punctuation() {
-        let (stripped, said) =
-            detect_and_strip_trigger("Refactor the auth flow.   Voxify!  ");
+        let (stripped, said) = detect_and_strip_trigger("Refactor the auth flow.   Voxify!  ");
         assert_eq!(stripped, "Refactor the auth flow");
         assert!(said);
     }

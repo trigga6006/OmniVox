@@ -17,10 +17,10 @@ const DEFAULT_DUCK_FACTOR: f32 = 0.30;
 mod win {
     use std::sync::Mutex;
 
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{
         eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
     };
-    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
     };
@@ -103,8 +103,7 @@ mod mac {
         u32::from_be_bytes(*b"vmvc");
     const K_AUDIO_OBJECT_PROPERTY_SCOPE_OUTPUT: u32 = u32::from_be_bytes(*b"outp");
     const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
-    const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE: u32 =
-        u32::from_be_bytes(*b"dOut");
+    const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE: u32 = u32::from_be_bytes(*b"dOut");
     const K_AUDIO_OBJECT_SYSTEM_OBJECT: u32 = 1;
     const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob");
 

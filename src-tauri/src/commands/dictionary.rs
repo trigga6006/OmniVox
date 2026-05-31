@@ -1,6 +1,6 @@
-use tauri::State;
 use crate::state::AppState;
 use crate::storage::types::{DictionaryEntry, Snippet, VocabularyEntry};
+use tauri::State;
 
 /// Reload both global and active-mode entries into the in-memory
 /// ProcessorChain so replacements/snippets take effect immediately.
@@ -44,7 +44,10 @@ pub(crate) fn sync_whisper_prompt(state: &AppState) {
         .active_model_id
         .lock()
         .ok()
-        .and_then(|g| g.as_ref().map(|id| super::models::is_model_multilingual(id)))
+        .and_then(|g| {
+            g.as_ref()
+                .map(|id| super::models::is_model_multilingual(id))
+        })
         .unwrap_or(false);
 
     let prompt = super::models::build_whisper_vocab_prompt(state, is_multilingual);
@@ -81,10 +84,7 @@ pub async fn update_dictionary_entry(
 }
 
 #[tauri::command]
-pub async fn delete_dictionary_entry(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_dictionary_entry(id: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::storage::dictionary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);
@@ -138,19 +138,14 @@ pub async fn update_snippet(
 }
 
 #[tauri::command]
-pub async fn delete_snippet(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_snippet(id: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::storage::snippets::delete_snippet(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn list_snippets(
-    state: State<'_, AppState>,
-) -> Result<Vec<Snippet>, String> {
+pub async fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>, String> {
     crate::storage::snippets::list_snippets(&state.db).map_err(|e| e.to_string())
 }
 
@@ -172,13 +167,9 @@ pub async fn add_mode_dictionary_entry(
     replacement: String,
     state: State<'_, AppState>,
 ) -> Result<DictionaryEntry, String> {
-    let entry = crate::storage::dictionary::add_entry(
-        &state.db,
-        &phrase,
-        &replacement,
-        Some(&mode_id),
-    )
-    .map_err(|e| e.to_string())?;
+    let entry =
+        crate::storage::dictionary::add_entry(&state.db, &phrase, &replacement, Some(&mode_id))
+            .map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);
     Ok(entry)
@@ -200,8 +191,7 @@ pub async fn list_mode_snippets(
     mode_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<Snippet>, String> {
-    crate::storage::snippets::list_snippets_for_mode(&state.db, &mode_id)
-        .map_err(|e| e.to_string())
+    crate::storage::snippets::list_snippets_for_mode(&state.db, &mode_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -225,10 +215,7 @@ pub async fn add_mode_snippet(
 }
 
 #[tauri::command]
-pub async fn delete_mode_snippet(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_mode_snippet(id: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::storage::snippets::delete_snippet(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     Ok(())
@@ -241,8 +228,8 @@ pub async fn add_vocabulary_entry(
     word: String,
     state: State<'_, AppState>,
 ) -> Result<VocabularyEntry, String> {
-    let entry = crate::storage::vocabulary::add_entry(&state.db, &word, None)
-        .map_err(|e| e.to_string())?;
+    let entry =
+        crate::storage::vocabulary::add_entry(&state.db, &word, None).map_err(|e| e.to_string())?;
     sync_whisper_prompt(&state);
     Ok(entry)
 }
@@ -253,17 +240,13 @@ pub async fn update_vocabulary_entry(
     word: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    crate::storage::vocabulary::update_entry(&state.db, &id, &word)
-        .map_err(|e| e.to_string())?;
+    crate::storage::vocabulary::update_entry(&state.db, &id, &word).map_err(|e| e.to_string())?;
     sync_whisper_prompt(&state);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_vocabulary_entry(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_vocabulary_entry(id: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::storage::vocabulary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
     sync_whisper_prompt(&state);
     Ok(())

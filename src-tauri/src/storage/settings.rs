@@ -24,14 +24,8 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
 
     let defaults = AppSettings::default();
 
-    let theme = map
-        .get("theme")
-        .cloned()
-        .unwrap_or(defaults.theme);
-    let language = map
-        .get("language")
-        .cloned()
-        .unwrap_or(defaults.language);
+    let theme = map.get("theme").cloned().unwrap_or(defaults.theme);
+    let language = map.get("language").cloned().unwrap_or(defaults.language);
     let auto_start = map
         .get("auto_start")
         .map(|v| v == "true")
@@ -61,9 +55,13 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.gpu_acceleration);
 
-    let active_context_mode_id = map
-        .get("active_context_mode_id")
-        .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) });
+    let active_context_mode_id = map.get("active_context_mode_id").and_then(|v| {
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.clone())
+        }
+    });
 
     let live_preview = map
         .get("live_preview")
@@ -201,7 +199,13 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     // that live for the duration of the loop.  `params!` borrows its inputs.
     const BOOL_TRUE: &str = "true";
     const BOOL_FALSE: &str = "false";
-    fn b(v: bool) -> &'static str { if v { BOOL_TRUE } else { BOOL_FALSE } }
+    fn b(v: bool) -> &'static str {
+        if v {
+            BOOL_TRUE
+        } else {
+            BOOL_FALSE
+        }
+    }
 
     let hotkey_json = serde_json::to_string(&settings.hotkey).unwrap_or_default();
     let sample_rate_str = settings.sample_rate.to_string();
@@ -216,7 +220,10 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("minimize_to_tray", b(settings.minimize_to_tray)),
         ("output_mode", settings.output_mode.as_str()),
         ("sample_rate", sample_rate_str.as_str()),
-        ("active_model_id", settings.active_model_id.as_deref().unwrap_or("")),
+        (
+            "active_model_id",
+            settings.active_model_id.as_deref().unwrap_or(""),
+        ),
         ("hotkey", hotkey_json.as_str()),
         ("gpu_acceleration", b(settings.gpu_acceleration)),
         ("live_preview", b(settings.live_preview)),
@@ -230,12 +237,21 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("audio_ducking", b(settings.audio_ducking)),
         ("ducking_amount", ducking_amount_str.as_str()),
         ("structured_mode", b(settings.structured_mode)),
-        ("active_llm_model_id", settings.active_llm_model_id.as_deref().unwrap_or("")),
+        (
+            "active_llm_model_id",
+            settings.active_llm_model_id.as_deref().unwrap_or(""),
+        ),
         ("llm_timeout_secs", llm_timeout_str.as_str()),
         ("structured_min_chars", structured_min_chars_str.as_str()),
-        ("structured_voice_command", b(settings.structured_voice_command)),
+        (
+            "structured_voice_command",
+            b(settings.structured_voice_command),
+        ),
         ("use_screen_context", b(settings.use_screen_context)),
-        ("structured_use_screen_context", b(settings.structured_use_screen_context)),
+        (
+            "structured_use_screen_context",
+            b(settings.structured_use_screen_context),
+        ),
     ];
 
     let conn = db.conn()?;

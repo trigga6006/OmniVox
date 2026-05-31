@@ -57,17 +57,101 @@ impl Category {
 /// Kept small and inline — this isn't a replacement for stemming, just a
 /// guard against ranking ordinary words ahead of real technical tokens.
 const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "you", "your", "this", "that", "from", "have",
-    "but", "not", "are", "was", "were", "will", "would", "should", "could",
-    "can", "may", "might", "must", "shall", "has", "had", "been", "being",
-    "into", "onto", "than", "then", "when", "where", "what", "which", "who",
-    "why", "how", "they", "them", "their", "there", "here", "all", "any",
-    "some", "one", "two", "three", "four", "five", "now", "today", "yesterday",
-    "tomorrow", "about", "above", "after", "before", "below", "between",
-    "during", "over", "under", "again", "very", "more", "most", "much",
-    "other", "another", "each", "every", "such", "same", "just", "still",
-    "only", "even", "also", "back", "down", "out", "off", "yes", "good",
-    "great", "really", "okay", "thanks", "please", "sorry", "hello", "hi",
+    "the",
+    "and",
+    "for",
+    "with",
+    "you",
+    "your",
+    "this",
+    "that",
+    "from",
+    "have",
+    "but",
+    "not",
+    "are",
+    "was",
+    "were",
+    "will",
+    "would",
+    "should",
+    "could",
+    "can",
+    "may",
+    "might",
+    "must",
+    "shall",
+    "has",
+    "had",
+    "been",
+    "being",
+    "into",
+    "onto",
+    "than",
+    "then",
+    "when",
+    "where",
+    "what",
+    "which",
+    "who",
+    "why",
+    "how",
+    "they",
+    "them",
+    "their",
+    "there",
+    "here",
+    "all",
+    "any",
+    "some",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "now",
+    "today",
+    "yesterday",
+    "tomorrow",
+    "about",
+    "above",
+    "after",
+    "before",
+    "below",
+    "between",
+    "during",
+    "over",
+    "under",
+    "again",
+    "very",
+    "more",
+    "most",
+    "much",
+    "other",
+    "another",
+    "each",
+    "every",
+    "such",
+    "same",
+    "just",
+    "still",
+    "only",
+    "even",
+    "also",
+    "back",
+    "down",
+    "out",
+    "off",
+    "yes",
+    "good",
+    "great",
+    "really",
+    "okay",
+    "thanks",
+    "please",
+    "sorry",
+    "hello",
+    "hi",
 ];
 
 fn is_stopword(s: &str) -> bool {
@@ -77,21 +161,64 @@ fn is_stopword(s: &str) -> bool {
 
 /// File extensions we consider "interesting" enough to bias Whisper toward.
 const INTERESTING_EXTS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "kt", "swift",
-    "c", "cpp", "cc", "h", "hpp", "cs", "php", "lua", "sh", "bash", "zsh",
-    "ps1", "bat", "md", "mdx", "txt", "json", "toml", "yaml", "yml", "xml",
-    "html", "css", "scss", "sass", "less", "sql", "graphql", "gql",
-    "lock", "cfg", "ini", "env", "gitignore", "dockerfile", "makefile",
+    "rs",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "py",
+    "go",
+    "rb",
+    "java",
+    "kt",
+    "swift",
+    "c",
+    "cpp",
+    "cc",
+    "h",
+    "hpp",
+    "cs",
+    "php",
+    "lua",
+    "sh",
+    "bash",
+    "zsh",
+    "ps1",
+    "bat",
+    "md",
+    "mdx",
+    "txt",
+    "json",
+    "toml",
+    "yaml",
+    "yml",
+    "xml",
+    "html",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "sql",
+    "graphql",
+    "gql",
+    "lock",
+    "cfg",
+    "ini",
+    "env",
+    "gitignore",
+    "dockerfile",
+    "makefile",
 ];
 
 fn token_chars_ok(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| {
-        c.is_ascii_alphanumeric()
-            || matches!(
-                c,
-                '.' | '_' | '-' | '/' | '\\' | ':' | '=' | '@' | '+' | '#' | '~'
-            )
-    })
+    !s.is_empty()
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '.' | '_' | '-' | '/' | '\\' | ':' | '=' | '@' | '+' | '#' | '~'
+                )
+        })
 }
 
 /// Classify a single token into a category, or return None if it's not
@@ -116,7 +243,9 @@ fn classify(token: &str) -> Option<Category> {
     if let Some(rest) = token.strip_prefix("--").or_else(|| token.strip_prefix('-')) {
         if rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
             && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Some(Category::CliFlag);
         }
@@ -180,7 +309,10 @@ fn classify(token: &str) -> Option<Category> {
 
     // Tokens with @ # : = + ~ that aren't otherwise classified — useful as
     // verbatim hints (e.g. "@anthropic-ai/sdk", "user@host", "key=value").
-    if token.chars().any(|c| matches!(c, '@' | '#' | ':' | '=' | '+' | '~')) {
+    if token
+        .chars()
+        .any(|c| matches!(c, '@' | '#' | ':' | '=' | '+' | '~'))
+    {
         return Some(Category::Misc);
     }
 
@@ -301,9 +433,7 @@ pub(crate) fn is_useful_for_whisper(token: &str) -> bool {
         return false;
     }
     // Pure hex SHAs / hashes (any length).  We also drop dashed UUIDs.
-    if token
-        .chars()
-        .all(|c| c.is_ascii_hexdigit() || c == '-')
+    if token.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && token.chars().any(|c| c.is_ascii_digit())
     {
         return false;

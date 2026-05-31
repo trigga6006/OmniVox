@@ -2,12 +2,9 @@ use omnivoice_lib::llm::engine::{LlamaEngine, LlmEngine};
 use omnivoice_lib::llm::types::LlmConfig;
 
 fn main() {
-    let model_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            r"C:\Users\fowle\AppData\Roaming\omnivox\llm_models\Qwen3-1.7B-Q4_K_M.gguf"
-                .to_string()
-        });
+    let model_path = std::env::args().nth(1).unwrap_or_else(|| {
+        r"C:\Users\fowle\AppData\Roaming\omnivox\llm_models\Qwen3-1.7B-Q4_K_M.gguf".to_string()
+    });
 
     let input = std::env::args().nth(2).unwrap_or_else(|| {
         "Hi, Codex. I want you to go through this entire codebase. Tighten up the dictation app, make sure the structured mode plumbing is solid, and keep the UI and model setup aligned with the current Qwen path."
@@ -31,7 +28,10 @@ fn main() {
     match engine.extract_raw(&input) {
         Ok(raw) => {
             println!("RAW_JSON:\n{}\n", raw.raw_json);
-            println!("RAW_META: duration_ms={}, model_name={}", raw.duration_ms, raw.model_name);
+            println!(
+                "RAW_META: duration_ms={}, model_name={}",
+                raw.duration_ms, raw.model_name
+            );
         }
         Err(e) => {
             eprintln!("extract_raw failed: {e}");

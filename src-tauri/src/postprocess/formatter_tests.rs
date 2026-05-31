@@ -121,6 +121,24 @@ fn count_word_header() {
 }
 
 #[test]
+fn counted_things_header_formats_exact_items() {
+    let input = "I want to do these three things before I stop working on the release tonight. \
+                 Update the settings panel so the copy is easier to scan for regular users. \
+                 Fix the dictation formatter so it only creates lists from explicit counted requests. \
+                 Run the regression tests and make sure plain dictation stays as prose.";
+    let result = format_lists(input);
+    assert!(result.contains("I want to do these three things"));
+    assert!(result
+        .contains("- Update the settings panel so the copy is easier to scan for regular users."));
+    assert!(result.contains(
+        "- Fix the dictation formatter so it only creates lists from explicit counted requests."
+    ));
+    assert!(
+        result.contains("- Run the regression tests and make sure plain dictation stays as prose.")
+    );
+}
+
+#[test]
 fn fewer_items_than_stated_count() {
     // Short text under MIN_WORDS_FOR_LIST — should pass through.
     let input = "I want to test these three things. \
@@ -130,6 +148,21 @@ fn fewer_items_than_stated_count() {
     assert!(
         !result.contains("- "),
         "Short text should not be bulleted: {result}"
+    );
+}
+
+#[test]
+fn implicit_task_header_stays_prose_without_count() {
+    let input = "Here are the tasks I want to complete before the next project release. \
+                 I want to do a full Unicode compatibility test on the frontend application. \
+                 I want to do a transformer performance test on the backend service layer. \
+                 I want to check the output format for correctness and readability. \
+                 I want to verify the error handling works for all edge cases. \
+                 I want to run the full integration suite against the staging server.";
+    let result = format_lists(input);
+    assert!(
+        !result.contains("- "),
+        "Implicit task headers should stay prose without an explicit count: {result}"
     );
 }
 
@@ -145,11 +178,10 @@ fn implicit_header_no_count() {
                  Run the full regression suite against the production environment. \
                  Verify the deployment pipeline works end to end correctly.";
     let result = format_lists(input);
-    assert!(result.contains("- Do a Unicode compatibility test on the frontend interfaces."));
-    assert!(result.contains("- Do a transformer performance test on all the API endpoints."));
-    assert!(result.contains("- Check the output format for correctness and accuracy overall."));
-    assert!(result.contains("- Run the full regression suite against the production environment."));
-    assert!(result.contains("- Verify the deployment pipeline works end to end correctly."));
+    assert!(
+        !result.contains("- "),
+        "Implicit headers should stay prose unless the user gives a count: {result}"
+    );
 }
 
 #[test]
@@ -178,11 +210,10 @@ fn signal_phrase_the_following() {
                  Notify the team about the upcoming downtime window. \
                  Run a final smoke test against the live environment.";
     let result = format_lists(input);
-    assert!(result.contains("- Update the database schema with the new migration files."));
-    assert!(result.contains("- Fix the integration tests that are currently broken."));
-    assert!(result.contains("- Deploy the staging environment to production servers."));
-    assert!(result.contains("- Notify the team about the upcoming downtime window."));
-    assert!(result.contains("- Run a final smoke test against the live environment."));
+    assert!(
+        !result.contains("- "),
+        "Signal phrases without a count should stay prose: {result}"
+    );
 }
 
 #[test]
@@ -199,14 +230,8 @@ fn implicit_list_terminates_at_conclusion() {
                  The formatting ability is fully preserved and still handles all the smart list detection properly including the termination heuristic and the implicit list detection logic.";
     let result = format_lists(input);
     assert!(
-        result.contains("- Strip all bullet markers from the inputs."),
-        "Items should be bulleted: {result}"
-    );
-    assert!(result.contains("- Remove heading markers from content blocks."));
-    // The long conclusion should NOT be bulleted.
-    assert!(
-        !result.contains("- The formatting ability"),
-        "Conclusion should NOT be bulleted: {result}"
+        !result.contains("- "),
+        "Implicit lists should stay prose without an explicit count: {result}"
     );
     assert!(result.contains("The formatting ability is fully preserved"));
 }
@@ -225,18 +250,10 @@ fn ordinal_sentences_stripped() {
     let result = format_lists(input);
     // Ordinals should be stripped — no redundant "- First,"
     assert!(
-        result.contains("- Set up the database"),
-        "Ordinal should be stripped: {result}"
+        !result.contains("- "),
+        "Ordinal-only runs should stay prose unless paired with an explicit count: {result}"
     );
-    assert!(result.contains("- Write the API endpoints"));
-    assert!(result.contains("- Build the frontend components"));
-    assert!(result.contains("- Deploy to the staging environment"));
-    assert!(result.contains("- Notify the team and update the documentation"));
     assert!(result.starts_with("Here is the plan"));
-    assert!(
-        !result.contains("- First,"),
-        "Ordinal should be removed: {result}"
-    );
 }
 
 // ── Repeated starters (Pattern 4) ─────────────────────────────
@@ -264,11 +281,10 @@ fn repeated_sentence_starters_after_header() {
                  I want to verify the error handling works for all edge cases. \
                  I want to run the full integration suite against the staging server.";
     let result = format_lists(input);
-    assert!(result.contains("- I want to do a full Unicode"));
-    assert!(result.contains("- I want to do a transformer"));
-    assert!(result.contains("- I want to check the output"));
-    assert!(result.contains("- I want to verify the error"));
-    assert!(result.contains("- I want to run the full integration"));
+    assert!(
+        !result.contains("- "),
+        "Repeated starters after an implicit header should stay prose: {result}"
+    );
 }
 
 #[test]

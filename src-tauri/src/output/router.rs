@@ -70,7 +70,11 @@ impl OutputRouter {
     /// In **Clipboard** mode, segments are collapsed to a string and copied.
     /// In **Both** mode, segments are pasted/executed and the concatenated
     /// dictation is left on the clipboard.
-    pub fn send_segments(&self, segments: &[OutputSegment], config: &OutputConfig) -> AppResult<()> {
+    pub fn send_segments(
+        &self,
+        segments: &[OutputSegment],
+        config: &OutputConfig,
+    ) -> AppResult<()> {
         if segments.is_empty() {
             return Ok(());
         }

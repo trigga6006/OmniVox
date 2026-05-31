@@ -158,14 +158,15 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
     // false positives (since "send" is a common English word).
     // Skipped entirely when `detect_send` is false.
     // Check + strip in two phases to satisfy the borrow checker.
-    let is_send_at_end = detect_send && matches!(segments.last(), Some(OutputSegment::Text(t)) if {
-        let last_word = t.trim_end()
-            .rsplit_once(|c: char| c.is_whitespace())
-            .map_or(t.trim_end(), |(_, w)| w);
-        // Strip trailing punctuation Whisper may add ("send." → "send")
-        let core = last_word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
-        core.eq_ignore_ascii_case("send")
-    });
+    let is_send_at_end = detect_send
+        && matches!(segments.last(), Some(OutputSegment::Text(t)) if {
+            let last_word = t.trim_end()
+                .rsplit_once(|c: char| c.is_whitespace())
+                .map_or(t.trim_end(), |(_, w)| w);
+            // Strip trailing punctuation Whisper may add ("send." → "send")
+            let core = last_word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+            core.eq_ignore_ascii_case("send")
+        });
 
     if is_send_at_end {
         if let Some(OutputSegment::Text(t)) = segments.last_mut() {
@@ -219,14 +220,20 @@ mod tests {
     #[test]
     fn new_paragraph_alone() {
         let result = parse_commands("new paragraph");
-        assert_eq!(result, vec![OutputSegment::Command(VoiceCommand::NewParagraph)]);
+        assert_eq!(
+            result,
+            vec![OutputSegment::Command(VoiceCommand::NewParagraph)]
+        );
     }
 
     #[test]
     fn delete_last_word_alone() {
         // No preceding text → emits command.
         let result = parse_commands("delete last word");
-        assert_eq!(result, vec![OutputSegment::Command(VoiceCommand::DeleteLastWord)]);
+        assert_eq!(
+            result,
+            vec![OutputSegment::Command(VoiceCommand::DeleteLastWord)]
+        );
     }
 
     // ── Mid-text commands ─────────────────────────────────────────
@@ -234,21 +241,27 @@ mod tests {
     #[test]
     fn new_line_mid_text() {
         let result = parse_commands("hello new line world");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Text("world".to_string()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("world".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn new_paragraph_mid_text() {
         let result = parse_commands("hello new paragraph world");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::NewParagraph),
-            OutputSegment::Text("world".to_string()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::NewParagraph),
+                OutputSegment::Text("world".to_string()),
+            ]
+        );
     }
 
     // ── Delete last word optimization ─────────────────────────────
@@ -272,10 +285,13 @@ mod tests {
         // "hello world delete last word more text"
         // → "hello" then "more text"
         let result = parse_commands("hello world delete last word more text");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Text("more text".to_string()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Text("more text".to_string()),
+            ]
+        );
     }
 
     // ── Case insensitivity ────────────────────────────────────────
@@ -283,17 +299,23 @@ mod tests {
     #[test]
     fn case_insensitive_new_line() {
         let result = parse_commands("hello New Line world");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Text("world".to_string()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("world".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn case_insensitive_new_paragraph() {
         let result = parse_commands("NEW PARAGRAPH");
-        assert_eq!(result, vec![OutputSegment::Command(VoiceCommand::NewParagraph)]);
+        assert_eq!(
+            result,
+            vec![OutputSegment::Command(VoiceCommand::NewParagraph)]
+        );
     }
 
     // ── Word boundary enforcement ─────────────────────────────────
@@ -319,22 +341,28 @@ mod tests {
     #[test]
     fn multiple_commands() {
         let result = parse_commands("hello new line world new line goodbye");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Text("world".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Text("goodbye".to_string()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("world".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("goodbye".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn consecutive_commands() {
         let result = parse_commands("new line new paragraph");
-        assert_eq!(result, vec![
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Command(VoiceCommand::NewParagraph),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Command(VoiceCommand::NewParagraph),
+            ]
+        );
     }
 
     // ── Edge cases ────────────────────────────────────────────────
@@ -347,16 +375,24 @@ mod tests {
     #[test]
     fn no_commands() {
         let result = parse_commands("hello world this is a test");
-        assert_eq!(result, vec![OutputSegment::Text("hello world this is a test".to_string())]);
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text(
+                "hello world this is a test".to_string()
+            )]
+        );
     }
 
     #[test]
     fn command_at_end() {
         let result = parse_commands("hello world new line");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello world".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello world".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+            ]
+        );
     }
 
     #[test]
@@ -365,11 +401,14 @@ mod tests {
         // The period is not a word char, so "new line" still matches at boundary.
         // The period becomes trailing text.
         let result = parse_commands("hello new line.");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Text(".".to_string()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text(".".to_string()),
+            ]
+        );
     }
 
     // ── segments_to_string ────────────────────────────────────────
@@ -379,10 +418,13 @@ mod tests {
     #[test]
     fn send_at_end() {
         let result = parse_commands("hello world send");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello world".to_string()),
-            OutputSegment::Command(VoiceCommand::Send),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello world".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
     }
 
     #[test]
@@ -394,45 +436,60 @@ mod tests {
     #[test]
     fn send_case_insensitive() {
         let result = parse_commands("hello Send");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::Send),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
     }
 
     #[test]
     fn send_with_trailing_period() {
         // Whisper may add punctuation — "send." should still trigger
         let result = parse_commands("hello send.");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::Send),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
     }
 
     #[test]
     fn send_mid_text_does_not_trigger() {
         // "send" in the middle of a sentence should NOT trigger
         let result = parse_commands("please send the email");
-        assert_eq!(result, vec![OutputSegment::Text("please send the email".to_string())]);
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("please send the email".to_string())]
+        );
     }
 
     #[test]
     fn send_as_part_of_word_does_not_trigger() {
         // "sending" should NOT trigger
         let result = parse_commands("I am sending");
-        assert_eq!(result, vec![OutputSegment::Text("I am sending".to_string())]);
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("I am sending".to_string())]
+        );
     }
 
     #[test]
     fn send_after_command() {
         let result = parse_commands("hello new line world send");
-        assert_eq!(result, vec![
-            OutputSegment::Text("hello".to_string()),
-            OutputSegment::Command(VoiceCommand::NewLine),
-            OutputSegment::Text("world".to_string()),
-            OutputSegment::Command(VoiceCommand::Send),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("world".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
     }
 
     // ── segments_to_string ────────────────────────────────────────

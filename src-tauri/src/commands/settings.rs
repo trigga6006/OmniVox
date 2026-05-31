@@ -1,9 +1,9 @@
-use tauri::{Emitter, Manager, State};
 use crate::hotkey::HotkeyConfig;
 use crate::output::types::OutputMode;
 use crate::postprocess::types::WritingStyle;
 use crate::state::AppState;
 use crate::storage::types::AppSettings;
+use tauri::{Emitter, Manager, State};
 
 const TASKBAR_H: f64 = 48.0;
 const MARGIN: f64 = 12.0;
@@ -76,11 +76,7 @@ fn cursor_monitor(_app: &tauri::AppHandle) -> Option<tauri::Monitor> {
 /// size, so the pill appeared to jump toward the top-left before
 /// settling.  A single `SetWindowPos` skips that intermediate state.
 #[tauri::command]
-pub async fn resize_overlay(
-    app: tauri::AppHandle,
-    width: f64,
-    height: f64,
-) -> Result<(), String> {
+pub async fn resize_overlay(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     let window = app
         .get_webview_window("overlay")
         .ok_or("overlay window not found")?;
@@ -150,9 +146,7 @@ pub async fn resize_overlay(
 }
 
 #[tauri::command]
-pub async fn get_settings(
-    state: State<'_, AppState>,
-) -> Result<AppSettings, String> {
+pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     crate::storage::settings::get_settings(&state.db).map_err(|e| e.to_string())
 }
 
@@ -211,7 +205,8 @@ pub async fn update_settings(
                 .unwrap_or(false);
             if !runner_loaded {
                 let state_inner = state.inner();
-                if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, state_inner) {
+                if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, state_inner)
+                {
                     eprintln!("Eager LLM load on toggle failed: {e}");
                 }
             }
@@ -289,8 +284,8 @@ pub async fn recover_overlay(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // 1. Force ghost mode off so the pill isn't invisible after we show it.
-    let mut settings = crate::storage::settings::get_settings(&state.db)
-        .map_err(|e| e.to_string())?;
+    let mut settings =
+        crate::storage::settings::get_settings(&state.db).map_err(|e| e.to_string())?;
     if settings.ghost_mode {
         settings.ghost_mode = false;
         crate::storage::settings::update_settings(&state.db, &settings)
@@ -378,20 +373,16 @@ pub async fn recover_overlay(
 
 /// Persist a new hotkey config and activate it immediately.
 #[tauri::command]
-pub async fn update_hotkey(
-    config: HotkeyConfig,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn update_hotkey(config: HotkeyConfig, state: State<'_, AppState>) -> Result<(), String> {
     if config.keys.is_empty() || config.keys.len() > 2 {
         return Err("Hotkey must be 1 or 2 keys".into());
     }
 
     // Persist to SQLite
-    let mut settings = crate::storage::settings::get_settings(&state.db)
-        .map_err(|e| e.to_string())?;
+    let mut settings =
+        crate::storage::settings::get_settings(&state.db).map_err(|e| e.to_string())?;
     settings.hotkey = Some(config.clone());
-    crate::storage::settings::update_settings(&state.db, &settings)
-        .map_err(|e| e.to_string())?;
+    crate::storage::settings::update_settings(&state.db, &settings).map_err(|e| e.to_string())?;
 
     // Live-update the hook
     let key1 = config.keys[0];

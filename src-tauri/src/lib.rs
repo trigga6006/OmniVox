@@ -1,5 +1,5 @@
-pub mod audio;
 pub mod asr;
+pub mod audio;
 pub mod commands;
 pub mod error;
 pub mod focus;
@@ -17,7 +17,8 @@ pub mod storage;
 use tauri::Manager;
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox", true, None::<&str>)?;
+    let show_item =
+        tauri::menu::MenuItem::with_id(app, "show", "Show OmniVox", true, None::<&str>)?;
     // Recovery escape hatch when the floating pill goes missing — ghost
     // mode stuck on, parked on a disconnected monitor, z-order stolen by
     // a fullscreen app, etc.  Always present in the tray so the user has
@@ -43,9 +44,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<state::AppState>();
-                    if let Err(e) =
-                        commands::recover_overlay(app_handle.clone(), state).await
-                    {
+                    if let Err(e) = commands::recover_overlay(app_handle.clone(), state).await {
                         eprintln!("Reset Pill failed: {e}");
                     }
                 });
@@ -84,20 +83,24 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         (400.0, 800.0) // fallback
     };
 
-    let _overlay = WebviewWindowBuilder::new(app, "overlay", tauri::WebviewUrl::App("/overlay.html".into()))
-        .title("")
-        .inner_size(pill_width, pill_height)
-        .min_inner_size(1.0, 1.0)
-        .position(x, y)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(true)
-        .focused(false)
-        .visible(true)
-        .build()?;
+    let _overlay = WebviewWindowBuilder::new(
+        app,
+        "overlay",
+        tauri::WebviewUrl::App("/overlay.html".into()),
+    )
+    .title("")
+    .inner_size(pill_width, pill_height)
+    .min_inner_size(1.0, 1.0)
+    .position(x, y)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(true)
+    .focused(false)
+    .visible(true)
+    .build()?;
 
     Ok(())
 }
@@ -120,9 +123,10 @@ fn copy_bundled_resources(app: &tauri::AppHandle, state: &state::AppState) {
         return;
     }
 
-    let resource_path = app
-        .path()
-        .resolve(format!("resources/{filename}"), tauri::path::BaseDirectory::Resource);
+    let resource_path = app.path().resolve(
+        format!("resources/{filename}"),
+        tauri::path::BaseDirectory::Resource,
+    );
 
     if let Ok(source) = resource_path {
         if source.exists() {
@@ -282,10 +286,7 @@ fn apply_persisted_settings(state: &state::AppState) {
 unsafe fn suppress_crt_asserts() {
     extern "system" {
         fn GetModuleHandleA(name: *const u8) -> *mut std::ffi::c_void;
-        fn GetProcAddress(
-            module: *mut std::ffi::c_void,
-            name: *const u8,
-        ) -> *mut std::ffi::c_void;
+        fn GetProcAddress(module: *mut std::ffi::c_void, name: *const u8) -> *mut std::ffi::c_void;
     }
 
     // Only act if the debug UCRT is loaded (debug builds only).
@@ -296,8 +297,7 @@ unsafe fn suppress_crt_asserts() {
 
     // Hook _CrtSetReportHook2 to intercept assertion reports before the dialog.
     type ReportHookFn = unsafe extern "C" fn(i32, *const i8, *mut i32) -> i32;
-    type SetReportHook2 =
-        unsafe extern "C" fn(i32, Option<ReportHookFn>) -> i32;
+    type SetReportHook2 = unsafe extern "C" fn(i32, Option<ReportHookFn>) -> i32;
     type SetReportMode = unsafe extern "C" fn(i32, i32) -> i32;
 
     // Our hook: suppress all reports (return 1 = handled, don't show dialog).
@@ -330,7 +330,9 @@ unsafe fn suppress_crt_asserts() {
 /// Remove `.part` files left behind by interrupted model downloads.
 /// Only deletes files older than 1 hour to avoid racing with an active download.
 fn cleanup_part_files(models_dir: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(models_dir) else { return };
+    let Ok(entries) = std::fs::read_dir(models_dir) else {
+        return;
+    };
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
 
     for entry in entries.flatten() {
@@ -379,15 +381,16 @@ pub fn run() {
 
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Another instance was launched — focus the existing main window.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }));
+        // Another instance was launched — focus the existing main window.
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
 
-    builder.manage(state::AppState::new())
+    builder
+        .manage(state::AppState::new())
         .setup(|app| {
             setup_tray(app)?;
 

@@ -20,14 +20,13 @@ use std::time::{Duration, Instant};
 use windows::core::{IUnknown, Interface, BSTR};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    IUIAutomationTreeWalker, TreeScope_Subtree, UIA_NamePropertyId,
-    UIA_TextPatternId, UIA_ValueValuePropertyId,
+    IUIAutomationTreeWalker, TreeScope_Subtree, UIA_NamePropertyId, UIA_TextPatternId,
+    UIA_ValueValuePropertyId,
 };
 
 const MAX_NODES: usize = 500;
@@ -44,9 +43,7 @@ pub fn capture_text(hwnd: isize) -> Option<String> {
     let join = std::thread::Builder::new()
         .name("omnivox-uia".into())
         .stack_size(2 * 1024 * 1024)
-        .spawn(move || -> Option<String> {
-            unsafe { capture_inner(hwnd, &abort_for_thread) }
-        })
+        .spawn(move || -> Option<String> { unsafe { capture_inner(hwnd, &abort_for_thread) } })
         .ok()?;
 
     let deadline = Instant::now() + Duration::from_millis(TIMEOUT_MS);

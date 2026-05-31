@@ -59,7 +59,9 @@ impl AppError {
                 // Case-insensitive substring check without allocating a new String.
                 let bytes = msg.as_bytes();
                 let contains = |needle: &str| -> bool {
-                    bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+                    bytes
+                        .windows(needle.len())
+                        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
                 };
                 if contains("permission")
                     || contains("denied")
@@ -82,11 +84,16 @@ impl AppError {
             AppError::Llm(msg) => {
                 let bytes = msg.as_bytes();
                 let contains = |needle: &str| -> bool {
-                    bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+                    bytes
+                        .windows(needle.len())
+                        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
                 };
                 if contains("timed out") || contains("timeout") {
                     ErrorCode::LlmTimeout
-                } else if contains("not found") || contains("no model") || contains("worker has stopped") {
+                } else if contains("not found")
+                    || contains("no model")
+                    || contains("worker has stopped")
+                {
                     ErrorCode::LlmUnavailable
                 } else {
                     ErrorCode::LlmInferenceFailed

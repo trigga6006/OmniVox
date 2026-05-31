@@ -65,7 +65,11 @@ impl LlmModelManager {
     pub fn model_path(&self, model_id: &str) -> Option<PathBuf> {
         let info = self.get_model(model_id)?;
         let path = self.llm_models_dir.join(info.huggingface_file);
-        if path.exists() { Some(path) } else { None }
+        if path.exists() {
+            Some(path)
+        } else {
+            None
+        }
     }
 
     pub fn delete(&self, model_id: &str) -> AppResult<()> {

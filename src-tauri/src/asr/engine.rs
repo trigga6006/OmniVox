@@ -230,13 +230,8 @@ impl AsrEngine for WhisperEngine {
         // on dictionary post-processing.
         // Check the hot-swappable override first (updated when vocab/dictionary
         // entries change), falling back to the config set at model load time.
-        let override_prompt = self
-            .prompt_override
-            .read()
-            .ok()
-            .and_then(|g| g.clone());
-        let effective_prompt = override_prompt
-            .or_else(|| self.config.initial_prompt.clone());
+        let override_prompt = self.prompt_override.read().ok().and_then(|g| g.clone());
+        let effective_prompt = override_prompt.or_else(|| self.config.initial_prompt.clone());
         if let Some(ref prompt) = effective_prompt {
             params.set_initial_prompt(prompt);
         }
@@ -258,7 +253,8 @@ impl AsrEngine for WhisperEngine {
                 None => continue,
             };
 
-            let text = seg.to_str_lossy()
+            let text = seg
+                .to_str_lossy()
                 .unwrap_or_else(|_| std::borrow::Cow::Borrowed(""))
                 .into_owned();
 
