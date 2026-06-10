@@ -145,6 +145,9 @@ pub async fn llm_test_extract(
 /// has the same huge debug-build stack frames that crash on Windows
 /// without the wider stack.
 pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), String> {
+    // Normalize IDs persisted by older versions (v0.2.9's `…-q4` entries) so
+    // the canonical ID is what gets activated and written back to settings.
+    let model_id = crate::llm_models::manager::LlmModelManager::canonical_id(model_id);
     let model_path = state
         .llm_model_manager
         .model_path(model_id)

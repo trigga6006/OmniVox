@@ -11,6 +11,7 @@
 ### Bug Fixes
 
 - **Long dictations no longer silently break Structured Mode.** The LLM context window (2048 tokens) was too small to hold the system prompt plus a long dictation plus the model's output — extractions on longer dictations could fail mid-generation and degrade to plain text. The context is now sized (3072) to fit the system prompt, the full 1,600-character input cap, and a complete JSON response.
+- **Structured Mode works again for pre-v0.2.10 installs.** The v0.2.10 catalog rename to the official Q8_0 files orphaned previously downloaded Q4_K_M models *and* the saved model selection — every extraction since then failed with "model is not downloaded" and silently fell back to plain dictation. Old model IDs now map to the current catalog entries, and previously downloaded legacy files are recognized as installed (labeled with their actual quantization) so no re-download is needed. Deleting a model now also removes any legacy file.
 
 ### Internal
 
