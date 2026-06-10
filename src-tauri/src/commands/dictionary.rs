@@ -9,6 +9,7 @@ pub(crate) fn sync_processor(state: &AppState) {
 
     let mut entries = crate::storage::dictionary::list_entries(&state.db).unwrap_or_default();
     let mut snippets = crate::storage::snippets::list_snippets(&state.db).unwrap_or_default();
+    let mut vocab = crate::storage::vocabulary::list_entries(&state.db).unwrap_or_default();
 
     if let Some(ref mode_id) = active_mode_id {
         entries.extend(
@@ -19,11 +20,24 @@ pub(crate) fn sync_processor(state: &AppState) {
             crate::storage::snippets::list_snippets_for_mode(&state.db, mode_id)
                 .unwrap_or_default(),
         );
+        vocab.extend(
+            crate::storage::vocabulary::list_entries_for_mode(&state.db, mode_id)
+                .unwrap_or_default(),
+        );
     }
+
+    // Vocabulary feeds the phonetic auto-correction pass — the deterministic
+    // backstop for words the Whisper prompt bias alone doesn't fix.
+    let vocab_words: Vec<String> = vocab
+        .into_iter()
+        .filter(|e| e.is_enabled && !e.word.trim().is_empty())
+        .map(|e| e.word)
+        .collect();
 
     if let Ok(mut processor) = state.processor.lock() {
         processor.set_dictionary(entries);
         processor.set_snippets(snippets);
+        processor.set_vocabulary(vocab_words);
     }
 }
 
@@ -230,6 +244,7 @@ pub async fn add_vocabulary_entry(
 ) -> Result<VocabularyEntry, String> {
     let entry =
         crate::storage::vocabulary::add_entry(&state.db, &word, None).map_err(|e| e.to_string())?;
+    sync_processor(&state);
     sync_whisper_prompt(&state);
     Ok(entry)
 }
@@ -241,6 +256,7 @@ pub async fn update_vocabulary_entry(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     crate::storage::vocabulary::update_entry(&state.db, &id, &word).map_err(|e| e.to_string())?;
+    sync_processor(&state);
     sync_whisper_prompt(&state);
     Ok(())
 }
@@ -248,6 +264,7 @@ pub async fn update_vocabulary_entry(
 #[tauri::command]
 pub async fn delete_vocabulary_entry(id: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::storage::vocabulary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
+    sync_processor(&state);
     sync_whisper_prompt(&state);
     Ok(())
 }
@@ -278,6 +295,7 @@ pub async fn add_mode_vocabulary_entry(
 ) -> Result<VocabularyEntry, String> {
     let entry = crate::storage::vocabulary::add_entry(&state.db, &word, Some(&mode_id))
         .map_err(|e| e.to_string())?;
+    sync_processor(&state);
     sync_whisper_prompt(&state);
     Ok(entry)
 }
@@ -288,6 +306,7 @@ pub async fn delete_mode_vocabulary_entry(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     crate::storage::vocabulary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
+    sync_processor(&state);
     sync_whisper_prompt(&state);
     Ok(())
 }

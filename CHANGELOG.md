@@ -2,6 +2,10 @@
 
 ## v0.3.1
 
+### Features
+
+- **Vocabulary words now actually correct mis-transcriptions.** Adding a word to your vocabulary previously only *biased* Whisper toward it — probabilistic, and "Claude" still regularly came out as "cloud" or "clod". A new phonetic correction pass now runs after every transcription: any word (or word pair) that sounds like one of your vocabulary entries — same consonant skeleton, small edit distance, same first letter — is replaced with the entry exactly as you wrote it, casing included. Split compounds fuse too ("omni cue" → "OmniCue"). Guard rails keep it from misfiring: short entries (under 5 letters) don't participate, sentence boundaries are respected, and near-misses that are spelled too differently ("clot") are left alone. Works with both global and mode-scoped vocabulary, takes effect immediately when you edit the list.
+
 ### Improvements
 
 - **Structured Mode is much faster.** The local LLM now keeps its system prompt (~1,900 tokens) cached in the KV cache across dictations instead of re-processing it from scratch on every extraction. Logs from real use showed extractions taking 2–7 seconds (and sometimes hitting the 8s timeout) — the bulk of that was redundant prompt prefill. After the first warm-up (done in the background right when the model loads), each extraction only processes your actual words. The cache is self-healing on errors and is released automatically after 5 minutes of inactivity so it doesn't hold memory while idle.
