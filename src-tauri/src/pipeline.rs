@@ -309,7 +309,11 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                         }
                         let state = preview_state.as_mut().expect("preview_state set above");
 
-                        match worker_engine.transcribe_preview_with_state(state, &audio) {
+                        match worker_engine.transcribe_preview_with_state(
+                            state,
+                            &audio,
+                            Some(worker_is_rec.clone()),
+                        ) {
                             Ok(text) if !text.is_empty() => {
                                 if worker_is_rec.load(Ordering::Relaxed) {
                                     let _ = worker_handle.emit("transcription-preview", &text);
@@ -319,6 +323,12 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
                             }
                             Ok(_) => {}
                             Err(e) => {
+                                // Aborted-on-stop is the expected fast path —
+                                // exit quietly so the final transcription can
+                                // claim the decode buffers immediately.
+                                if !worker_is_rec.load(Ordering::Relaxed) {
+                                    break;
+                                }
                                 eprintln!("Preview inference failed: {e}");
                             }
                         }

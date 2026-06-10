@@ -77,14 +77,70 @@ impl LlmRunner {
             .name("omnivox-llm".into())
             .stack_size(256 * 1024 * 1024)
             .spawn(move || {
+                use std::sync::mpsc::RecvTimeoutError;
+
+                /// Drop the session and release its KV cache after this much
+                /// idle time; it is rebuilt (system prompt re-warmed) on the
+                /// next request.
+                const SESSION_IDLE_SECS: i64 = 5 * 60;
+
                 let engine = engine;
-                while let Ok(req) = rx.recv() {
+                // Persistent extraction session — keeps the system prompt's
+                // KV cached across requests so each extraction only prefills
+                // the user's words.  Warmed here, in the background, right
+                // after model activation.  On failure we fall back to the
+                // stateless per-request path.
+                let mut session = match engine.new_session() {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        crate::llm::diaglog::log(&format!(
+                            "runner: session init failed, stateless fallback: {e}"
+                        ));
+                        None
+                    }
+                };
+
+                loop {
+                    let req = match rx.recv_timeout(Duration::from_secs(60)) {
+                        Ok(req) => req,
+                        Err(RecvTimeoutError::Timeout) => {
+                            // Idle housekeeping: release the session's KV
+                            // cache (hundreds of MB at n_ctx 3072) when no
+                            // dictation has needed it for a while.
+                            if session.is_some() {
+                                let idle_ns =
+                                    now_ns().saturating_sub(worker_last_used.load(Ordering::Relaxed));
+                                if idle_ns > SESSION_IDLE_SECS * 1_000_000_000 {
+                                    session = None;
+                                    crate::llm::diaglog::log(
+                                        "runner: idle — released session KV cache",
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
+
                     let _busy_reset = BusyReset(Arc::clone(&worker_busy));
-                    let result = engine.extract_slots_with_context(
-                        &req.text,
-                        &req.screen_tokens,
-                        req.source_app.as_deref(),
-                    );
+                    // Rebuild the session if it was idle-dropped (or failed
+                    // at init).  The request then pays one full warm-up —
+                    // same cost as the old always-stateless path.
+                    if session.is_none() {
+                        session = engine.new_session().ok();
+                    }
+                    let result = match session.as_mut() {
+                        Some(s) => s.extract_slots_with_context(
+                            &req.text,
+                            &req.screen_tokens,
+                            req.source_app.as_deref(),
+                        ),
+                        None => engine.extract_slots_with_context(
+                            &req.text,
+                            &req.screen_tokens,
+                            req.source_app.as_deref(),
+                        ),
+                    };
                     // Receiver may have been dropped by a timeout — ignore.
                     let _ = req.reply_tx.send(result);
                     worker_last_used.store(now_ns(), Ordering::Relaxed);

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.1
+
+### Improvements
+
+- **Structured Mode is much faster.** The local LLM now keeps its system prompt (~1,900 tokens) cached in the KV cache across dictations instead of re-processing it from scratch on every extraction. Logs from real use showed extractions taking 2–7 seconds (and sometimes hitting the 8s timeout) — the bulk of that was redundant prompt prefill. After the first warm-up (done in the background right when the model loads), each extraction only processes your actual words. The cache is self-healing on errors and is released automatically after 5 minutes of inactivity so it doesn't hold memory while idle.
+- **Cleaner audio into Whisper.** Microphone capture (typically 48 kHz on Windows) was downsampled to 16 kHz with plain linear interpolation, which folds all high-frequency content — hiss, keyboard clatter, sibilant energy above 8 kHz — back into the speech band as aliasing noise. Capture now runs through a proper windowed-sinc anti-aliasing filter before decimation, so Whisper sees the speech spectrum it was trained on. This improves transcription robustness on every recording.
+- **Faster stop-to-text with Live Preview on.** Stopping a recording no longer waits (up to 1.5s) for an in-flight preview transcription to finish — the preview pass is aborted immediately via whisper.cpp's abort callback, so final transcription starts right away.
+
+### Bug Fixes
+
+- **Long dictations no longer silently break Structured Mode.** The LLM context window (2048 tokens) was too small to hold the system prompt plus a long dictation plus the model's output — extractions on longer dictations could fail mid-generation and degrade to plain text. The context is now sized (3072) to fit the system prompt, the full 1,600-character input cap, and a complete JSON response.
+
+### Internal
+
+- Analytics, history search, and history export now run on blocking threads so a large transcription history can't stall the UI/dictation runtime.
+- Context-mode cascade deletes are wrapped in a transaction; per-mode dictionary/snippet/vocabulary lookups are indexed.
+- Removed dead frontend code (`useAudioLevel` hook, `contextModeStore`).
+
 ## v0.3.0
 
 ### Improvements

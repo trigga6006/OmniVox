@@ -114,8 +114,21 @@ impl AudioCapture {
         let is_recording = Arc::clone(&self.is_recording);
         let rms_level = Arc::clone(&self.rms_level);
 
-        // Linear-interpolation resampler state.
-        // resample_ratio < 1 means we are downsampling (e.g. 48 kHz → 16 kHz).
+        // Downsampling (the common case — WASAPI devices default to 48 kHz)
+        // goes through an anti-aliased FIR decimator.  Without the low-pass,
+        // linear decimation folds all >8 kHz content back into the speech
+        // band, audibly degrading Whisper accuracy.
+        let mut downsampler = if device_rate > TARGET_SAMPLE_RATE {
+            Some(crate::audio::resample::StreamDownsampler::new(device_rate))
+        } else {
+            None
+        };
+        // Scratch buffers reused across callbacks — steady-state allocation-free.
+        let mut mono_buf: Vec<f32> = Vec::new();
+        let mut resampled: Vec<f32> = Vec::new();
+
+        // Linear-interpolation state, used only for the rare upsampling path
+        // (device rate below 16 kHz, e.g. old 8 kHz headsets).
         let resample_ratio = TARGET_SAMPLE_RATE as f64 / device_rate as f64;
         let mut resample_pos: f64 = 0.0;
 
@@ -162,9 +175,9 @@ impl AudioCapture {
                     let level = (rms * 35.0).min(1.0);
                     rms_level.store(level.to_bits(), Ordering::Relaxed);
 
-                    // --- Resample to 16 kHz directly into the shared buffer ---
-                    if let Ok(mut buf) = buffer.lock() {
-                        if device_rate == TARGET_SAMPLE_RATE {
+                    // --- Resample to 16 kHz and append to the shared buffer ---
+                    if device_rate == TARGET_SAMPLE_RATE {
+                        if let Ok(mut buf) = buffer.lock() {
                             if ch == 1 {
                                 buf.extend_from_slice(data);
                             } else {
@@ -173,24 +186,44 @@ impl AudioCapture {
                                     buf.push(mono(i));
                                 }
                             }
-                        } else {
-                            let estimated = (n_frames as f64 * resample_ratio) as usize + 1;
-                            buf.reserve(estimated);
-
-                            while resample_pos < n_frames as f64 {
-                                let idx = resample_pos as usize;
-                                let frac = (resample_pos - idx as f64) as f32;
-                                let sample = if idx + 1 < n_frames {
-                                    mono(idx) * (1.0 - frac) + mono(idx + 1) * frac
-                                } else {
-                                    mono(idx)
-                                };
-                                buf.push(sample);
-                                resample_pos += 1.0 / resample_ratio;
-                            }
-                            // Carry fractional position into the next callback
-                            resample_pos -= n_frames as f64;
                         }
+                    } else if let Some(ds) = downsampler.as_mut() {
+                        // Anti-aliased decimation.  Filtering happens outside
+                        // the buffer lock; only the final append holds it.
+                        let mono_slice: &[f32] = if ch == 1 {
+                            data
+                        } else {
+                            mono_buf.clear();
+                            mono_buf.reserve(n_frames);
+                            for i in 0..n_frames {
+                                mono_buf.push(mono(i));
+                            }
+                            &mono_buf
+                        };
+                        resampled.clear();
+                        ds.process(mono_slice, &mut resampled);
+                        if let Ok(mut buf) = buffer.lock() {
+                            buf.extend_from_slice(&resampled);
+                        }
+                    } else if let Ok(mut buf) = buffer.lock() {
+                        // Upsampling (device below 16 kHz) — plain linear
+                        // interpolation; no aliasing risk in this direction.
+                        let estimated = (n_frames as f64 * resample_ratio) as usize + 1;
+                        buf.reserve(estimated);
+
+                        while resample_pos < n_frames as f64 {
+                            let idx = resample_pos as usize;
+                            let frac = (resample_pos - idx as f64) as f32;
+                            let sample = if idx + 1 < n_frames {
+                                mono(idx) * (1.0 - frac) + mono(idx + 1) * frac
+                            } else {
+                                mono(idx)
+                            };
+                            buf.push(sample);
+                            resample_pos += 1.0 / resample_ratio;
+                        }
+                        // Carry fractional position into the next callback
+                        resample_pos -= n_frames as f64;
                     }
                 },
                 |err| eprintln!("Audio stream error: {err}"),

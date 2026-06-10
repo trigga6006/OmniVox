@@ -118,10 +118,16 @@ impl WhisperEngine {
     /// designed to be called repeatedly on the same state (whisper.cpp resets
     /// per-call decode buffers internally), reusing the state across
     /// iterations is both safe and ~10-30× cheaper than recreating it.
+    ///
+    /// When `is_recording` is supplied, inference aborts as soon as the flag
+    /// flips false — so a preview tick that's mid-flight when the user stops
+    /// recording bails out in tens of milliseconds instead of making the
+    /// final transcription wait for it to finish.
     pub fn transcribe_preview_with_state(
         &self,
         state: &mut WhisperState,
         audio: &[f32],
+        is_recording: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> AppResult<String> {
         if audio.is_empty() {
             return Ok(String::new());
@@ -132,6 +138,16 @@ impl WhisperEngine {
         match self.config.language.as_deref() {
             Some("auto") | None => {}
             Some(lang) => params.set_language(Some(lang)),
+        }
+
+        if let Some(flag) = is_recording {
+            // whisper.cpp polls this between encoder/decoder steps; returning
+            // true aborts the pass.  (whisper-rs leaks the boxed closure —
+            // ~32 bytes per preview tick — which is negligible at one tick
+            // every 3 seconds.)
+            params.set_abort_callback_safe(move || {
+                !flag.load(std::sync::atomic::Ordering::Relaxed)
+            });
         }
 
         params.set_translate(false);

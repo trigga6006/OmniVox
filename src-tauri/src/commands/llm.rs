@@ -165,7 +165,9 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         model_path: model_path.to_string_lossy().into_owned(),
         n_threads,
         use_gpu,
-        n_ctx: 2048,
+        // Sized for system prompt (~1,900 tok) + capped input + 384 output.
+        // 2048 overflowed mid-generation on long dictations.
+        n_ctx: 3072,
         max_tokens: 384,
     };
 

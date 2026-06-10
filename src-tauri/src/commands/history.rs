@@ -13,7 +13,13 @@ pub async fn get_dictation_stats(
 pub async fn get_analytics_records(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::storage::types::AnalyticsRecord>, String> {
-    crate::storage::history::get_analytics_records(&state.db).map_err(|e| e.to_string())
+    // Full-table read — run on a blocking thread so a large history can't
+    // stall the async runtime (which also services the dictation pipeline).
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || crate::storage::history::get_analytics_records(&db))
+        .await
+        .map_err(|e| format!("task join: {e}"))?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -25,8 +31,14 @@ pub async fn search_history(
 ) -> Result<Vec<TranscriptionRecord>, String> {
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
-    crate::storage::history::search_history(&state.db, &query, limit, offset)
-        .map_err(|e| e.to_string())
+    // LIKE scan over the whole table — keep it off the async runtime.
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::storage::history::search_history(&db, &query, limit, offset)
+    })
+    .await
+    .map_err(|e| format!("task join: {e}"))?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -47,5 +59,11 @@ pub async fn delete_history_record(id: String, state: State<'_, AppState>) -> Re
 
 #[tauri::command]
 pub async fn export_history(format: String, state: State<'_, AppState>) -> Result<String, String> {
-    crate::storage::history::export_history(&state.db, &format).map_err(|e| e.to_string())
+    // Serializes the entire history — blocking thread, same reasoning as
+    // get_analytics_records.
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || crate::storage::history::export_history(&db, &format))
+        .await
+        .map_err(|e| format!("task join: {e}"))?
+        .map_err(|e| e.to_string())
 }

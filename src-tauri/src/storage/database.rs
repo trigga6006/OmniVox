@@ -135,6 +135,22 @@ impl Database {
         // Migration: add raw_transcript column to transcriptions if missing
         self.migrate_add_raw_transcript()?;
 
+        // Per-mode lookup indexes.  Created after migrate_add_mode_id because
+        // older databases only gain the mode_id columns through that migration.
+        {
+            let conn = self.conn()?;
+            conn.execute_batch(
+                "
+                CREATE INDEX IF NOT EXISTS idx_dictionary_mode_id
+                    ON dictionary_entries(mode_id);
+                CREATE INDEX IF NOT EXISTS idx_snippets_mode_id
+                    ON snippets(mode_id);
+                CREATE INDEX IF NOT EXISTS idx_vocabulary_mode_id
+                    ON vocabulary_entries(mode_id);
+            ",
+            )?;
+        }
+
         Ok(())
     }
 
