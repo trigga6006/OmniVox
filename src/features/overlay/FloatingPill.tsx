@@ -24,6 +24,7 @@ import {
   onSettingsChanged,
   onStructuredOutputReady,
   onStructuredModeDegraded,
+  onWhisperGpuFallback,
   getSettings,
   type ContextMode,
   type StructuredOutputPayload,
@@ -267,11 +268,26 @@ export function FloatingPill() {
       }, 15000);
     });
 
+    // GPU→CPU fallback at model load: same banner — the user otherwise has
+    // no way to tell why transcription is suddenly several times slower.
+    const unlistenGpuFallback = onWhisperGpuFallback((message) => {
+      console.warn("[whisper] gpu fallback:", message);
+      setStructuredDegraded(message);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 20000);
+    });
+
     return () => {
       unlistenPreview.then((fn) => fn());
       unlistenSettings.then((fn) => fn());
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
+      unlistenGpuFallback.then((fn) => fn());
     };
   }, []);
 

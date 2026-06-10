@@ -437,6 +437,14 @@ export const onStructuredModeDegraded = (
 ): Promise<UnlistenFn> =>
   listen<string>("structured-mode-degraded", (e) => callback(e.payload));
 
+// Fired when a model was loaded on CPU because the GPU load failed (even
+// after a retry). Without this the fallback is invisible: the UI shows the
+// right model, it just transcribes several times slower.
+export const onWhisperGpuFallback = (
+  callback: (message: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("whisper-gpu-fallback", (e) => callback(e.payload));
+
 // Event listeners
 export const onRecordingStateChange = (
   callback: (status: string) => void

@@ -193,6 +193,7 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
     *state.active_llm_model_id.lock().unwrap() = None;
 
     // Load on a wide-stack thread to survive llama.cpp's debug stack frames.
+    let load_model_id = model_id.to_string();
     let engine = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
         .spawn(move || {
@@ -200,10 +201,28 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
                 match LlamaEngine::load(config.clone()) {
                     Ok(engine) => Ok(engine),
                     Err(e) if config.use_gpu => {
-                        eprintln!("GPU LLM load failed; retrying on CPU. Original error: {e}");
-                        let mut cpu_config = config;
-                        cpu_config.use_gpu = false;
-                        LlamaEngine::load(cpu_config)
+                        // Same transient-GPU-failure handling as the Whisper
+                        // loader: retry once before the (logged) CPU fallback.
+                        crate::diag::log(&format!(
+                            "llm '{load_model_id}': GPU load failed, retrying GPU in 1.5s: {e}"
+                        ));
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        match LlamaEngine::load(config.clone()) {
+                            Ok(engine) => {
+                                crate::diag::log(&format!(
+                                    "llm '{load_model_id}': GPU retry succeeded"
+                                ));
+                                Ok(engine)
+                            }
+                            Err(e2) => {
+                                crate::diag::log(&format!(
+                                    "llm '{load_model_id}': GPU retry failed, falling back to CPU: {e2}"
+                                ));
+                                let mut cpu_config = config;
+                                cpu_config.use_gpu = false;
+                                LlamaEngine::load(cpu_config)
+                            }
+                        }
                     }
                     Err(e) => Err(e),
                 }
