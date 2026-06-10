@@ -29,13 +29,17 @@ const MAX_EDIT_DISTANCE: usize = 3;
 /// Lowercases, drops vowels/h/w/y (except a leading vowel, kept as 'a'),
 /// folds voiced/unvoiced consonant pairs into one class, and collapses
 /// runs.  "cloud", "clod", "clawed", and "claude" all map to "klt".
+/// Soft c (before e/i/y) maps to 's' so "Vercel" reads as ver-SEL.
 fn phonetic_key(word: &str) -> String {
+    let chars: Vec<char> = word
+        .chars()
+        .flat_map(|c| c.to_lowercase())
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect();
+
     let mut key = String::new();
     let mut first = true;
-    for c in word.chars().flat_map(|c| c.to_lowercase()) {
-        if !c.is_ascii_alphabetic() {
-            continue;
-        }
+    for (i, &c) in chars.iter().enumerate() {
         let mapped = match c {
             'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'h' | 'w' => {
                 if first {
@@ -47,7 +51,11 @@ fn phonetic_key(word: &str) -> String {
             }
             'b' | 'p' => 'p',
             'd' | 't' => 't',
-            'g' | 'k' | 'c' | 'q' => 'k',
+            'c' => match chars.get(i + 1) {
+                Some('e') | Some('i') | Some('y') => 's', // soft c
+                _ => 'k',
+            },
+            'g' | 'k' | 'q' => 'k',
             's' | 'z' => 's',
             'f' | 'v' => 'f',
             'm' | 'n' => 'n',
@@ -59,6 +67,62 @@ fn phonetic_key(word: &str) -> String {
         }
     }
     key
+}
+
+/// Spoken name of a letter, for letter-run expansion.  When Whisper hears a
+/// brand name as spelled letters ("Vercel" → "V-S-L"), the spoken form of
+/// that run ("vee-es-el") is what actually sounds like the vocabulary word.
+fn letter_name(c: char) -> &'static str {
+    match c.to_ascii_lowercase() {
+        'a' => "ay",
+        'b' => "bee",
+        'c' => "see",
+        'd' => "dee",
+        'e' => "ee",
+        'f' => "ef",
+        'g' => "jee",
+        'h' => "aitch",
+        'i' => "eye",
+        'j' => "jay",
+        'k' => "kay",
+        'l' => "el",
+        'm' => "em",
+        'n' => "en",
+        'o' => "oh",
+        'p' => "pee",
+        'q' => "cue",
+        'r' => "ar",
+        's' => "es",
+        't' => "tee",
+        'u' => "you",
+        'v' => "vee",
+        'w' => "doubleyou",
+        'x' => "ex",
+        'y' => "why",
+        'z' => "zee",
+        _ => "",
+    }
+}
+
+/// Does a spelled-letter sequence sound like vocabulary `target`?
+///
+/// Expands the letters to their spoken names, keys both sides, and allows a
+/// single key edit — "V-S-L" → "vee-es-el" → key `fsl` vs Vercel's `frsl`.
+/// First letters must agree, which keeps unrelated acronyms out.
+fn letters_sound_like(letters: &[char], target: &str) -> bool {
+    let first_target = match target.chars().next() {
+        Some(c) => c.to_ascii_lowercase(),
+        None => return false,
+    };
+    if letters
+        .first()
+        .map(|c| c.to_ascii_lowercase() != first_target)
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    let spoken: String = letters.iter().map(|&c| letter_name(c)).collect();
+    edit_distance(&phonetic_key(&spoken), &phonetic_key(target)) <= 1
 }
 
 /// Plain Levenshtein distance over lowercase chars.
@@ -141,6 +205,53 @@ fn joined_by_space(text: &str, a: WordSpan, b: WordSpan) -> bool {
     text[a.end..b.start].chars().all(|c| c.is_whitespace())
 }
 
+/// Detect a spelled-letter sequence starting at span `i`.
+///
+/// Returns the letters plus the byte range to replace.  Two shapes qualify:
+/// - ≥ 3 consecutive single-letter words joined only by whitespace, hyphens,
+///   or periods ("V-S-S-L", "v s l", "V.S.L") — a comma or other punctuation
+///   breaks the run;
+/// - one all-caps 3–6 letter token ("VSL").
+fn letter_run_at(text: &str, spans: &[WordSpan], i: usize) -> Option<(Vec<char>, usize, usize)> {
+    let single_letter = |s: WordSpan| -> Option<char> {
+        let mut it = text[s.start..s.end].chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c),
+            _ => None,
+        }
+    };
+    let run_separator = |a: WordSpan, b: WordSpan| {
+        text[a.end..b.start]
+            .chars()
+            .all(|c| c.is_whitespace() || c == '-' || c == '.')
+    };
+
+    if let Some(first) = single_letter(spans[i]) {
+        let mut letters = vec![first];
+        let mut j = i;
+        while j + 1 < spans.len() && run_separator(spans[j], spans[j + 1]) {
+            match single_letter(spans[j + 1]) {
+                Some(c) => {
+                    letters.push(c);
+                    j += 1;
+                }
+                None => break,
+            }
+        }
+        if letters.len() >= 3 {
+            return Some((letters, spans[i].start, spans[j].end));
+        }
+        return None;
+    }
+
+    let word = &text[spans[i].start..spans[i].end];
+    let chars: Vec<char> = word.chars().collect();
+    if (3..=6).contains(&chars.len()) && chars.iter().all(|c| c.is_ascii_uppercase()) {
+        return Some((chars, spans[i].start, spans[i].end));
+    }
+    None
+}
+
 /// Apply phonetic vocabulary correction to `text`.
 ///
 /// For each enabled vocabulary entry (longest first so "Claude Code" wins
@@ -183,6 +294,26 @@ pub fn apply_phonetic_vocab(text: &str, vocabulary: &[String]) -> String {
 
             let mut i = 0;
             while i < spans.len() {
+                // Spelled-letter runs: Whisper sometimes hears an unfamiliar
+                // brand name as individual letters ("Vercel" → "V-S-S-L" or
+                // a lone "VSL").  Expand the run to its spoken letter names
+                // and compare phonetically.
+                if parts.len() == 1 {
+                    if let Some((letters, start, end)) = letter_run_at(&result, &spans, i) {
+                        if letters_sound_like(&letters, parts[0]) {
+                            let new = format!("{}{}{}", &result[..start], entry, &result[end..]);
+                            // Idempotence guard: an all-caps vocabulary entry
+                            // is itself a run candidate — never "replace"
+                            // text with identical text or we loop forever.
+                            if new != result {
+                                result = new;
+                                replaced = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 // Candidate window: `parts.len()` consecutive words joined
                 // only by whitespace.
                 if i + parts.len() <= spans.len() {
@@ -380,5 +511,61 @@ mod tests {
         assert_eq!(phonetic_key("clod"), phonetic_key("claude"));
         assert_eq!(phonetic_key("clawed"), phonetic_key("claude"));
         assert_ne!(phonetic_key("cloud"), phonetic_key("crowd"));
+        // Soft c: "Vercel" is ver-SEL, not ver-KEL.
+        assert_eq!(phonetic_key("vercel"), "frsl");
+    }
+
+    #[test]
+    fn corrects_hyphenated_letter_runs() {
+        // Real transcript from the field: saying "Vercel" three times came
+        // out as spelled letters.
+        let v = vocab(&["Vercel"]);
+        assert_eq!(
+            apply_phonetic_vocab("V-S-S-L, V-S-L.", &v),
+            "Vercel, Vercel."
+        );
+    }
+
+    #[test]
+    fn corrects_spaced_and_lone_acronym_letter_runs() {
+        let v = vocab(&["Vercel"]);
+        assert_eq!(apply_phonetic_vocab("deploy it on v s l now", &v), "deploy it on Vercel now");
+        assert_eq!(apply_phonetic_vocab("pushed to VSL today", &v), "pushed to Vercel today");
+    }
+
+    #[test]
+    fn letter_runs_with_wrong_first_letter_stay() {
+        let v = vocab(&["Vercel"]);
+        let text = "the N-D-A is signed";
+        assert_eq!(apply_phonetic_vocab(text, &v), text);
+    }
+
+    #[test]
+    fn phonetically_distant_acronyms_stay() {
+        // "NDA" spoken is en-dee-ay — two key edits from "Nvidia", so a
+        // dictated acronym is not hijacked by a same-first-letter brand.
+        let v = vocab(&["Nvidia"]);
+        let text = "the NDA was signed";
+        assert_eq!(apply_phonetic_vocab(text, &v), text);
+    }
+
+    #[test]
+    fn all_caps_vocabulary_entry_does_not_loop() {
+        // An all-caps entry is itself a letter-run candidate; the
+        // idempotence guard must terminate the rescan loop.
+        let v = vocab(&["MEDDPICC"]);
+        assert_eq!(
+            apply_phonetic_vocab("ran the MEDPIC review", &v),
+            "ran the MEDDPICC review"
+        );
+        let stable = "ran the MEDDPICC review";
+        assert_eq!(apply_phonetic_vocab(stable, &v), stable);
+    }
+
+    #[test]
+    fn two_letter_runs_are_ignored() {
+        let v = vocab(&["Vercel"]);
+        let text = "the U.S. economy";
+        assert_eq!(apply_phonetic_vocab(text, &v), text);
     }
 }
