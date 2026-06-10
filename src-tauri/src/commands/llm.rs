@@ -145,6 +145,9 @@ pub async fn llm_test_extract(
 /// has the same huge debug-build stack frames that crash on Windows
 /// without the wider stack.
 pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), String> {
+    // Normalize IDs persisted by older versions (v0.2.9's `…-q4` entries) so
+    // the canonical ID is what gets activated and written back to settings.
+    let model_id = crate::llm_models::manager::LlmModelManager::canonical_id(model_id);
     let model_path = state
         .llm_model_manager
         .model_path(model_id)
@@ -165,7 +168,9 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         model_path: model_path.to_string_lossy().into_owned(),
         n_threads,
         use_gpu,
-        n_ctx: 2048,
+        // Sized for system prompt (~1,900 tok) + capped input + 384 output.
+        // 2048 overflowed mid-generation on long dictations.
+        n_ctx: 3072,
         max_tokens: 384,
     };
 
@@ -188,6 +193,7 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
     *state.active_llm_model_id.lock().unwrap() = None;
 
     // Load on a wide-stack thread to survive llama.cpp's debug stack frames.
+    let load_model_id = model_id.to_string();
     let engine = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
         .spawn(move || {
@@ -195,10 +201,28 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
                 match LlamaEngine::load(config.clone()) {
                     Ok(engine) => Ok(engine),
                     Err(e) if config.use_gpu => {
-                        eprintln!("GPU LLM load failed; retrying on CPU. Original error: {e}");
-                        let mut cpu_config = config;
-                        cpu_config.use_gpu = false;
-                        LlamaEngine::load(cpu_config)
+                        // Same transient-GPU-failure handling as the Whisper
+                        // loader: retry once before the (logged) CPU fallback.
+                        crate::diag::log(&format!(
+                            "llm '{load_model_id}': GPU load failed, retrying GPU in 1.5s: {e}"
+                        ));
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        match LlamaEngine::load(config.clone()) {
+                            Ok(engine) => {
+                                crate::diag::log(&format!(
+                                    "llm '{load_model_id}': GPU retry succeeded"
+                                ));
+                                Ok(engine)
+                            }
+                            Err(e2) => {
+                                crate::diag::log(&format!(
+                                    "llm '{load_model_id}': GPU retry failed, falling back to CPU: {e2}"
+                                ));
+                                let mut cpu_config = config;
+                                cpu_config.use_gpu = false;
+                                LlamaEngine::load(cpu_config)
+                            }
+                        }
                     }
                     Err(e) => Err(e),
                 }

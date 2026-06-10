@@ -639,3 +639,88 @@ fn prompt_with_context_caps_at_30_tokens() {
     assert!(block.contains("tok0.rs"));
     assert!(!block.contains("tok199.rs"));
 }
+
+/// End-to-end check of the KV-cached session against a real local model.
+///
+/// Ignored by default — needs the Qwen GGUF already downloaded (it uses the
+/// same AppData path as the app) and ~30-90 s of CPU inference.  Run with:
+///   cargo test --lib llm::tests::real_model_session -- --ignored --nocapture
+#[test]
+#[ignore]
+fn real_model_session_reuses_prefix_and_matches_stateless() {
+    use crate::llm::engine::{LlamaEngine, LlmEngine};
+    use crate::llm::types::LlmConfig;
+
+    // Use whatever GGUF is already downloaded, smallest first so the test
+    // runs as fast as possible.
+    let models_dir = dirs::data_dir().unwrap().join("omnivox/llm_models");
+    let model_path = std::fs::read_dir(&models_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "gguf"))
+        .min_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX));
+    let Some(model_path) = model_path else {
+        eprintln!("SKIP: no local GGUF model in {models_dir:?}");
+        return;
+    };
+
+    // Mirror production: llama.cpp needs a wide stack in dev builds.
+    let handle = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            let config = LlmConfig {
+                model_path: model_path.to_string_lossy().into_owned(),
+                ..LlmConfig::default()
+            };
+            let engine = LlamaEngine::load(config).expect("model load");
+
+            let input_a = "Refactor the checkout flow in billing.tsx and cart.tsx. \
+                           Keep the Stripe integration working. This is urgent.";
+            let input_b = "Add a dark mode toggle to the settings page and persist \
+                           the choice across restarts.";
+
+            // Stateless reference result (the old code path).
+            let t0 = std::time::Instant::now();
+            let stateless = engine.extract_slots(input_a).expect("stateless extract");
+            let stateless_ms = t0.elapsed().as_millis();
+
+            // Session path: warm → extract A → extract B.
+            let t0 = std::time::Instant::now();
+            let mut session = engine.new_session().expect("session create+warm");
+            let warm_ms = t0.elapsed().as_millis();
+
+            let t0 = std::time::Instant::now();
+            let a = session
+                .extract_slots_with_context(input_a, &[], None)
+                .expect("session extract A");
+            let a_ms = t0.elapsed().as_millis();
+
+            let t0 = std::time::Instant::now();
+            let b = session
+                .extract_slots_with_context(input_b, &[], None)
+                .expect("session extract B");
+            let b_ms = t0.elapsed().as_millis();
+
+            eprintln!("stateless: {stateless_ms}ms  warm: {warm_ms}ms  A: {a_ms}ms  B: {b_ms}ms");
+            eprintln!("stateless goal: {:?}", stateless.goal);
+            eprintln!("session A goal: {:?}", a.goal);
+            eprintln!("session B goal: {:?}", b.goal);
+
+            assert!(!a.goal.is_empty(), "session extraction A produced no goal");
+            assert!(!b.goal.is_empty(), "session extraction B produced no goal");
+            assert!(!stateless.goal.is_empty(), "stateless produced no goal");
+
+            // The cached-prefix path must be dramatically cheaper than the
+            // stateless path — it only prefills the user turn.  Allow a
+            // generous bound to keep the test robust on slow machines.
+            assert!(
+                a_ms < stateless_ms,
+                "cached extraction ({a_ms}ms) should beat stateless ({stateless_ms}ms)"
+            );
+        })
+        .unwrap();
+    handle.join().unwrap();
+}

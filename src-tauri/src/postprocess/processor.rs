@@ -17,6 +17,10 @@ pub struct ProcessorChain {
     config: ProcessorConfig,
     dictionary: Vec<DictionaryEntry>,
     snippets: Vec<Snippet>,
+    /// Enabled vocabulary words (global + active mode) used for phonetic
+    /// auto-correction — the deterministic backstop behind the Whisper
+    /// prompt bias.
+    vocabulary: Vec<String>,
 }
 
 impl ProcessorChain {
@@ -25,6 +29,7 @@ impl ProcessorChain {
             config,
             dictionary: Vec::new(),
             snippets: Vec::new(),
+            vocabulary: Vec::new(),
         }
     }
 
@@ -38,6 +43,12 @@ impl ProcessorChain {
     /// Call this when the user adds/removes snippets.
     pub fn set_snippets(&mut self, snippets: Vec<Snippet>) {
         self.snippets = snippets;
+    }
+
+    /// Update the vocabulary words used for phonetic auto-correction.
+    /// Call this when the user adds/removes vocabulary entries.
+    pub fn set_vocabulary(&mut self, words: Vec<String>) {
+        self.vocabulary = words;
     }
 
     /// Update the writing style at runtime (called when settings change).
@@ -85,6 +96,19 @@ impl TextProcessor for ProcessorChain {
         // Step 0c: Deduplicate repeated 2-3 word phrases ("I think I think" → "I think")
         if self.config.apply_filler_removal {
             apply_step!("phrase_dedup", dedup_phrases(&result));
+        }
+
+        // Step 0d: Phonetic vocabulary correction.  Whisper's prompt bias is
+        // probabilistic — a vocabulary word can still come out as a phonetic
+        // near-miss ("Claude" → "cloud").  This deterministic pass replaces
+        // anything that sounds like a vocabulary entry with the entry
+        // verbatim.  Runs before the dictionary so explicit phrase rules can
+        // still adjust the corrected text.
+        if !self.vocabulary.is_empty() {
+            apply_step!(
+                "phonetic_vocabulary",
+                crate::postprocess::phonetic::apply_phonetic_vocab(&result, &self.vocabulary)
+            );
         }
 
         // Step 1: Dictionary replacements (case-insensitive)

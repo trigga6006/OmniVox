@@ -32,12 +32,21 @@ export function DictationPanel() {
   const isProcessing = status === "processing";
 
   return (
-    <div className="relative flex h-full flex-col items-center px-8 py-10">
-      {/* ── Top section: headline + instruction ─────────────── */}
-      <div className="flex flex-1 flex-col items-center justify-end">
+    // overflow-hidden + the min-h-0 chain below are the no-scroll guarantee:
+    // this page must NEVER scroll as a whole — only the transcription card's
+    // text area scrolls when a dictation is long.
+    <div className="relative flex h-full flex-col items-center overflow-hidden px-8 py-6">
+      {/* ── Top section: headline + instruction ───────────────
+          Fixed-height lines (not flex-1): everything above the record
+          button has constant height in every state, so the button sits at
+          the exact same y-position whether idle, recording, or
+          transcribing.  (The kbd chip is a few px taller than the plain
+          status text — without the fixed line heights that alone nudged
+          the button between states.) */}
+      <div className="flex shrink-0 flex-col items-center">
         <h1
           className={cn(
-            "font-display text-[2rem] font-semibold tracking-[-0.022em] opacity-0 animate-fade-in",
+            "flex h-10 items-center font-display text-[2rem] font-semibold tracking-[-0.022em] opacity-0 animate-fade-in",
             isIdle && "text-text-primary",
             isRecording && "text-amber-300",
             isProcessing && "text-text-secondary"
@@ -50,13 +59,13 @@ export function DictationPanel() {
         </h1>
 
         <p
-          className="mt-3 text-sm text-text-muted opacity-0 animate-fade-in"
+          className="mt-2 flex h-7 items-center text-sm text-text-muted opacity-0 animate-fade-in"
           style={{ animationDelay: "80ms" }}
         >
           {isIdle && (
             <>
               Press{" "}
-              <kbd className="rounded-md border border-border bg-surface-1 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
+              <kbd className="mx-1.5 rounded-md border border-border bg-surface-1 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
                 {hotkeyLabel}
               </kbd>{" "}
               to begin
@@ -69,16 +78,19 @@ export function DictationPanel() {
       </div>
 
       {/* ── Center: Record Button (fixed position) ─────────── */}
-      <div className="my-10 shrink-0 opacity-0 animate-scale-in" style={{ animationDelay: "150ms" }}>
+      <div className="my-4 shrink-0 opacity-0 animate-scale-in" style={{ animationDelay: "150ms" }}>
         <RecordButton />
       </div>
 
-      {/* ── Bottom section: visualizer + transcription ─────── */}
-      <div className="flex flex-1 flex-col items-center justify-start w-full">
+      {/* ── Bottom section: visualizer + transcription ───────
+          min-h-0 lets this section absorb whatever height remains and
+          compress its content instead of pushing the button up or
+          overflowing the page. */}
+      <div className="flex min-h-0 w-full flex-1 flex-col items-center">
         {/* Audio Visualizer — occupies space but invisible when not recording */}
         <div
           className={cn(
-            "transition-opacity duration-300",
+            "shrink-0 transition-opacity duration-300",
             isRecording ? "opacity-100" : "opacity-0 pointer-events-none"
           )}
           style={{ height: 44 }}
@@ -86,7 +98,7 @@ export function DictationPanel() {
           {isRecording && <AudioVisualizer />}
         </div>
 
-        <div className="h-5" />
+        <div className="h-4 shrink-0" />
 
         {/* ── Word count & milestone ─────────────────────────── */}
         <StatsCard />
@@ -116,13 +128,16 @@ function TranscriptionCard({ text }: { text: string }) {
   }, [text]);
 
   return (
+    // min-h-0 + internal overflow: the card grows naturally for short
+    // dictations, but when space runs out it compresses and ONLY the text
+    // area scrolls — the page itself never does.
     <div
       className={cn(
-        "w-full max-w-lg rounded-xl border border-border/70 bg-surface-1/80 px-5 py-4 mt-4",
+        "flex min-h-0 w-full max-w-lg flex-col rounded-xl border border-border/70 bg-surface-1/80 px-5 py-4 mt-4",
         "backdrop-blur-sm shadow-sm opacity-0 animate-slide-up"
       )}
     >
-      <div className="flex items-center justify-between mb-2.5">
+      <div className="mb-2.5 flex shrink-0 items-center justify-between">
         <p className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Last transcription
         </p>
@@ -134,7 +149,7 @@ function TranscriptionCard({ text }: { text: string }) {
           <span>{copied ? "Copied" : "Copy"}</span>
         </button>
       </div>
-      <div className="max-h-32 overflow-y-auto">
+      <div className="min-h-0 overflow-y-auto">
         <p className="font-sans text-[15px] leading-[1.65] text-text-primary select-text">
           {text}
         </p>
@@ -291,7 +306,7 @@ function FeatureTip() {
   return (
     <div
       className={cn(
-        "w-full max-w-lg mt-3 flex items-center gap-2 rounded-lg px-3 py-2",
+        "w-full max-w-lg mt-3 flex shrink-0 items-center gap-2 rounded-lg px-3 py-2",
         "border transition-colors duration-300 opacity-0 animate-fade-in",
         isRecording
           ? "bg-recording-500/[0.06] border-recording-500/20"
@@ -361,7 +376,7 @@ function StatsCard() {
 
   return (
     <div
-      className="w-full max-w-lg opacity-0 animate-fade-in"
+      className="w-full max-w-lg shrink-0 opacity-0 animate-fade-in"
       style={{ animationDelay: "200ms", animationFillMode: "forwards" }}
     >
       <div className="flex items-center justify-between">

@@ -39,8 +39,10 @@ pub struct AppState {
     pub downloader: ModelDownloader,
     /// ID of the currently active model
     pub active_model_id: Mutex<Option<String>>,
-    /// Local SQLite database for persistent storage
-    pub db: Database,
+    /// Local SQLite database for persistent storage.
+    /// Arc so heavy read commands (analytics, export, search) can move a
+    /// handle onto a blocking thread instead of stalling the async runtime.
+    pub db: Arc<Database>,
     /// Application data directory (~/.local/share/omnivox or AppData/omnivox)
     pub data_dir: PathBuf,
     /// Directory where downloaded model files are stored
@@ -86,7 +88,7 @@ impl AppState {
         let db_path = data_dir.join("omnivox.db");
 
         // Initialize database. Create tables on first run.
-        let db = Database::init(&db_path).expect("Failed to initialize database");
+        let db = Arc::new(Database::init(&db_path).expect("Failed to initialize database"));
 
         // Load saved writing style so it persists across restarts.
         let writing_style = crate::storage::settings::get_settings(&db)

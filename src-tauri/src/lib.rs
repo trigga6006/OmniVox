@@ -1,6 +1,7 @@
 pub mod asr;
 pub mod audio;
 pub mod commands;
+pub mod diag;
 pub mod error;
 pub mod focus;
 pub mod hotkey;
@@ -168,9 +169,10 @@ fn load_default_model_deferred(app_handle: &tauri::AppHandle, state: &state::App
             }
             eprintln!("Loading Whisper model in background...");
             match commands::models::load_and_activate_model(BUNDLED_MODEL_ID, state) {
-                Ok(()) => {
+                Ok(outcome) => {
                     eprintln!("Whisper model loaded successfully");
                     let _ = app_handle.emit("model-loaded", BUNDLED_MODEL_ID);
+                    outcome.emit_gpu_fallback(app_handle);
                 }
                 Err(e) => {
                     eprintln!("Failed to load Whisper model (app still usable): {e}");
@@ -185,9 +187,10 @@ fn load_default_model_deferred(app_handle: &tauri::AppHandle, state: &state::App
 
     eprintln!("Loading Whisper model in background...");
     match commands::models::load_and_activate_model(&model_id, state) {
-        Ok(()) => {
+        Ok(outcome) => {
             eprintln!("Whisper model loaded successfully");
             let _ = app_handle.emit("model-loaded", model_id);
+            outcome.emit_gpu_fallback(app_handle);
         }
         Err(e) => {
             eprintln!("Failed to load Whisper model (app still usable): {e}");

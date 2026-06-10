@@ -63,8 +63,33 @@ pub async fn get_active_model(state: State<'_, AppState>) -> Result<Option<Model
 }
 
 #[tauri::command]
-pub async fn set_active_model(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    load_and_activate_model(&model_id, &state)
+pub async fn set_active_model(
+    model_id: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let outcome = load_and_activate_model(&model_id, &state)?;
+    outcome.emit_gpu_fallback(&app_handle);
+    Ok(())
+}
+
+/// What actually happened during a model load — callers use this to surface
+/// a "running on CPU" warning instead of letting the fallback stay silent.
+pub struct ModelLoadOutcome {
+    /// GPU was requested but failed (even after a retry); engine is on CPU.
+    pub gpu_fallback: bool,
+}
+
+impl ModelLoadOutcome {
+    pub fn emit_gpu_fallback(&self, app_handle: &tauri::AppHandle) {
+        use tauri::Emitter;
+        if self.gpu_fallback {
+            let _ = app_handle.emit(
+                "whisper-gpu-fallback",
+                "GPU unavailable — Whisper is running on CPU (slower). Re-select your model in Models to retry.",
+            );
+        }
+    }
 }
 
 /// Returns whether the binary was compiled with GPU (Vulkan/CUDA) support.
@@ -96,7 +121,10 @@ pub async fn get_hardware_info() -> Result<HardwareInfo, String> {
 
 /// Shared logic: verify model exists on disk, load Whisper engine, set as active.
 /// Used by both `set_active_model` command and the first-launch setup.
-pub fn load_and_activate_model(model_id: &str, state: &AppState) -> Result<(), String> {
+pub fn load_and_activate_model(
+    model_id: &str,
+    state: &AppState,
+) -> Result<ModelLoadOutcome, String> {
     let model_path = state
         .model_manager
         .model_path(model_id)
@@ -159,17 +187,40 @@ pub fn load_and_activate_model(model_id: &str, state: &AppState) -> Result<(), S
 
     // Load on a thread with a larger stack — whisper.cpp + GGML backends
     // need extra stack space, especially in debug builds on Windows.
-    let engine = std::thread::Builder::new()
+    let load_model_id = model_id.to_string();
+    let t0 = std::time::Instant::now();
+    let (engine, gpu_fallback) = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024) // 256 MB — debug builds have much larger stack frames (especially with llama.cpp + whisper.cpp)
         .spawn(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 match WhisperEngine::load(config.clone()) {
-                    Ok(engine) => Ok(engine),
+                    Ok(engine) => Ok((engine, false)),
                     Err(e) if config.use_gpu => {
-                        eprintln!("GPU Whisper load failed; retrying on CPU. Original error: {e}");
-                        let mut cpu_config = config;
-                        cpu_config.use_gpu = false;
-                        WhisperEngine::load(cpu_config)
+                        // Transient GPU failures are common right after login
+                        // (Vulkan instance not ready, VRAM briefly exhausted).
+                        // Retry the GPU once before settling for CPU — a
+                        // silent CPU fallback runs the same model several
+                        // times slower with no UI difference at all.
+                        crate::diag::log(&format!(
+                            "whisper '{load_model_id}': GPU load failed, retrying GPU in 1.5s: {e}"
+                        ));
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        match WhisperEngine::load(config.clone()) {
+                            Ok(engine) => {
+                                crate::diag::log(&format!(
+                                    "whisper '{load_model_id}': GPU retry succeeded"
+                                ));
+                                Ok((engine, false))
+                            }
+                            Err(e2) => {
+                                crate::diag::log(&format!(
+                                    "whisper '{load_model_id}': GPU retry failed, falling back to CPU: {e2}"
+                                ));
+                                let mut cpu_config = config;
+                                cpu_config.use_gpu = false;
+                                WhisperEngine::load(cpu_config).map(|engine| (engine, true))
+                            }
+                        }
                     }
                     Err(e) => Err(e),
                 }
@@ -181,6 +232,18 @@ pub fn load_and_activate_model(model_id: &str, state: &AppState) -> Result<(), S
         .map_err(|_| "Model loader panicked during initialization".to_string())?
         .map_err(|e| format!("Failed to load model: {e}"))?;
 
+    crate::diag::log(&format!(
+        "whisper '{model_id}' loaded in {}ms backend={}",
+        t0.elapsed().as_millis(),
+        if gpu_fallback {
+            "cpu (GPU FALLBACK)"
+        } else if use_gpu {
+            "gpu"
+        } else {
+            "cpu (by setting)"
+        }
+    ));
+
     *state.engine.lock().unwrap() = Some(Arc::new(engine));
     *state.active_model_id.lock().unwrap() = Some(model_id.to_string());
 
@@ -190,7 +253,7 @@ pub fn load_and_activate_model(model_id: &str, state: &AppState) -> Result<(), S
         let _ = crate::storage::settings::update_settings(&state.db, &settings);
     }
 
-    Ok(())
+    Ok(ModelLoadOutcome { gpu_fallback })
 }
 
 /// English vocabulary prompt — biases the decoder toward correct recognition

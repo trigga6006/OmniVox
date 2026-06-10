@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.3.1
+
+### Features
+
+- **Vocabulary words now actually correct mis-transcriptions.** Adding a word to your vocabulary previously only *biased* Whisper toward it — probabilistic, and "Claude" still regularly came out as "cloud" or "clod". A new phonetic correction pass now runs after every transcription: any word (or word pair) that sounds like one of your vocabulary entries — same consonant skeleton, small edit distance, same first letter — is replaced with the entry exactly as you wrote it, casing included. Split compounds fuse too ("omni cue" → "OmniCue"). Guard rails keep it from misfiring: short entries (under 5 letters) don't participate, sentence boundaries are respected, and near-misses that are spelled too differently ("clot") are left alone. Works with both global and mode-scoped vocabulary, takes effect immediately when you edit the list.
+
+### Improvements
+
+- **Structured Mode is much faster.** The local LLM now keeps its system prompt (~1,900 tokens) cached in the KV cache across dictations instead of re-processing it from scratch on every extraction. Logs from real use showed extractions taking 2–7 seconds (and sometimes hitting the 8s timeout) — the bulk of that was redundant prompt prefill. After the first warm-up (done in the background right when the model loads), each extraction only processes your actual words. The cache is self-healing on errors and is released automatically after 5 minutes of inactivity so it doesn't hold memory while idle.
+- **Cleaner audio into Whisper.** Microphone capture (typically 48 kHz on Windows) was downsampled to 16 kHz with plain linear interpolation, which folds all high-frequency content — hiss, keyboard clatter, sibilant energy above 8 kHz — back into the speech band as aliasing noise. Capture now runs through a proper windowed-sinc anti-aliasing filter before decimation, so Whisper sees the speech spectrum it was trained on. This improves transcription robustness on every recording.
+- **Faster stop-to-text with Live Preview on.** Stopping a recording no longer waits (up to 1.5s) for an in-flight preview transcription to finish — the preview pass is aborted immediately via whisper.cpp's abort callback, so final transcription starts right away.
+
+### Bug Fixes
+
+- **Long dictations no longer silently break Structured Mode.** The LLM context window (2048 tokens) was too small to hold the system prompt plus a long dictation plus the model's output — extractions on longer dictations could fail mid-generation and degrade to plain text. The context is now sized (3072) to fit the system prompt, the full 1,600-character input cap, and a complete JSON response.
+- **Structured Mode works again for pre-v0.2.10 installs.** The v0.2.10 catalog rename to the official Q8_0 files orphaned previously downloaded Q4_K_M models *and* the saved model selection — every extraction since then failed with "model is not downloaded" and silently fell back to plain dictation. Old model IDs now map to the current catalog entries, and previously downloaded legacy files are recognized as installed (labeled with their actual quantization) so no re-download is needed. Deleting a model now also removes any legacy file.
+- **No more invisible CPU fallback after app launch.** When the GPU load failed transiently at startup (Vulkan not ready right after login, VRAM briefly busy), Whisper silently fell back to CPU — the UI showed the correct model while transcription ran several times slower, until you re-selected the model. The loader now retries the GPU once after 1.5 s before falling back; if it still ends up on CPU, the overlay shows a clear "running on CPU (slower)" banner instead of staying silent. Every model load (Whisper and LLM) is also recorded with its backend and duration in `%AppData%\omnivox\model-load.log`, so "the app feels slow today" can be checked against what actually loaded.
+
+### Internal
+
+- Analytics, history search, and history export now run on blocking threads so a large transcription history can't stall the UI/dictation runtime.
+- Context-mode cascade deletes are wrapped in a transaction; per-mode dictionary/snippet/vocabulary lookups are indexed.
+- Removed dead frontend code (`useAudioLevel` hook, `contextModeStore`).
+
 ## v0.3.0
 
 ### Improvements

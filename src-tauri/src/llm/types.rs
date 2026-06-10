@@ -30,7 +30,11 @@ impl Default for LlmConfig {
             model_path: String::new(),
             n_threads,
             use_gpu: false,
-            n_ctx: 2048,
+            // Must fit: system prompt (~1,900 tokens) + the 1,600-char input
+            // cap (~450 tokens) + max_tokens of output.  The old 2048 looked
+            // generous but actually overflowed mid-generation on long
+            // dictations — the system prompt alone nearly filled it.
+            n_ctx: 3072,
             // Enough headroom for a fully-populated JSON (goal + 3 array
             // slots with a few items each).  192 was too tight and would
             // cause the model to truncate mid-JSON on rich dictations.

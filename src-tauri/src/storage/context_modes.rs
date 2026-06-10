@@ -194,7 +194,7 @@ pub fn update_mode(
 }
 
 pub fn delete_mode(db: &Database, id: &str) -> AppResult<()> {
-    let conn = db.conn()?;
+    let mut conn = db.conn()?;
     // Prevent deleting builtin modes
     let is_builtin: bool = conn
         .query_row(
@@ -210,13 +210,16 @@ pub fn delete_mode(db: &Database, id: &str) -> AppResult<()> {
         ));
     }
 
-    // Delete associated dictionary entries and snippets
-    conn.execute(
+    // Cascade delete inside one transaction — a crash mid-way must not leave
+    // orphaned dictionary entries or snippets pointing at a deleted mode.
+    let tx = conn.transaction()?;
+    tx.execute(
         "DELETE FROM dictionary_entries WHERE mode_id = ?1",
         params![id],
     )?;
-    conn.execute("DELETE FROM snippets WHERE mode_id = ?1", params![id])?;
-    conn.execute("DELETE FROM context_modes WHERE id = ?1", params![id])?;
+    tx.execute("DELETE FROM snippets WHERE mode_id = ?1", params![id])?;
+    tx.execute("DELETE FROM context_modes WHERE id = ?1", params![id])?;
+    tx.commit()?;
 
     Ok(())
 }
