@@ -7,6 +7,12 @@ on:
       - main
       - master
 
+# Supersede in-flight runs when new commits land on the same ref — a PR
+# updated three times in an hour should not queue three 20-minute builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -35,6 +41,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # CARGO_TARGET_DIR points at C:\b (MAX_PATH mitigation), so the
+          # default workspace target dir is empty.  Without this line the
+          # cache stored ~nothing and every run rebuilt whisper-rs-sys +
+          # llama-cpp-sys-2 from scratch (~14 min of the 20-minute runs).
+          cache-directories: C:\b
           key: rust-health
 
       - name: Set up MSVC developer environment
@@ -45,8 +56,13 @@ jobs:
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@master
 
+      # Prebuilt binaries instead of `cargo install` — compiling the three
+      # audit tools from source burned 5+ minutes per run.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install audit tools
-        run: cargo install cargo-audit cargo-deny cargo-machete --locked
+        run: cargo binstall cargo-audit cargo-deny cargo-machete --no-confirm --force
 
       - name: Run tests
         run: cargo test
