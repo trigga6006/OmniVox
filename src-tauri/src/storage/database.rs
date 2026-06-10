@@ -154,7 +154,14 @@ impl Database {
         Ok(())
     }
 
-    /// Add `mode_id` column to dictionary_entries and snippets if missing.
+    /// Add `mode_id` column to dictionary_entries, snippets, and
+    /// vocabulary_entries if missing.
+    ///
+    /// vocabulary_entries has shipped with `mode_id` inline since the table
+    /// was introduced (v0.1.8), so its branch here is defensive — but the
+    /// per-mode index created after the migrations references the column
+    /// unconditionally, and a schema variant without it would otherwise
+    /// fail `Database::init()` and brick startup.
     fn migrate_add_mode_id(&self) -> AppResult<()> {
         let conn = self.conn()?;
 
@@ -176,6 +183,11 @@ impl Database {
         if !has_mode_id("snippets") {
             conn.execute_batch(
                 "ALTER TABLE snippets ADD COLUMN mode_id TEXT REFERENCES context_modes(id);",
+            )?;
+        }
+        if !has_mode_id("vocabulary_entries") {
+            conn.execute_batch(
+                "ALTER TABLE vocabulary_entries ADD COLUMN mode_id TEXT REFERENCES context_modes(id);",
             )?;
         }
 
@@ -229,5 +241,60 @@ impl Database {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A database whose vocabulary_entries table predates mode scoping must
+    /// be migrated before the per-mode index is created — otherwise
+    /// `Database::init()` fails with "no such column: mode_id" and the app
+    /// never starts.
+    #[test]
+    fn init_migrates_legacy_vocabulary_table_before_indexing() {
+        let dir = std::env::temp_dir().join(format!("omnivox-db-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+
+        // Simulate the legacy schema: vocabulary_entries without mode_id.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE vocabulary_entries (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    word TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+
+        let db = Database::init(&path).expect("init must migrate the legacy schema");
+
+        let conn = db.conn().unwrap();
+        let has_mode_id: bool = conn
+            .prepare("PRAGMA table_info(vocabulary_entries)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .any(|name| name == "mode_id");
+        assert!(has_mode_id, "mode_id column should be added by migration");
+
+        let has_index: bool = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_vocabulary_mode_id'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .next()
+            .is_some();
+        assert!(has_index, "per-mode vocabulary index should exist");
+
+        drop(conn);
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
