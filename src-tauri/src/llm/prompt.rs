@@ -148,3 +148,49 @@ pub fn format_prompt_with_context(
         input = user_text,
     )
 }
+
+/// System prompt for Command Mode's free-form fallback.  Maps a short spoken
+/// command to ONE action from the closed set (matching `command_intent_v1.gbnf`).
+/// Kept terse — commands are short and this runs on a throwaway context.
+pub const COMMAND_SYSTEM_PROMPT: &str = "You convert a short spoken command into ONE JSON action for a desktop assistant.
+
+Output exactly one minified JSON object: {\"action\":<action>,\"target\":<string>}.
+No prose, no markdown, no <think>.
+
+ACTIONS (choose exactly one):
+- open_app: launch or switch to an application. target = the app name only (e.g. \"Spotify\", \"Chrome\").
+- web_search: do a web/Google search in the default browser. target = the search query (or \"\" to just open the search page).
+- open_url: open a website in the default browser. target = the site or URL (e.g. \"youtube.com\").
+- copy, paste, cut, undo, redo, select_all, save, new_tab, screenshot: keyboard actions. target = \"\".
+- close_tab: close the current browser/editor TAB only (Ctrl+W). target = \"\".
+- play_pause, next_track, prev_track, mute, volume_up, volume_down: media keys. target = \"\".
+- minimize, maximize: act on the current window. target = \"\".
+- none: the input is not a recognizable command. target = \"\".
+
+RULES
+- For app requests put ONLY the app name in target — strip verbs like open / launch / bring up / pull up / fire up.
+- target is \"\" for every action except open_app, focus_app, web_search, and open_url.
+- close_tab is ONLY for closing a browser/editor tab. Closing or quitting an APPLICATION or WINDOW is NOT supported — use \"none\" for \"close <app>\", \"quit X\", \"close this window\". Never substitute close_tab for that.
+- For searching the web or \"google something\", prefer web_search (it uses the user's default browser) over opening a specific browser app.
+- If the request does not clearly match an action above, use \"none\". Do NOT substitute a near-miss action.
+
+EXAMPLES
+\"bring up spotify\" -> {\"action\":\"open_app\",\"target\":\"Spotify\"}
+\"i want to listen to music\" -> {\"action\":\"open_app\",\"target\":\"Spotify\"}
+\"make a google search\" -> {\"action\":\"web_search\",\"target\":\"\"}
+\"search for the weather in denver\" -> {\"action\":\"web_search\",\"target\":\"weather in denver\"}
+\"go to youtube\" -> {\"action\":\"open_url\",\"target\":\"youtube.com\"}
+\"turn it down\" -> {\"action\":\"volume_down\",\"target\":\"\"}
+\"copy that\" -> {\"action\":\"copy\",\"target\":\"\"}
+\"shrink this window\" -> {\"action\":\"minimize\",\"target\":\"\"}
+\"close internet explorer\" -> {\"action\":\"none\",\"target\":\"\"}
+\"what time is it\" -> {\"action\":\"none\",\"target\":\"\"}";
+
+/// Wrap a spoken command in Qwen's ChatML prompt for the Command-Mode fallback.
+pub fn format_command_prompt(utterance: &str) -> String {
+    format!(
+        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nCOMMAND: {input}\n\nReturn only the JSON object. /no_think<|im_end|>\n<|im_start|>assistant\n",
+        system = COMMAND_SYSTEM_PROMPT,
+        input = utterance,
+    )
+}

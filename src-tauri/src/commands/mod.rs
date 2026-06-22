@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod command_mode;
 pub mod context_modes;
 pub mod dictionary;
 pub mod history;
@@ -8,6 +9,7 @@ pub mod notes;
 pub mod settings;
 
 pub use audio::*;
+pub use command_mode::*;
 pub use context_modes::*;
 pub use dictionary::*;
 pub use history::*;

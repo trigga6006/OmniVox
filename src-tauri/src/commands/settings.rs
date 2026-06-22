@@ -163,6 +163,9 @@ pub async fn update_settings(
     let prev_structured = crate::storage::settings::get_settings(&state.db)
         .map(|s| s.structured_mode)
         .unwrap_or(false);
+    let prev_command_mode = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.command_mode)
+        .unwrap_or(false);
 
     // If Structured Mode is being enabled without an explicit active model,
     // auto-pick the best downloaded one so the app never enters a misleading
@@ -234,6 +237,14 @@ pub async fn update_settings(
         let key1 = hk.keys.first().copied().unwrap_or(0);
         let key2 = hk.keys.get(1).copied().unwrap_or(0);
         crate::hotkey::update_hotkey_keys(key1, key2);
+    }
+
+    // Sync Command-Mode hotkey activation; warm the app index the first time
+    // Command Mode is switched on so the first command isn't slowed by the
+    // PowerShell enumeration.
+    crate::hotkey::set_command_mode_enabled(settings.command_mode);
+    if settings.command_mode && !prev_command_mode {
+        let _ = tokio::task::spawn_blocking(crate::actions::app_index::refresh);
     }
 
     // Broadcast to all windows so the overlay and main window stay in sync

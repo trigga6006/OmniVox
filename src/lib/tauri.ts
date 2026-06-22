@@ -94,6 +94,8 @@ export interface AppSettings {
   auto_switch_modes: boolean;
   voice_commands: boolean;
   command_send: boolean;
+  /** Command Mode: hold Right Ctrl and speak a command (launch app, key chord, media). */
+  command_mode: boolean;
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
@@ -256,6 +258,35 @@ export const suspendHotkey = (suspended: boolean) =>
   invoke<void>("suspend_hotkey", { suspended });
 export const updateHotkey = (config: HotkeyConfig) =>
   invoke<void>("update_hotkey", { config });
+
+// ── Command Mode ─────────────────────────────────────────────────────────
+export interface CommandResult {
+  status: "done" | "error";
+  summary: string;
+}
+export interface CommandConfirm {
+  summary: string;
+}
+
+/** Execute the command currently awaiting confirmation. */
+export const confirmCommand = () => invoke<void>("confirm_command");
+/** Discard the command currently awaiting confirmation. */
+export const cancelCommand = () => invoke<void>("cancel_command");
+
+export const onCommandStateChange = (
+  callback: (state: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("command-state-change", (e) => callback(e.payload));
+
+export const onCommandConfirm = (
+  callback: (payload: CommandConfirm) => void
+): Promise<UnlistenFn> =>
+  listen<CommandConfirm>("command-confirm", (e) => callback(e.payload));
+
+export const onCommandResult = (
+  callback: (payload: CommandResult) => void
+): Promise<UnlistenFn> =>
+  listen<CommandResult>("command-result", (e) => callback(e.payload));
 
 // Context mode types and commands
 export interface ContextMode {

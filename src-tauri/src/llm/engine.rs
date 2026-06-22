@@ -12,7 +12,9 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
 use crate::error::{AppError, AppResult};
-use crate::llm::grammar::{SLOT_EXTRACTION_ROOT, SLOT_EXTRACTION_V1};
+use crate::llm::grammar::{
+    COMMAND_INTENT_ROOT, COMMAND_INTENT_V1, SLOT_EXTRACTION_ROOT, SLOT_EXTRACTION_V1,
+};
 use crate::llm::prompt::{format_prompt, format_prompt_with_context, SYSTEM_PROMPT};
 use crate::llm::schema::SlotExtraction;
 use crate::llm::types::{LlmConfig, LlmInferenceResult};
@@ -50,6 +52,16 @@ pub trait LlmEngine: Send + Sync {
             duration_ms: t0.elapsed().as_millis() as u64,
             model_name: String::new(),
         })
+    }
+
+    /// Command-Mode fallback: map a free-form spoken command to one
+    /// `CommandIntent`, or `None` if it isn't a recognizable command.  Default
+    /// impl (used by test mocks) returns `None`.
+    fn classify_command(
+        &self,
+        _utterance: &str,
+    ) -> AppResult<Option<crate::actions::CommandIntent>> {
+        Ok(None)
     }
 
     /// Create a stateful extraction session for a dedicated worker thread.
@@ -210,6 +222,14 @@ impl LlamaEngine {
             .map(|slots| slots.normalize_with_raw(user_text))
             .map_err(|e| AppError::Llm(format!("parse LLM JSON failed: {e}")))
     }
+
+    /// One-off Command-Mode classification on a throwaway context.  Deliberately
+    /// does NOT reuse the warmed slot-extraction session — different prompt and
+    /// grammar — so Command Mode never thrashes Structured Mode's KV cache.
+    fn classify_command_raw(&self, utterance: &str) -> AppResult<String> {
+        let mut session = LlamaSession::new(self)?;
+        session.generate_command_json(utterance)
+    }
 }
 
 /// KV-cache-backed extraction session.
@@ -350,15 +370,11 @@ impl<'m> LlamaSession<'m> {
     /// - The grammar sampler is first in the chain, so token selection is
     ///   restricted to the GBNF alphabet before greedy picks the max-logit.
     /// - EOG stops generation; `max_tokens` bounds runaway loops.
-    fn generate(&mut self, n_prompt: usize) -> AppResult<String> {
+    fn generate(&mut self, n_prompt: usize, grammar_str: &str, grammar_root: &str) -> AppResult<String> {
         // Fresh sampler per call — the grammar sampler is stateful (tracks
-        // the GBNF parse position) and must restart for every extraction.
-        let grammar = LlamaSampler::grammar(
-            &self.engine.model,
-            SLOT_EXTRACTION_V1,
-            SLOT_EXTRACTION_ROOT,
-        )
-        .map_err(|e| AppError::Llm(format!("grammar init: {e:?}")))?;
+        // the GBNF parse position) and must restart for every generation.
+        let grammar = LlamaSampler::grammar(&self.engine.model, grammar_str, grammar_root)
+            .map_err(|e| AppError::Llm(format!("grammar init: {e:?}")))?;
         let mut sampler = LlamaSampler::chain_simple([grammar, LlamaSampler::greedy()]);
 
         let n_ctx = self.ctx.n_ctx() as usize;
@@ -419,8 +435,23 @@ impl<'m> LlamaSession<'m> {
 
         let result = self
             .ensure_prompt(&prompt)
-            .and_then(|n_prompt| self.generate(n_prompt));
+            .and_then(|n_prompt| self.generate(n_prompt, SLOT_EXTRACTION_V1, SLOT_EXTRACTION_ROOT));
 
+        if result.is_err() {
+            self.ctx.clear_kv_cache();
+            self.cached_tokens.clear();
+        }
+        result
+    }
+
+    /// Command-Mode fallback: build the command prompt, prefill, and generate
+    /// under the command grammar.  Used on a throwaway session so it never
+    /// disturbs the warmed slot-extraction KV cache.
+    fn generate_command_json(&mut self, utterance: &str) -> AppResult<String> {
+        let prompt = crate::llm::prompt::format_command_prompt(utterance);
+        let result = self
+            .ensure_prompt(&prompt)
+            .and_then(|n_prompt| self.generate(n_prompt, COMMAND_INTENT_V1, COMMAND_INTENT_ROOT));
         if result.is_err() {
             self.ctx.clear_kv_cache();
             self.cached_tokens.clear();
@@ -511,6 +542,19 @@ impl LlmEngine for LlamaEngine {
             duration_ms: t0.elapsed().as_millis() as u64,
             model_name: self.model_name.clone(),
         })
+    }
+
+    fn classify_command(
+        &self,
+        utterance: &str,
+    ) -> AppResult<Option<crate::actions::CommandIntent>> {
+        let raw = self.classify_command_raw(utterance)?;
+        let parsed: crate::llm::schema::RawCommand = serde_json::from_str(raw.trim())
+            .map_err(|e| AppError::Llm(format!("parse command JSON failed: {e}")))?;
+        Ok(crate::actions::CommandIntent::from_llm(
+            &parsed.action,
+            &parsed.target,
+        ))
     }
 
     /// KV-cache-backed session: prefills the system prompt once at creation

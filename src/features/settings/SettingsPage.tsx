@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText, Zap } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
@@ -301,6 +301,10 @@ export function SettingsPage() {
     patchSettings((current) => ({ command_send: !current.command_send })).catch(console.error);
   }, [patchSettings]);
 
+  const handleCommandModeToggle = useCallback(() => {
+    patchSettings((current) => ({ command_mode: !current.command_mode })).catch(console.error);
+  }, [patchSettings]);
+
   const handleAutoSwitchToggle = useCallback(() => {
     patchSettings((current) => ({ auto_switch_modes: !current.auto_switch_modes })).catch(console.error);
   }, [patchSettings]);
@@ -551,6 +555,18 @@ export function SettingsPage() {
               </div>
             )}
           </Row>
+
+          <Row
+            icon={Zap}
+            title="Command mode"
+            description={
+              <>
+                Hold <span className="text-indigo-300/90">Right Ctrl</span> and speak a command —
+                "open Spotify", "copy", "play", "minimize". Performs an action instead of typing.
+              </>
+            }
+            control={<Toggle on={!!settings?.command_mode} onClick={handleCommandModeToggle} />}
+          />
         </GroupCard>
 
         {/* ── Behavior ── */}

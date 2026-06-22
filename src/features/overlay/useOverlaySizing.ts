@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { resizeOverlay } from "@/lib/tauri";
 import type { RecordingStatus } from "@/stores/recordingStore";
+import type { CommandUiState } from "@/stores/commandStore";
 
 type PillState = RecordingStatus | "success";
 
@@ -15,6 +16,7 @@ interface OverlaySizingOptions {
   structuredDegraded: string | null;
   showModeSelector: boolean;
   modeCount: number;
+  commandState: CommandUiState;
 }
 
 export function useOverlaySizing({
@@ -23,6 +25,7 @@ export function useOverlaySizing({
   structuredDegraded,
   showModeSelector,
   modeCount,
+  commandState,
 }: OverlaySizingOptions) {
   const prevExpandedRef = useRef(false);
   const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
@@ -44,7 +47,15 @@ export function useOverlaySizing({
   useEffect(() => {
     let targetW: number;
     let targetH: number;
-    if (hasStructuredPayload) {
+    if (commandState === "confirm") {
+      // Room for "Open X?" plus the Yes/No buttons.
+      targetW = 300;
+      targetH = 46;
+    } else if (commandState !== "idle") {
+      // Listening / recognizing / done / error — a slightly wider pill.
+      targetW = 260;
+      targetH = ACTIVE_H;
+    } else if (hasStructuredPayload) {
       targetW = 440;
       targetH = 480;
     } else if (structuredDegraded) {
@@ -89,7 +100,7 @@ export function useOverlaySizing({
       setShowContent(true);
       showContentTimerRef.current = null;
     }, 80);
-  }, [pillState, hasStructuredPayload, structuredDegraded, showModeSelector, modeCount]);
+  }, [pillState, hasStructuredPayload, structuredDegraded, showModeSelector, modeCount, commandState]);
 
   useEffect(() => {
     return () => {

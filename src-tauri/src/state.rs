@@ -16,6 +16,26 @@ use crate::postprocess::processor::ProcessorChain;
 use crate::postprocess::types::{ProcessorConfig, WritingStyle};
 use crate::storage::database::Database;
 
+/// Which capture is currently active.
+///
+/// Dictation and Command Mode share the one microphone + Whisper engine, so a
+/// stray hotkey release must not run the wrong pipeline.  The stop paths key off
+/// this to decide whether a capture is theirs to finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMode {
+    Idle,
+    Dictation,
+    Command,
+}
+
+/// A Command-Mode action awaiting user confirmation — currently only a
+/// low-confidence "open app" match (we never guess-launch the wrong app).
+#[derive(Debug, Clone)]
+pub struct PendingCommand {
+    pub app_id: String,
+    pub name: String,
+}
+
 /// Central application state, managed by Tauri.
 ///
 /// All mutable fields are behind `Mutex` for thread-safe access from
@@ -76,6 +96,21 @@ pub struct AppState {
     /// state. Stop waits briefly on this before final transcription so large
     /// models don't double-allocate preview + final decode buffers.
     pub preview_done_rx: Mutex<Option<oneshot::Receiver<()>>>,
+
+    // ── Command Mode ──────────────────────────────────────────────────────
+    /// Which capture (dictation vs command) is currently active. This is the
+    /// ownership gate: a start claims it (Idle → mode), a stop releases it.
+    pub capture_mode: Mutex<CaptureMode>,
+    /// True once `audio.start()` has succeeded for the active capture. Lets the
+    /// stop path distinguish "still starting" from "live" via a plain atomic,
+    /// avoiding a capture_mode↔audio lock-order inversion.
+    pub capture_live: std::sync::atomic::AtomicBool,
+    /// Set when a stop arrives before the capture is live (a quick push-to-talk
+    /// tap). The start path consumes it once audio is up and stops itself, so a
+    /// fast tap can never leave a capture stuck "recording" forever.
+    pub pending_stop: std::sync::atomic::AtomicBool,
+    /// A resolved command awaiting confirmation (low-confidence app match).
+    pub pending_command: Mutex<Option<PendingCommand>>,
 }
 
 impl AppState {
@@ -120,6 +155,10 @@ impl AppState {
             llm_models_dir,
             screen_context_rx: Mutex::new(None),
             preview_done_rx: Mutex::new(None),
+            capture_mode: Mutex::new(CaptureMode::Idle),
+            capture_live: std::sync::atomic::AtomicBool::new(false),
+            pending_stop: std::sync::atomic::AtomicBool::new(false),
+            pending_command: Mutex::new(None),
         }
     }
 }

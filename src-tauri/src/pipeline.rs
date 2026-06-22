@@ -43,6 +43,92 @@ fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into
     let _ = app_handle.emit("recording-state-change", "error");
 }
 
+// ── Capture ownership coordination ───────────────────────────────────────
+//
+// Dictation and Command Mode share one mic + Whisper engine.  `capture_mode`
+// is the ownership gate; `capture_live` + `pending_stop` close the start-vs-stop
+// race for quick push-to-talk taps (a release that lands before `audio.start()`
+// flips the engine live).  All capture_mode locks recover from poison rather
+// than failing open — a poisoned safety gate must not silently behave as "not
+// owned".
+use std::sync::atomic::Ordering as CaptureOrdering;
+
+fn read_capture_mode(state: &AppState) -> crate::state::CaptureMode {
+    match state.capture_mode.lock() {
+        Ok(g) => *g,
+        Err(p) => *p.into_inner(),
+    }
+}
+
+/// Atomically claim capture ownership for `mode`. Returns false if the mic is
+/// already owned (anything other than Idle), making start-vs-start race-free.
+fn claim_capture(state: &AppState, mode: crate::state::CaptureMode) -> bool {
+    let mut guard = match state.capture_mode.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if *guard != crate::state::CaptureMode::Idle {
+        return false;
+    }
+    *guard = mode;
+    state.pending_stop.store(false, CaptureOrdering::SeqCst);
+    state.capture_live.store(false, CaptureOrdering::SeqCst);
+    true
+}
+
+/// Mark the active capture as live (audio is actually recording).
+fn mark_capture_live(state: &AppState) {
+    state.capture_live.store(true, CaptureOrdering::SeqCst);
+}
+
+/// Release capture ownership back to Idle.
+fn release_capture(state: &AppState) {
+    state.capture_live.store(false, CaptureOrdering::SeqCst);
+    let mut guard = match state.capture_mode.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    *guard = crate::state::CaptureMode::Idle;
+}
+
+/// Called by a start path once audio is live: returns true if a stop arrived
+/// during startup (so the caller should stop immediately). The swap happens
+/// under the capture_mode lock to serialize with [`request_stop`].
+fn take_startup_stop(state: &AppState) -> bool {
+    let _guard = match state.capture_mode.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    state.pending_stop.swap(false, CaptureOrdering::SeqCst)
+}
+
+enum StopDecision {
+    /// Capture is live — stop and process now.
+    StopNow,
+    /// Still starting — deferred; the start path will stop once live.
+    Deferred,
+    /// This capture isn't owned by the requesting path.
+    NotOurs,
+}
+
+/// Decide what a stop request for `owner` should do, coordinating with the
+/// start path via the capture_mode lock + `capture_live` atomic.
+fn request_stop(state: &AppState, owner: crate::state::CaptureMode) -> StopDecision {
+    let _guard = match state.capture_mode.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if *_guard != owner {
+        return StopDecision::NotOurs;
+    }
+    if state.capture_live.load(CaptureOrdering::SeqCst) {
+        StopDecision::StopNow
+    } else {
+        state.pending_stop.store(true, CaptureOrdering::SeqCst);
+        StopDecision::Deferred
+    }
+}
+
 /// Toggle recording on/off. Called by the frontend start/stop commands.
 pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
@@ -66,34 +152,44 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
     }
 }
 
-/// Start recording only if not already recording (used by hotkey hold/double-tap).
-pub async fn start_if_idle(app_handle: &tauri::AppHandle) {
-    let state = app_handle.state::<AppState>();
-    let is_recording = state
-        .audio
-        .lock()
-        .map(|a| a.is_recording())
-        .unwrap_or(false);
-    if !is_recording {
-        start_recording(app_handle, &state);
-    }
+// ── Hotkey entry points ──────────────────────────────────────────────────
+//
+// The hotkey hook is a single serialized thread: a key-down's `fire_start` runs
+// to completion before the matching key-up's `fire_stop`.  By claiming ownership
+// / deciding the stop SYNCHRONOUSLY here (then spawning the heavy async work), a
+// release can never be processed before its press has claimed ownership — which
+// closes the stop-before-claim race entirely.
+
+/// Claim capture ownership for a hotkey press. Call synchronously on the hook
+/// thread BEFORE spawning the capture worker. Returns false if already owned.
+pub fn try_claim_capture(app_handle: &tauri::AppHandle, mode: crate::state::CaptureMode) -> bool {
+    claim_capture(&app_handle.state::<AppState>(), mode)
 }
 
-/// Stop recording only if currently recording (used by hotkey release/toggle-off).
-pub async fn stop_if_recording(app_handle: &tauri::AppHandle) {
-    let state = app_handle.state::<AppState>();
-    let is_recording = state
-        .audio
-        .lock()
-        .map(|a| a.is_recording())
-        .unwrap_or(false);
-    if is_recording {
-        stop_and_transcribe(app_handle, &state).await;
-    }
+/// Decide whether a hotkey release should stop now. Call synchronously on the
+/// hook thread. A release that lands before the capture is live is recorded as a
+/// deferred stop inside `request_stop` (the start worker honors it once live).
+pub fn should_stop_now(app_handle: &tauri::AppHandle, owner: crate::state::CaptureMode) -> bool {
+    matches!(
+        request_stop(&app_handle.state::<AppState>(), owner),
+        StopDecision::StopNow
+    )
 }
 
-/// Begin microphone capture.
+/// Begin microphone capture (frontend / toggle entry — claims ownership itself).
 pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
+    // Race-free check-and-set that requires Idle, so it bails if the mic is
+    // already owned — by an active dictation (no self-corruption) or by Command
+    // Mode.  The hotkey path claims separately (synchronously on the hook
+    // thread) and calls `start_recording_inner` directly.
+    if !claim_capture(state, crate::state::CaptureMode::Dictation) {
+        return;
+    }
+    start_recording_inner(app_handle, state);
+}
+
+/// The dictation start body. Assumes capture ownership is ALREADY claimed.
+pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppState) {
     // Snapshot the foreground window BEFORE we do anything that might steal focus.
     let fg = capture_foreground_window();
     if let Ok(mut prev) = state.prev_foreground.lock() {
@@ -204,6 +300,8 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 
     if let Err(e) = audio.start() {
         eprintln!("Failed to start recording: {e}");
+        // Release the ownership we just claimed so the mic isn't left stuck.
+        release_capture(state);
         emit_error(
             app_handle,
             e.code(),
@@ -216,8 +314,6 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
     let is_recording = audio.is_recording_flag();
     let rms_level = audio.rms_level_ref();
     drop(audio);
-
-    let _ = app_handle.emit("recording-state-change", "recording");
 
     // Spawn a periodic task that emits audio-level events to the frontend.
     // 150 ms strikes a balance between smooth VU meter animation and CPU usage.
@@ -390,6 +486,25 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
             });
         }
     }
+
+    // All startup side-effects (audio-level emitter, live-preview worker) are
+    // installed now — only here do we mark the capture live, so a release during
+    // setup is *deferred* (no concurrent stop racing the preview-worker install)
+    // and then honored immediately below.  A quick tap can never stick.
+    mark_capture_live(state);
+    if take_startup_stop(state) {
+        // Released during startup (quick tap) — stop instead of showing recording.
+        let handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            let st = handle.state::<AppState>();
+            stop_and_transcribe(&handle, &st).await;
+        });
+    } else {
+        // Announce "recording" only now that the capture is fully live. Emitting
+        // it earlier let a frontend stop/cancel land mid-setup and race this
+        // worker (release with capture_mode already reset to Idle).
+        let _ = app_handle.emit("recording-state-change", "recording");
+    }
 }
 
 async fn wait_for_preview_worker(state: &AppState) {
@@ -411,6 +526,16 @@ async fn wait_for_preview_worker(state: &AppState) {
 
 /// Stop capture, run Whisper inference, post-process, and output the text.
 pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState) {
+    // Never finish a Command-Mode capture as dictation.  The hotkey stop path
+    // already checks this, but the public `stop_recording` command and
+    // `toggle_recording` call here directly — without this guard they could
+    // transcribe a command utterance as text.  Poison-safe read (a poisoned
+    // safety gate must not silently behave as "not command").  Ownership is
+    // released only after we claim the samples below.
+    if read_capture_mode(state) == crate::state::CaptureMode::Command {
+        return;
+    }
+
     // Restore system volume immediately — don't wait for transcription.
     crate::audio::ducking::unduck();
 
@@ -463,6 +588,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to stop recording: {e}");
+                release_capture(state);
                 emit_error(
                     app_handle,
                     e.code(),
@@ -472,6 +598,10 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             }
         }
     };
+
+    // Samples are claimed — release capture ownership so the next dictation or
+    // command capture can begin while this one finishes transcribing.
+    release_capture(state);
 
     // 1a. Let the live-preview worker drop its WhisperState before final
     // transcription allocates a fresh state. This avoids overlapping decode
@@ -919,14 +1049,368 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
 
 /// Cancel an in-progress recording without transcribing.
 pub fn cancel_recording(app_handle: &tauri::AppHandle, state: &AppState) {
+    // Reset the surface that actually owns the mic — cancelling a Command-Mode
+    // capture must clear the command pill, not emit a dictation idle event.
+    let was_command = read_capture_mode(state) == crate::state::CaptureMode::Command;
+    release_capture(state);
     crate::audio::ducking::unduck();
     if let Ok(mut audio) = state.audio.lock() {
         audio.cancel();
     }
-    let _ = app_handle.emit("recording-state-change", "idle");
+    if was_command {
+        let _ = app_handle.emit("command-state-change", "idle");
+    } else {
+        let _ = app_handle.emit("recording-state-change", "idle");
+    }
 }
 
 /// Get the current audio level for the VU meter (0.0–1.0).
 pub fn current_audio_level(state: &AppState) -> f32 {
     state.audio.lock().map(|a| a.current_level()).unwrap_or(0.0)
+}
+
+// ── Command Mode ─────────────────────────────────────────────────────────
+//
+// A separate capture path from dictation: the whole utterance is one command,
+// triggered by the Right Ctrl hotkey (see hotkey.rs).  Shares the mic + Whisper
+// engine but routes the transcript through the command matcher + executor
+// (see crate::actions) instead of producing dictated text.
+
+/// Payload for `command-confirm` — a low-confidence action awaiting Enter/Esc.
+#[derive(Clone, serde::Serialize)]
+struct CommandConfirmPayload {
+    summary: String,
+}
+
+/// Payload for `command-result`.
+#[derive(Clone, serde::Serialize)]
+struct CommandResultPayload {
+    status: &'static str, // "done" | "error"
+    summary: String,
+}
+
+fn emit_command_result(
+    app_handle: &tauri::AppHandle,
+    status: &'static str,
+    summary: impl Into<String>,
+) {
+    let _ = app_handle.emit(
+        "command-result",
+        &CommandResultPayload {
+            status,
+            summary: summary.into(),
+        },
+    );
+}
+
+/// The command capture body. Assumes capture ownership is ALREADY claimed (the
+/// hotkey hook claims synchronously on its thread before spawning this).
+pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<AppState>();
+
+    // Snapshot the foreground window so we can restore focus before firing key
+    // chords / target window actions at it.
+    let fg = capture_foreground_window();
+    if let Ok(mut prev) = state.prev_foreground.lock() {
+        *prev = fg;
+    }
+    if let Ok(mut pending) = state.pending_command.lock() {
+        *pending = None;
+    }
+
+    // Scope the audio guard so it's provably dropped before any `.await` below
+    // (a MutexGuard isn't Send, and this fn is spawned as a Send future).
+    let start_result = {
+        let mut audio = match state.audio.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.cancel();
+                guard
+            }
+        };
+        audio.start()
+    };
+    if let Err(e) = start_result {
+        release_capture(&state);
+        emit_command_result(app_handle, "error", format!("Microphone error: {e}"));
+        return;
+    }
+
+    // Audio is live. Honor a release that already landed during startup (a quick
+    // tap), otherwise show the listening pill.
+    mark_capture_live(&state);
+    if take_startup_stop(&state) {
+        stop_and_run_command(app_handle, &state).await;
+    } else {
+        let _ = app_handle.emit("command-state-change", "listening");
+    }
+}
+
+/// Stop a command capture and run the recognized command. The hotkey hook
+/// decides StopNow synchronously, then spawns this.
+pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &AppState) {
+    let _ = app_handle.emit("command-state-change", "recognizing");
+
+    let mut samples = {
+        let mut audio = match state.audio.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match audio.stop() {
+            Ok(s) => s,
+            Err(e) => {
+                release_capture(state);
+                emit_command_result(app_handle, "error", format!("Microphone error: {e}"));
+                return;
+            }
+        }
+    };
+
+    // Samples claimed — release capture ownership (held through audio.stop() so a
+    // racing dictation start can't grab the mic mid-stop).
+    release_capture(state);
+
+    if samples.is_empty() {
+        let _ = app_handle.emit("command-state-change", "idle");
+        return;
+    }
+    crate::audio::normalize::normalize_peak(&mut samples);
+
+    let engine = {
+        let guard = match state.engine.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.as_ref().map(Arc::clone)
+    };
+    let Some(engine) = engine else {
+        emit_command_result(app_handle, "error", "No speech model loaded");
+        return;
+    };
+
+    let transcription =
+        match tokio::task::spawn_blocking(move || engine.transcribe(&samples)).await {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                emit_command_result(app_handle, "error", format!("Transcription failed: {e}"));
+                return;
+            }
+            Err(e) => {
+                emit_command_result(app_handle, "error", format!("Transcription crashed: {e}"));
+                return;
+            }
+        };
+
+    let utterance = transcription.text.trim().to_string();
+
+    // Fast path: deterministic grammar match (microseconds, no LLM).
+    if let Some(intent) = crate::actions::match_command(&utterance) {
+        run_intent(app_handle, state, intent).await;
+        return;
+    }
+
+    // Slow path: free-form phrasing the grammar didn't catch → Qwen fallback.
+    if let Some(intent) = classify_command_via_llm(app_handle, state, &utterance).await {
+        run_intent(app_handle, state, intent).await;
+        return;
+    }
+
+    let heard = if utterance.is_empty() {
+        "nothing".to_string()
+    } else {
+        format!("\u{201c}{utterance}\u{201d}")
+    };
+    emit_command_result(app_handle, "error", format!("No command recognized ({heard})"));
+}
+
+/// Try the Qwen LLM fallback to interpret a free-form command the fast-path
+/// matcher didn't recognize.  Reuses the Structured-Mode runner (lazy-loading
+/// the configured LLM if none is loaded).  Returns `None` on any failure — the
+/// caller then reports "unrecognized".
+/// Get the loaded LLM runner, or lazily load the configured model.  Uses the
+/// same model-selection chain as Structured Mode (active setting →
+/// in-memory active id → preferred downloaded), so Command Mode never loads a
+/// *different* model than the one the user activated — whichever loads first
+/// becomes the shared `state.llm_runner`.  Returns None if nothing is
+/// configured/available or the load fails.
+fn ensure_llm_runner(state: &AppState) -> Option<Arc<crate::llm::runner::LlmRunner>> {
+    if let Some(r) = state.llm_runner.lock().ok().and_then(|g| g.clone()) {
+        return Some(r);
+    }
+    let id = crate::storage::settings::get_settings(&state.db)
+        .ok()
+        .and_then(|s| s.active_llm_model_id)
+        .filter(|id| !id.is_empty())
+        .or_else(|| state.active_llm_model_id.lock().ok().and_then(|g| g.clone()))
+        .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state))?;
+    match crate::commands::llm::load_and_activate_llm(&id, state) {
+        Ok(()) => state.llm_runner.lock().ok().and_then(|g| g.clone()),
+        Err(e) => {
+            crate::llm::diaglog::log(&format!("command LLM lazy-load failed: {e}"));
+            None
+        }
+    }
+}
+
+async fn classify_command_via_llm(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    utterance: &str,
+) -> Option<crate::actions::CommandIntent> {
+    if utterance.is_empty() {
+        return None;
+    }
+    let _ = app_handle; // reserved for future "thinking" UI; keeps signature stable
+
+    // First free-form command pays a one-time model load; subsequent ones are fast.
+    let runner = ensure_llm_runner(state)?;
+
+    let timeout = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.llm_timeout_secs)
+        .unwrap_or(8);
+
+    match runner
+        .classify_command_with_timeout(utterance.to_string(), Duration::from_secs(timeout as u64))
+        .await
+    {
+        Ok(opt) => opt,
+        Err(e) => {
+            crate::llm::diaglog::log(&format!("command classify failed: {e}"));
+            None
+        }
+    }
+}
+
+async fn run_intent(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    intent: crate::actions::CommandIntent,
+) {
+    use crate::actions::CommandIntent;
+
+    match intent {
+        CommandIntent::OpenApp(name) => {
+            // Resolve off the async runtime — a cold index spawns PowerShell, and
+            // even warm scoring shouldn't run on a tokio worker.
+            let lookup = name.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                crate::actions::app_index::resolve(&lookup)
+            })
+            .await
+            .ok()
+            .flatten();
+            match resolved {
+                None => emit_command_result(
+                    app_handle,
+                    "error",
+                    format!("No app found for \u{201c}{name}\u{201d}"),
+                ),
+                Some(r) if r.score >= crate::actions::app_index::AUTO && !r.ambiguous => {
+                    match crate::actions::app_index::launch(&r.app_id) {
+                        Ok(()) => {
+                            emit_command_result(app_handle, "done", format!("Opened {}", r.name))
+                        }
+                        Err(e) => emit_command_result(app_handle, "error", e),
+                    }
+                }
+                Some(r) => {
+                    // Low confidence or ambiguous (close runner-up) — ask first.
+                    if let Ok(mut pending) = state.pending_command.lock() {
+                        *pending = Some(crate::state::PendingCommand {
+                            app_id: r.app_id,
+                            name: r.name.clone(),
+                        });
+                    }
+                    let _ = app_handle.emit(
+                        "command-confirm",
+                        &CommandConfirmPayload {
+                            summary: format!("Open {}?", r.name),
+                        },
+                    );
+                }
+            }
+        }
+        // Foreground keystroke/media actions: restore the user's window first,
+        // then fire the keys at it.
+        CommandIntent::KeyChord(chord) => {
+            let hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
+            spawn_report(app_handle, chord.past_tense(), move || {
+                if let Some(h) = hwnd {
+                    crate::focus::restore_foreground_window_public(h);
+                }
+                crate::actions::executor::run_chord(chord)
+            })
+            .await;
+        }
+        CommandIntent::Media(action) => {
+            let hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
+            spawn_report(app_handle, action.label(), move || {
+                if let Some(h) = hwnd {
+                    crate::focus::restore_foreground_window_public(h);
+                }
+                crate::actions::executor::run_media(action)
+            })
+            .await;
+        }
+        CommandIntent::Window(action) => {
+            let hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
+            spawn_report(app_handle, action.label(), move || {
+                crate::actions::executor::run_window(action, hwnd)
+            })
+            .await;
+        }
+        // Browser actions open in the default browser — no focus restore needed.
+        CommandIntent::WebSearch(query) => {
+            spawn_report(app_handle, "Web search", move || {
+                crate::actions::executor::run_web_search(&query)
+            })
+            .await;
+        }
+        CommandIntent::OpenUrl(url) => {
+            spawn_report(app_handle, "Opened link", move || {
+                crate::actions::executor::run_open_url(&url)
+            })
+            .await;
+        }
+    }
+}
+
+/// Run a blocking command action off the async runtime and emit its result to
+/// the command pill.  `label` is the success summary ("Copied", "Web search").
+async fn spawn_report(
+    app_handle: &tauri::AppHandle,
+    label: &str,
+    f: impl FnOnce() -> Result<(), String> + Send + 'static,
+) {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(())) => emit_command_result(app_handle, "done", label.to_string()),
+        Ok(Err(e)) => emit_command_result(app_handle, "error", e),
+        Err(_) => emit_command_result(app_handle, "error", "Command execution failed"),
+    }
+}
+
+/// Execute the pending (confirmed) command — called by the `confirm_command`
+/// Tauri command when the user accepts a low-confidence app match.
+pub fn confirm_pending_command(app_handle: &tauri::AppHandle, state: &AppState) {
+    let pending = state
+        .pending_command
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    let Some(p) = pending else {
+        return;
+    };
+    match crate::actions::app_index::launch(&p.app_id) {
+        Ok(()) => emit_command_result(app_handle, "done", format!("Opened {}", p.name)),
+        Err(e) => emit_command_result(app_handle, "error", e),
+    }
+}
+
+/// Clear a pending command (user cancelled the confirm).
+pub fn cancel_pending_command(app_handle: &tauri::AppHandle, state: &AppState) {
+    if let Ok(mut g) = state.pending_command.lock() {
+        *g = None;
+    }
+    let _ = app_handle.emit("command-state-change", "idle");
 }

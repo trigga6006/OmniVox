@@ -129,6 +129,10 @@ pub struct AppSettings {
     pub voice_commands: bool,
     /// Enable the "send" voice command independently — say "send" at the end to press Enter.
     pub command_send: bool,
+    /// Command Mode: a dedicated push-to-talk hotkey whose entire utterance is a
+    /// command (launch app, key chord, media key, window action) instead of
+    /// dictated text.  Disabled by default.
+    pub command_mode: bool,
     /// Automatically press Enter after transcription to send the message (TypeSimulation/Both only).
     pub ship_mode: bool,
     /// Hide the floating pill overlay (invisible but still interactive).
@@ -187,6 +191,7 @@ impl Default for AppSettings {
             auto_switch_modes: true,
             voice_commands: true,
             command_send: true,
+            command_mode: false,
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),

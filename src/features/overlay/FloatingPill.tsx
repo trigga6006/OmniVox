@@ -25,6 +25,9 @@ import {
   onStructuredOutputReady,
   onStructuredModeDegraded,
   onWhisperGpuFallback,
+  onCommandStateChange,
+  onCommandConfirm,
+  onCommandResult,
   getSettings,
   type ContextMode,
   type StructuredOutputPayload,
@@ -36,6 +39,8 @@ import { ModeSelector } from "./ModeSelector";
 import { StructuredPanel } from "./StructuredPanel";
 import { StructuredModeToggle } from "./StructuredModeToggle";
 import { IdleWaveform } from "./IdleWaveform";
+import { CommandPill } from "./CommandPill";
+import { useCommandStore } from "@/stores/commandStore";
 import { IDLE_H, IDLE_W, useOverlaySizing } from "./useOverlaySizing";
 import "./FloatingPill.css";
 
@@ -58,6 +63,7 @@ export function FloatingPill() {
   const status = useRecordingStore((s) => s.status);
   const duration = useRecordingStore((s) => s.duration);
   const lastTranscription = useRecordingStore((s) => s.lastTranscription);
+  const commandState = useCommandStore((s) => s.state);
 
   const [pillState, setPillState] = useState<PillState>("idle");
   const [flashText, setFlashText] = useState<string | null>(null);
@@ -111,6 +117,7 @@ export function FloatingPill() {
     structuredDegraded,
     showModeSelector,
     modeCount: modes.length,
+    commandState,
   });
   const handleDictatingChange = useCallback((active: boolean) => {
     if (dictatingGraceTimerRef.current !== null) {
@@ -288,6 +295,50 @@ export function FloatingPill() {
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
+    };
+  }, []);
+
+  // Command Mode events → drive the command pill (a separate, mutually-
+  // exclusive surface from dictation).  done/error are transient: they linger
+  // briefly then the pill collapses back to idle.
+  useEffect(() => {
+    let clearTimer: number | null = null;
+    const scheduleClear = () => {
+      if (clearTimer !== null) window.clearTimeout(clearTimer);
+      clearTimer = window.setTimeout(() => {
+        useCommandStore.getState().reset();
+        clearTimer = null;
+      }, 2600);
+    };
+
+    const unState = onCommandStateChange((s) => {
+      if (clearTimer !== null) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      if (s === "listening") useCommandStore.getState().setState("listening");
+      else if (s === "recognizing") useCommandStore.getState().setState("recognizing");
+      else useCommandStore.getState().reset();
+    });
+    const unConfirm = onCommandConfirm((p) => {
+      if (clearTimer !== null) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      useCommandStore.getState().setState("confirm", p.summary);
+    });
+    const unResult = onCommandResult((p) => {
+      useCommandStore
+        .getState()
+        .setState(p.status === "done" ? "done" : "error", p.summary);
+      scheduleClear();
+    });
+
+    return () => {
+      if (clearTimer !== null) window.clearTimeout(clearTimer);
+      unState.then((fn) => fn());
+      unConfirm.then((fn) => fn());
+      unResult.then((fn) => fn());
     };
   }, []);
 
@@ -475,6 +526,16 @@ export function FloatingPill() {
   const isError = pillState === "error";
 
   const modeColor = MODE_COLORS[activeColor] ?? MODE_COLORS.amber;
+
+  // Command Mode takes over the overlay while active — it's mutually exclusive
+  // with dictation (the backend's capture-mode guard guarantees only one runs).
+  if (commandState !== "idle") {
+    return (
+      <div className="w-screen h-screen flex flex-col justify-end items-center">
+        <CommandPill showContent={showContent} />
+      </div>
+    );
+  }
 
   return (
     <div className="w-screen h-screen flex flex-col justify-end items-center">
