@@ -565,6 +565,7 @@ pub fn run() {
             commands::set_active_llm_model,
             commands::llm_test_extract,
             commands::paste_structured_output,
+            commands::confirm_command_plan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

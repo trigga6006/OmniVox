@@ -115,6 +115,27 @@ pub async fn paste_structured_output(
         .map_err(|e| e.to_string())
 }
 
+/// Approve or discard a pending command-intent plan proposed because it
+/// contained a destructive step.  With `approve = true` the stored plan is
+/// executed; otherwise it is dropped.  Either way the pending slot is cleared.
+#[tauri::command]
+pub async fn confirm_command_plan(
+    approve: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let plan = state
+        .pending_command_plan
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    if let Some(items) = plan {
+        if approve {
+            crate::pipeline::execute_command_plan(&state, items).await;
+        }
+    }
+    Ok(())
+}
+
 /// Dev / Settings "Test" button — runs the currently loaded LLM on a canned
 /// input (or a user-provided one) and returns the rendered Markdown.
 #[tauri::command]

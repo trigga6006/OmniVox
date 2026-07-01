@@ -107,6 +107,18 @@ impl OutputRouter {
         Ok(())
     }
 
+    /// Execute a command-intent plan: type literal text and run each command
+    /// keystroke, in order, via the OS text/keystroke API (never the
+    /// clipboard).  The intent layer is about *doing* things, so it always uses
+    /// the direct typing path regardless of the user's output mode — reusing
+    /// the same `type_segments` helper the Typing mode already relies on.
+    pub fn run_intent_segments(&self, segments: &[OutputSegment]) -> AppResult<()> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+        self.type_segments(segments)
+    }
+
     /// Execute a sequence of text + command segments via paste + keystrokes.
     ///
     /// When `restore_prior_clipboard` is true the user's prior clipboard text

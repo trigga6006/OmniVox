@@ -585,6 +585,42 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
+    // 3a. Command intent branch.
+    //
+    // When Command Intent is enabled and the utterance begins with the trigger
+    // word "computer", route it through the local LLM to build a plan of known
+    // actions and execute them — diverting from Structured Mode, voice-command
+    // parsing, and plain output for this utterance.  Any failure degrades to
+    // plain output with the (trigger-stripped) dictation so the user never
+    // loses their words.  Mutually exclusive with the Structured branch below.
+    let command_intent_enabled = settings.as_ref().map(|s| s.command_intent).unwrap_or(false);
+    let mut processed_text = processed_text;
+    if command_intent_enabled {
+        if let Some(stripped) =
+            crate::llm::intent::detect_and_strip_intent_trigger(&processed_text)
+        {
+            match run_command_intent(
+                app_handle,
+                state,
+                settings.as_ref(),
+                &stripped,
+                &transcription,
+            )
+            .await
+            {
+                IntentOutcome::Handled => {
+                    let _ = app_handle.emit("recording-state-change", "idle");
+                    return;
+                }
+                // Could not plan/run — fall through to normal output, but with
+                // the trigger word stripped so "computer" isn't typed.
+                IntentOutcome::Degrade => {
+                    processed_text = stripped;
+                }
+            }
+        }
+    }
+
     // 3b. Structured Mode branch.
     //
     // When the user has Structured Mode enabled, we divert to the local LLM
@@ -922,6 +958,172 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     }
 
     let _ = app_handle.emit("recording-state-change", "idle");
+}
+
+/// Outcome of the command-intent branch.
+enum IntentOutcome {
+    /// The plan was executed, or is awaiting confirmation — divert fully and
+    /// skip all normal output for this utterance.
+    Handled,
+    /// No plan could be produced — fall through to plain output so the user's
+    /// dictation is never lost.
+    Degrade,
+}
+
+/// Payload for `command-plan-proposed`: the human-readable steps awaiting
+/// confirmation because the plan contains a destructive action.
+#[derive(Clone, serde::Serialize)]
+struct CommandPlanPayload {
+    steps: Vec<String>,
+    destructive: bool,
+}
+
+/// Run the command-intent pipeline for one trigger-armed utterance.
+///
+/// Lazy-loads/reuses the LLM runner, asks it for a plan, decodes it, and either
+/// executes it immediately or (when it contains a destructive step and
+/// confirmation is required) stores it and emits `command-plan-proposed` for
+/// the frontend to confirm.  Returns [`IntentOutcome::Degrade`] on any failure
+/// so the caller can fall back to plain output.
+async fn run_command_intent(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    settings: Option<&crate::storage::types::AppSettings>,
+    command_text: &str,
+    transcription: &crate::asr::types::TranscriptionResult,
+) -> IntentOutcome {
+    use crate::llm::intent;
+
+    // Resolve + lazy-load the runner (mirrors the Structured Mode path).
+    let configured_llm_id = settings
+        .and_then(|s| s.active_llm_model_id.clone())
+        .filter(|id| !id.is_empty())
+        .or_else(|| state.active_llm_model_id.lock().ok().and_then(|g| g.clone()))
+        .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state));
+
+    let runner = {
+        let existing = state.llm_runner.lock().ok().and_then(|g| g.clone());
+        if existing.is_some() {
+            existing
+        } else if let Some(model_id) = configured_llm_id {
+            match crate::commands::llm::load_and_activate_llm(&model_id, state) {
+                Ok(()) => state.llm_runner.lock().ok().and_then(|g| g.clone()),
+                Err(e) => {
+                    let _ =
+                        app_handle.emit("command-intent-degraded", &format!("Load failed: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+    let runner = match runner {
+        Some(r) => r,
+        None => {
+            let _ = app_handle.emit(
+                "command-intent-degraded",
+                "No LLM model available for Command Intent. Using plain dictation.",
+            );
+            return IntentOutcome::Degrade;
+        }
+    };
+
+    let llm_timeout = settings.map(|s| s.llm_timeout_secs).unwrap_or(8);
+    let _ = app_handle.emit("recording-state-change", "structuring");
+
+    let raw = match runner
+        .plan_intent_with_timeout(command_text.to_string(), Duration::from_secs(llm_timeout as u64))
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = app_handle.emit("command-intent-degraded", &format!("Planning failed: {e}"));
+            return IntentOutcome::Degrade;
+        }
+    };
+
+    let json = intent::extract_json_object(&raw).unwrap_or(raw.as_str());
+    let items = match intent::decode_intent_plan(json) {
+        Ok(items) if !items.is_empty() => items,
+        Ok(_) => {
+            let _ = app_handle.emit(
+                "command-intent-degraded",
+                "No known actions in that command. Using plain dictation.",
+            );
+            return IntentOutcome::Degrade;
+        }
+        Err(e) => {
+            let _ = app_handle.emit("command-intent-degraded", &format!("Plan decode failed: {e}"));
+            return IntentOutcome::Degrade;
+        }
+    };
+
+    // Save the intent run to history (raw transcript preserved) just like any
+    // other transcription.
+    let record = crate::storage::types::TranscriptionRecord {
+        id: uuid::Uuid::new_v4(),
+        text: command_text.to_string(),
+        duration_ms: transcription.duration_ms,
+        model_name: transcription.model_name.clone(),
+        created_at: chrono::Utc::now(),
+        raw_transcript: Some(transcription.text.clone()),
+    };
+    if let Err(e) = crate::storage::history::save_transcription(&state.db, &record) {
+        eprintln!("Failed to save intent transcription to history: {e}");
+    }
+
+    let confirm_required = settings.map(|s| s.intent_confirm_destructive).unwrap_or(true);
+    if confirm_required && intent::plan_has_destructive(&items) {
+        // Do NOT execute — hand the plan to the frontend for approval and
+        // stash it for `confirm_command_plan`.
+        let steps: Vec<String> = items.iter().map(intent::describe_plan_item).collect();
+        if let Ok(mut pending) = state.pending_command_plan.lock() {
+            *pending = Some(items);
+        }
+        let _ = app_handle.emit(
+            "command-plan-proposed",
+            &CommandPlanPayload {
+                steps,
+                destructive: true,
+            },
+        );
+        return IntentOutcome::Handled;
+    }
+
+    // Safe (or confirmation disabled) — execute immediately.
+    execute_command_plan(state, items).await;
+    let _ = app_handle.emit("transcription-result", command_text);
+    IntentOutcome::Handled
+}
+
+/// Convert a decoded plan into output segments, restore the user's foreground
+/// window, and execute the plan via the router's typing path.  Shared by the
+/// immediate-execution path and `confirm_command_plan`.
+pub(crate) async fn execute_command_plan(state: &AppState, items: Vec<crate::llm::intent::PlanItem>) {
+    use crate::llm::intent::PlanItem;
+    use crate::postprocess::voice_commands::OutputSegment;
+
+    let segments: Vec<OutputSegment> = items
+        .into_iter()
+        .map(|it| match it {
+            PlanItem::Type(text) => OutputSegment::Text(text),
+            PlanItem::Action(cmd) => OutputSegment::Command(cmd),
+        })
+        .collect();
+
+    // Restore focus to the user's app before injecting keystrokes.
+    let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
+    if let Some(hwnd) = prev_hwnd {
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::focus::restore_foreground_window_public(hwnd)
+        })
+        .await;
+    }
+
+    if let Err(e) = state.output.run_intent_segments(&segments) {
+        crate::llm::diaglog::log(&format!("intent: plan execution failed: {e}"));
+    }
 }
 
 /// Cancel an in-progress recording without transcribing.

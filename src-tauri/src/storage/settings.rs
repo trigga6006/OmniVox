@@ -148,6 +148,16 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.structured_use_screen_context);
 
+    let command_intent = map
+        .get("command_intent")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.command_intent);
+
+    let intent_confirm_destructive = map
+        .get("intent_confirm_destructive")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.intent_confirm_destructive);
+
     Ok(AppSettings {
         theme,
         language,
@@ -176,6 +186,8 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         structured_voice_command,
         use_screen_context,
         structured_use_screen_context,
+        command_intent,
+        intent_confirm_destructive,
     })
 }
 
@@ -213,7 +225,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     let llm_timeout_str = settings.llm_timeout_secs.to_string();
     let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 26] = [
+    let pairs: [(&str, &str); 28] = [
         ("theme", settings.theme.as_str()),
         ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
@@ -251,6 +263,11 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         (
             "structured_use_screen_context",
             b(settings.structured_use_screen_context),
+        ),
+        ("command_intent", b(settings.command_intent)),
+        (
+            "intent_confirm_destructive",
+            b(settings.intent_confirm_destructive),
         ),
     ];
 

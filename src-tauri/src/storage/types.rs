@@ -184,6 +184,14 @@ pub struct AppSettings {
     /// `use_screen_context` (Phase 1 alone covers most cases; this adds the
     /// reconciliation layer for multi-token strings).
     pub structured_use_screen_context: bool,
+    /// Command intent (experimental): when the user prefixes a dictation with
+    /// the trigger word "computer", route it through the local LLM to build a
+    /// plan of known actions and execute them, instead of typing the words.
+    pub command_intent: bool,
+    /// Require an explicit confirmation before executing any intent plan that
+    /// contains a destructive step (launch app, cut, close window).  On by
+    /// default — safe by default.
+    pub intent_confirm_destructive: bool,
 }
 
 impl Default for AppSettings {
@@ -216,6 +224,8 @@ impl Default for AppSettings {
             structured_voice_command: false,
             use_screen_context: true,
             structured_use_screen_context: true,
+            command_intent: false,
+            intent_confirm_destructive: true,
         }
     }
 }

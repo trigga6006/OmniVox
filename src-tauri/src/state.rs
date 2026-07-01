@@ -59,6 +59,10 @@ pub struct AppState {
     pub llm_runner: Mutex<Option<Arc<LlmRunner>>>,
     /// ID of the currently active LLM model.
     pub active_llm_model_id: Mutex<Option<String>>,
+    /// A command-intent plan awaiting user confirmation because it contains a
+    /// destructive step.  `Some` between emitting `command-plan-proposed` and
+    /// the user answering via `confirm_command_plan`.
+    pub pending_command_plan: Mutex<Option<Vec<crate::llm::intent::PlanItem>>>,
     /// LLM model catalog.
     pub llm_model_manager: LlmModelManager,
     /// Streaming LLM downloader (sibling of `downloader` but on its own event channel).
@@ -115,6 +119,7 @@ impl AppState {
             active_context_mode_id: Mutex::new(None),
             llm_runner: Mutex::new(None),
             active_llm_model_id: Mutex::new(None),
+            pending_command_plan: Mutex::new(None),
             llm_model_manager: LlmModelManager::new(llm_models_dir.clone()),
             llm_downloader: LlmModelDownloader::new(llm_models_dir.clone()),
             llm_models_dir,
