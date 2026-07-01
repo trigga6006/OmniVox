@@ -90,16 +90,57 @@ pub(crate) fn get_process_name_from_hwnd(_hwnd: isize) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn restore_foreground_window(hwnd: isize) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::AttachThreadInput;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
 
     let current = unsafe { GetForegroundWindow() };
     if !current.is_null() && current as isize == hwnd {
         return;
     }
 
+    let target = hwnd as *mut std::ffi::c_void;
+
     unsafe {
-        SetForegroundWindow(hwnd as *mut std::ffi::c_void);
+        // Windows refuses SetForegroundWindow across processes unless the
+        // calling thread shares an input queue with the thread that currently
+        // owns the foreground. Temporarily attach the foreground thread and our
+        // own thread to the target window's thread so the change is honored,
+        // then detach. This is the standard AttachThreadInput technique.
+        let fg_thread = if current.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(current, std::ptr::null_mut())
+        };
+        let target_thread = GetWindowThreadProcessId(target, std::ptr::null_mut());
+        let our_thread = GetCurrentThreadId();
+
+        // Skip any attach where the thread ids coincide (attaching a thread to
+        // itself is invalid) or where a thread id could not be resolved.
+        let attach_fg = target_thread != 0 && fg_thread != 0 && fg_thread != target_thread;
+        let attach_ours =
+            target_thread != 0 && our_thread != target_thread && our_thread != fg_thread;
+
+        if attach_fg {
+            AttachThreadInput(fg_thread, target_thread, 1);
+        }
+        if attach_ours {
+            AttachThreadInput(our_thread, target_thread, 1);
+        }
+
+        SetForegroundWindow(target);
+        BringWindowToTop(target);
+
+        if attach_ours {
+            AttachThreadInput(our_thread, target_thread, 0);
+        }
+        if attach_fg {
+            AttachThreadInput(fg_thread, target_thread, 0);
+        }
     }
+
     std::thread::sleep(std::time::Duration::from_millis(50));
     deselect_after_focus_restore(hwnd);
 }
