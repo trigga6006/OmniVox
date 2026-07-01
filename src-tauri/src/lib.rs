@@ -504,6 +504,12 @@ pub fn run() {
             commands::update_snippet,
             commands::delete_snippet,
             commands::list_snippets,
+            // Voice command registry (5)
+            commands::list_voice_commands,
+            commands::add_voice_command,
+            commands::update_voice_command,
+            commands::delete_voice_command,
+            commands::reset_voice_commands,
             // History commands (5)
             commands::search_history,
             commands::recent_history,

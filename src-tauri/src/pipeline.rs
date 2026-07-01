@@ -798,12 +798,18 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     let voice_commands_enabled = settings.as_ref().map(|s| s.voice_commands).unwrap_or(false);
     let command_send_enabled = settings.as_ref().map(|s| s.command_send).unwrap_or(true);
     let voice_segments = if voice_commands_enabled && structured.is_none() {
-        Some(
-            crate::postprocess::voice_commands::parse_commands_with_options(
-                &final_text,
-                command_send_enabled,
-            ),
-        )
+        // Load the user-editable command table from the DB. On any load error
+        // fall back to the built-ins so dictation never breaks. When
+        // `command_send` is off, exclude the Send command for this call.
+        let mut table = crate::storage::voice_commands::list_enabled(&state.db)
+            .unwrap_or_else(|_| crate::postprocess::voice_commands::default_command_table());
+        if !command_send_enabled {
+            table.retain(|d| d.command != crate::postprocess::voice_commands::VoiceCommand::Send);
+        }
+        Some(crate::postprocess::voice_commands::parse_commands_with_table(
+            &final_text,
+            &table,
+        ))
     } else {
         None
     };
