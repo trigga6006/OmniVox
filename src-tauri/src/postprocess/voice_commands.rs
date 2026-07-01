@@ -180,6 +180,141 @@ pub fn tokenize_command_line(line: &str) -> Vec<String> {
     tokens
 }
 
+// ── action <-> VoiceCommand encoding ─────────────────────────────
+//
+// The canonical string codec for a [`VoiceCommand`].  Built-ins encode as
+// their variant name; custom key combos as `key:ctrl+shift+k`; mouse actions
+// as `mouse:click` etc.; app launches as `launch:<command line>`.  These are
+// the exact strings persisted in the voice-command registry AND the strings
+// the LLM intent layer emits — decoding lives here, next to the enum, so both
+// consumers share one source of truth.
+
+/// Decode a stored `action` string into a [`VoiceCommand`].
+///
+/// Returns `None` for anything unrecognized (caller skips + logs).
+pub fn action_to_command(action: &str) -> Option<VoiceCommand> {
+    match action {
+        "NewLine" => Some(VoiceCommand::NewLine),
+        "NewParagraph" => Some(VoiceCommand::NewParagraph),
+        "DeleteLastWord" => Some(VoiceCommand::DeleteLastWord),
+        "Send" => Some(VoiceCommand::Send),
+        "SelectAll" => Some(VoiceCommand::SelectAll),
+        "Copy" => Some(VoiceCommand::Copy),
+        "Cut" => Some(VoiceCommand::Cut),
+        "Undo" => Some(VoiceCommand::Undo),
+        "Redo" => Some(VoiceCommand::Redo),
+        "PressTab" => Some(VoiceCommand::PressTab),
+        "PressEscape" => Some(VoiceCommand::PressEscape),
+        "PressEnter" => Some(VoiceCommand::PressEnter),
+        "mouse:click" => Some(VoiceCommand::MouseClick),
+        "mouse:right_click" => Some(VoiceCommand::MouseRightClick),
+        "mouse:double_click" => Some(VoiceCommand::MouseDoubleClick),
+        "mouse:scroll_up" => Some(VoiceCommand::ScrollUp),
+        "mouse:scroll_down" => Some(VoiceCommand::ScrollDown),
+        other if other.starts_with("key:") => parse_key_combo(other),
+        // Everything after "launch:" is the raw command line (no shell).
+        other if other.starts_with("launch:") => {
+            Some(VoiceCommand::LaunchApp(other["launch:".len()..].to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Encode a [`VoiceCommand`] into its canonical `action` string.
+pub fn command_to_action(cmd: &VoiceCommand) -> String {
+    match cmd {
+        VoiceCommand::NewLine => "NewLine".into(),
+        VoiceCommand::NewParagraph => "NewParagraph".into(),
+        VoiceCommand::DeleteLastWord => "DeleteLastWord".into(),
+        VoiceCommand::Send => "Send".into(),
+        VoiceCommand::SelectAll => "SelectAll".into(),
+        VoiceCommand::Copy => "Copy".into(),
+        VoiceCommand::Cut => "Cut".into(),
+        VoiceCommand::Undo => "Undo".into(),
+        VoiceCommand::Redo => "Redo".into(),
+        VoiceCommand::PressTab => "PressTab".into(),
+        VoiceCommand::PressEscape => "PressEscape".into(),
+        VoiceCommand::PressEnter => "PressEnter".into(),
+        VoiceCommand::KeyCombo { modifiers, key } => encode_key_combo(modifiers, key),
+        VoiceCommand::MouseClick => "mouse:click".into(),
+        VoiceCommand::MouseRightClick => "mouse:right_click".into(),
+        VoiceCommand::MouseDoubleClick => "mouse:double_click".into(),
+        VoiceCommand::ScrollUp => "mouse:scroll_up".into(),
+        VoiceCommand::ScrollDown => "mouse:scroll_down".into(),
+        VoiceCommand::LaunchApp(cmd_line) => format!("launch:{cmd_line}"),
+    }
+}
+
+/// Encode a key combo as `key:ctrl+shift+k`.
+fn encode_key_combo(modifiers: &[KeyModifier], key: &ComboKey) -> String {
+    let mut parts: Vec<String> = modifiers
+        .iter()
+        .map(|m| match m {
+            KeyModifier::Ctrl => "ctrl",
+            KeyModifier::Alt => "alt",
+            KeyModifier::Shift => "shift",
+            KeyModifier::Meta => "meta",
+        }
+        .to_string())
+        .collect();
+    parts.push(match key {
+        ComboKey::Char(c) => c.to_string(),
+        ComboKey::Tab => "tab".into(),
+        ComboKey::Escape => "escape".into(),
+        ComboKey::Enter => "enter".into(),
+        ComboKey::Space => "space".into(),
+        ComboKey::Backspace => "backspace".into(),
+    });
+    format!("key:{}", parts.join("+"))
+}
+
+/// Parse a `key:ctrl+shift+k` spec. Last token is the key; the rest modifiers.
+fn parse_key_combo(spec: &str) -> Option<VoiceCommand> {
+    let body = spec.strip_prefix("key:")?;
+    let tokens: Vec<&str> = body
+        .split('+')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let (key_tok, mod_toks) = tokens.split_last()?;
+
+    let mut modifiers = Vec::new();
+    for t in mod_toks {
+        let m = match t.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => KeyModifier::Ctrl,
+            "alt" | "option" => KeyModifier::Alt,
+            "shift" => KeyModifier::Shift,
+            "meta" | "cmd" | "command" | "win" | "super" => KeyModifier::Meta,
+            _ => return None,
+        };
+        modifiers.push(m);
+    }
+    let key = parse_combo_key(key_tok)?;
+    Some(VoiceCommand::KeyCombo { modifiers, key })
+}
+
+fn parse_combo_key(tok: &str) -> Option<ComboKey> {
+    match tok.to_ascii_lowercase().as_str() {
+        "tab" => Some(ComboKey::Tab),
+        "escape" | "esc" => Some(ComboKey::Escape),
+        "enter" | "return" => Some(ComboKey::Enter),
+        "space" => Some(ComboKey::Space),
+        "backspace" => Some(ComboKey::Backspace),
+        lower => {
+            let mut chars = lower.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() {
+                return None; // more than one char, not a named key
+            }
+            if c.is_ascii_alphanumeric() {
+                Some(ComboKey::Char(c))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// A segment of output: either literal text to type, or a command to execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputSegment {
