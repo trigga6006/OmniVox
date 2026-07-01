@@ -8,6 +8,27 @@
 //! clean, fully-formatted text.  Does not interfere with filler removal,
 //! capitalization, or list formatting.
 
+/// A modifier key for a user-defined [`VoiceCommand::KeyCombo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyModifier {
+    Ctrl,
+    Alt,
+    Shift,
+    Meta,
+}
+
+/// The main (non-modifier) key of a user-defined [`VoiceCommand::KeyCombo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComboKey {
+    /// A single ASCII letter or digit.
+    Char(char),
+    Tab,
+    Escape,
+    Enter,
+    Space,
+    Backspace,
+}
+
 /// A voice command that maps to OS-level keystrokes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceCommand {
@@ -35,6 +56,51 @@ pub enum VoiceCommand {
     PressEscape,
     /// Press Enter inline (fires wherever spoken, unlike "send").
     PressEnter,
+    /// User-defined key combination (e.g. Ctrl+Shift+K): press modifiers,
+    /// click the key, release modifiers.
+    KeyCombo {
+        modifiers: Vec<KeyModifier>,
+        key: ComboKey,
+    },
+}
+
+/// When a command phrase is allowed to fire within an utterance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerScope {
+    /// Matches at any word boundary, anywhere in the text.
+    Anywhere,
+    /// Matches only as the trailing word(s) of the text (like "send").
+    EndOfUtterance,
+}
+
+/// A single command definition: a spoken phrase, the command it triggers, and
+/// the scope in which it is allowed to match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDef {
+    pub phrase: String,
+    pub command: VoiceCommand,
+    pub scope: TriggerScope,
+}
+
+/// The built-in command table, seeded into the DB on first run and used as a
+/// fallback when the DB can't be read.  Order also seeds `sort_order`.
+pub fn default_command_table() -> Vec<CommandDef> {
+    use TriggerScope::{Anywhere, EndOfUtterance};
+    use VoiceCommand::*;
+    vec![
+        CommandDef { phrase: "new line".into(), command: NewLine, scope: Anywhere },
+        CommandDef { phrase: "new paragraph".into(), command: NewParagraph, scope: Anywhere },
+        CommandDef { phrase: "delete last word".into(), command: DeleteLastWord, scope: Anywhere },
+        CommandDef { phrase: "select all".into(), command: SelectAll, scope: Anywhere },
+        CommandDef { phrase: "copy that".into(), command: Copy, scope: Anywhere },
+        CommandDef { phrase: "cut that".into(), command: Cut, scope: Anywhere },
+        CommandDef { phrase: "undo that".into(), command: Undo, scope: Anywhere },
+        CommandDef { phrase: "redo that".into(), command: Redo, scope: Anywhere },
+        CommandDef { phrase: "press tab".into(), command: PressTab, scope: Anywhere },
+        CommandDef { phrase: "press escape".into(), command: PressEscape, scope: Anywhere },
+        CommandDef { phrase: "press enter".into(), command: PressEnter, scope: Anywhere },
+        CommandDef { phrase: "send".into(), command: Send, scope: EndOfUtterance },
+    ]
 }
 
 /// A segment of output: either literal text to type, or a command to execute.
@@ -43,22 +109,6 @@ pub enum OutputSegment {
     Text(String),
     Command(VoiceCommand),
 }
-
-/// Command definitions: (phrase, command).
-/// Sorted longest-first so "new paragraph" matches before "new line".
-const COMMANDS: &[(&str, VoiceCommand)] = &[
-    ("delete last word", VoiceCommand::DeleteLastWord),
-    ("new paragraph", VoiceCommand::NewParagraph),
-    ("press escape", VoiceCommand::PressEscape),
-    ("press enter", VoiceCommand::PressEnter),
-    ("select all", VoiceCommand::SelectAll),
-    ("copy that", VoiceCommand::Copy),
-    ("undo that", VoiceCommand::Undo),
-    ("redo that", VoiceCommand::Redo),
-    ("press tab", VoiceCommand::PressTab),
-    ("new line", VoiceCommand::NewLine),
-    ("cut that", VoiceCommand::Cut),
-];
 
 /// True if a byte is part of a "word" for command boundary matching.
 /// Mirrors the logic in processor.rs.
@@ -80,18 +130,40 @@ fn is_word_char(b: u8) -> bool {
 /// immediately sending Ctrl+Backspace (race condition).  A `DeleteLastWord`
 /// command is only emitted when there is no preceding text to trim.
 pub fn parse_commands(text: &str) -> Vec<OutputSegment> {
-    parse_commands_inner(text, true)
+    parse_commands_with_table(text, &default_command_table())
 }
 
 /// Like [`parse_commands`] but allows the caller to disable "send" detection.
 pub fn parse_commands_with_options(text: &str, detect_send: bool) -> Vec<OutputSegment> {
-    parse_commands_inner(text, detect_send)
+    let mut table = default_command_table();
+    if !detect_send {
+        table.retain(|d| d.command != VoiceCommand::Send);
+    }
+    parse_commands_with_table(text, &table)
 }
 
-fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
+/// Parse voice commands from `text` using a user-supplied command `table`.
+///
+/// `Anywhere`-scope phrases match inline at word boundaries (longest phrase
+/// first).  `EndOfUtterance`-scope phrases match only as the trailing word(s),
+/// generalizing the old "send" special case (trailing punctuation is stripped).
+pub fn parse_commands_with_table(text: &str, table: &[CommandDef]) -> Vec<OutputSegment> {
     if text.is_empty() {
         return Vec::new();
     }
+
+    // Split by scope; sort each longest-phrase-first so "new paragraph" wins
+    // over "new line" and multi-word end phrases win over single words.
+    let mut anywhere: Vec<&CommandDef> = table
+        .iter()
+        .filter(|d| d.scope == TriggerScope::Anywhere)
+        .collect();
+    anywhere.sort_by(|a, b| b.phrase.len().cmp(&a.phrase.len()));
+    let mut end_of_utterance: Vec<&CommandDef> = table
+        .iter()
+        .filter(|d| d.scope == TriggerScope::EndOfUtterance)
+        .collect();
+    end_of_utterance.sort_by(|a, b| b.phrase.len().cmp(&a.phrase.len()));
 
     let bytes = text.as_bytes();
     let mut segments: Vec<OutputSegment> = Vec::new();
@@ -101,9 +173,10 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
     while i < bytes.len() {
         let mut matched = false;
 
-        for &(phrase, ref cmd) in COMMANDS {
+        for def in &anywhere {
+            let phrase = def.phrase.as_bytes();
             let phrase_len = phrase.len();
-            if i + phrase_len > bytes.len() {
+            if phrase_len == 0 || i + phrase_len > bytes.len() {
                 continue;
             }
 
@@ -113,7 +186,7 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
             // uppercase chars (e.g. Turkish 'İ') change byte length when
             // lowercased, which would desync the lowercase string from
             // `text`'s byte indices and could panic on a non-boundary slice.
-            if !bytes[i..i + phrase_len].eq_ignore_ascii_case(phrase.as_bytes()) {
+            if !bytes[i..i + phrase_len].eq_ignore_ascii_case(phrase) {
                 continue;
             }
 
@@ -136,7 +209,7 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
 
             // Handle "delete last word" optimization: remove last word from
             // preceding text segment instead of emitting a command.
-            if *cmd == VoiceCommand::DeleteLastWord {
+            if def.command == VoiceCommand::DeleteLastWord {
                 if let Some(OutputSegment::Text(ref mut prev)) = segments.last_mut() {
                     // Trim trailing whitespace, then remove the last word.
                     let trimmed = prev.trim_end();
@@ -153,10 +226,10 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
                 } else {
                     // No preceding text — emit command so OutputRouter sends
                     // Ctrl+Backspace to delete from previously typed content.
-                    segments.push(OutputSegment::Command(cmd.clone()));
+                    segments.push(OutputSegment::Command(def.command.clone()));
                 }
             } else {
-                segments.push(OutputSegment::Command(cmd.clone()));
+                segments.push(OutputSegment::Command(def.command.clone()));
             }
 
             // Advance past the command phrase and any leading whitespace after it.
@@ -182,36 +255,78 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
         }
     }
 
-    // "send" command — only matches as the very last word to avoid
-    // false positives (since "send" is a common English word).
-    // Skipped entirely when `detect_send` is false.
-    // Check + strip in two phases to satisfy the borrow checker.
-    let is_send_at_end = detect_send
-        && matches!(segments.last(), Some(OutputSegment::Text(t)) if {
-            let last_word = t.trim_end()
-                .rsplit_once(|c: char| c.is_whitespace())
-                .map_or(t.trim_end(), |(_, w)| w);
-            // Strip trailing punctuation Whisper may add ("send." → "send")
-            let core = last_word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
-            core.eq_ignore_ascii_case("send")
-        });
+    // End-of-utterance pass: match a trailing command phrase (e.g. "send").
+    apply_end_of_utterance(&mut segments, &end_of_utterance);
 
-    if is_send_at_end {
-        if let Some(OutputSegment::Text(t)) = segments.last_mut() {
+    segments
+}
+
+/// Match at most one `EndOfUtterance`-scope phrase against the trailing text
+/// segment and, on a hit, strip the phrase and append its command.
+///
+/// Generalizes the old "send" special case: the trailing word(s) must equal a
+/// phrase at a whitespace boundary, with any trailing punctuation Whisper adds
+/// ("send." → "send") ignored.
+fn apply_end_of_utterance(segments: &mut Vec<OutputSegment>, eou: &[&CommandDef]) {
+    if eou.is_empty() {
+        return;
+    }
+
+    // Phase 1: inspect the trailing text immutably and decide the outcome.
+    // `None` → no match. `Some((new_text, cmd))` → replace the trailing text
+    // with `new_text` (or drop it when `None`) and append `cmd`.
+    let outcome: Option<(Option<String>, VoiceCommand)> =
+        if let Some(OutputSegment::Text(t)) = segments.last() {
             let trimmed = t.trim_end();
-            if let Some((prefix, _)) = trimmed.rsplit_once(|c: char| c.is_whitespace()) {
-                *t = prefix.trim_end().to_string();
-            } else {
-                *t = String::new();
+            // Strip trailing punctuation Whisper may add ("send." → "send").
+            let core = trimmed.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+            let mut found = None;
+            for def in eou {
+                let plen = def.phrase.len();
+                if plen == 0 || core.len() < plen {
+                    continue;
+                }
+                let split = core.len() - plen;
+                if !core.is_char_boundary(split) {
+                    continue;
+                }
+                let (prefix, tail) = core.split_at(split);
+                if !tail.eq_ignore_ascii_case(&def.phrase) {
+                    continue;
+                }
+                // Require a whitespace boundary before the phrase so "sending"
+                // or "hello-send" don't trigger.
+                if !prefix.is_empty() && !prefix.ends_with(|c: char| c.is_whitespace()) {
+                    continue;
+                }
+                let np = prefix.trim_end();
+                let new_text = if np.is_empty() {
+                    None
+                } else {
+                    Some(np.to_string())
+                };
+                found = Some((new_text, def.command.clone()));
+                break;
             }
-            if t.is_empty() {
+            found
+        } else {
+            None
+        };
+
+    // Phase 2: apply the outcome.
+    if let Some((new_text, command)) = outcome {
+        match new_text {
+            Some(txt) => {
+                if let Some(OutputSegment::Text(t)) = segments.last_mut() {
+                    *t = txt;
+                }
+            }
+            None => {
                 segments.pop();
             }
         }
-        segments.push(OutputSegment::Command(VoiceCommand::Send));
+        segments.push(OutputSegment::Command(command));
     }
-
-    segments
 }
 
 /// Collapse segments back into a plain string for clipboard mode.
@@ -237,7 +352,8 @@ pub fn segments_to_string(segments: &[OutputSegment]) -> String {
                 | VoiceCommand::Redo
                 | VoiceCommand::PressTab
                 | VoiceCommand::PressEscape
-                | VoiceCommand::PressEnter,
+                | VoiceCommand::PressEnter
+                | VoiceCommand::KeyCombo { .. },
             ) => {}
         }
     }
@@ -763,5 +879,145 @@ mod tests {
             OutputSegment::Text("hello".to_string()),
         ];
         assert_eq!(segments_to_string(&segments), "hello");
+    }
+
+    // ── Table-driven scopes (parse_commands_with_table) ───────────
+
+    /// Build a KeyCombo command for tests.
+    fn key_combo(mods: &[KeyModifier], key: ComboKey) -> VoiceCommand {
+        VoiceCommand::KeyCombo {
+            modifiers: mods.to_vec(),
+            key,
+        }
+    }
+
+    #[test]
+    fn end_of_utterance_scope_only_matches_at_end() {
+        let table = vec![CommandDef {
+            phrase: "go".to_string(),
+            command: VoiceCommand::Send,
+            scope: TriggerScope::EndOfUtterance,
+        }];
+        // Trailing → matches.
+        assert_eq!(
+            parse_commands_with_table("hello go", &table),
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
+        // Mid-sentence → does NOT match (this is the false-trigger fix).
+        assert_eq!(
+            parse_commands_with_table("go home now", &table),
+            vec![OutputSegment::Text("go home now".to_string())]
+        );
+    }
+
+    #[test]
+    fn anywhere_scope_matches_inline() {
+        let table = vec![CommandDef {
+            phrase: "boom".to_string(),
+            command: VoiceCommand::NewLine,
+            scope: TriggerScope::Anywhere,
+        }];
+        assert_eq!(
+            parse_commands_with_table("a boom b", &table),
+            vec![
+                OutputSegment::Text("a".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_phrase_end_scope_does_not_fire_inline() {
+        // "select all" as End-of-utterance must not trigger mid-sentence,
+        // unlike the default Anywhere behavior — this is exactly the knob the
+        // UI exposes to fix false triggers.
+        let table = vec![CommandDef {
+            phrase: "select all".to_string(),
+            command: VoiceCommand::SelectAll,
+            scope: TriggerScope::EndOfUtterance,
+        }];
+        assert_eq!(
+            parse_commands_with_table("please select all the files", &table),
+            vec![OutputSegment::Text(
+                "please select all the files".to_string()
+            )]
+        );
+        assert_eq!(
+            parse_commands_with_table("now select all", &table),
+            vec![
+                OutputSegment::Text("now".to_string()),
+                OutputSegment::Command(VoiceCommand::SelectAll),
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_key_combo_round_trips_through_parser() {
+        let cmd = key_combo(&[KeyModifier::Ctrl, KeyModifier::Shift], ComboKey::Char('k'));
+        let table = vec![CommandDef {
+            phrase: "command palette".to_string(),
+            command: cmd.clone(),
+            scope: TriggerScope::Anywhere,
+        }];
+        assert_eq!(
+            parse_commands_with_table("open command palette please", &table),
+            vec![
+                OutputSegment::Text("open".to_string()),
+                OutputSegment::Command(cmd),
+                OutputSegment::Text("please".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn longest_first_with_mixed_scopes() {
+        // "new" (Anywhere) vs "new paragraph" (Anywhere): the longer wins.
+        // "up" is EndOfUtterance and only fires at the very end.
+        let table = vec![
+            CommandDef {
+                phrase: "new".to_string(),
+                command: VoiceCommand::NewLine,
+                scope: TriggerScope::Anywhere,
+            },
+            CommandDef {
+                phrase: "new paragraph".to_string(),
+                command: VoiceCommand::NewParagraph,
+                scope: TriggerScope::Anywhere,
+            },
+            CommandDef {
+                phrase: "up".to_string(),
+                command: VoiceCommand::Send,
+                scope: TriggerScope::EndOfUtterance,
+            },
+        ];
+        assert_eq!(
+            parse_commands_with_table("a new paragraph b up", &table),
+            vec![
+                OutputSegment::Text("a".to_string()),
+                OutputSegment::Command(VoiceCommand::NewParagraph),
+                OutputSegment::Text("b".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
+    }
+
+    #[test]
+    fn command_send_off_excludes_send() {
+        // parse_commands_with_options(false) must drop the trailing "send".
+        assert_eq!(
+            parse_commands_with_options("hello send", false),
+            vec![OutputSegment::Text("hello send".to_string())]
+        );
+        assert_eq!(
+            parse_commands_with_options("hello send", true),
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
     }
 }

@@ -23,7 +23,9 @@ const POST_PASTE_GUARD_MS: u64 = 250;
 
 use crate::error::{AppError, AppResult};
 use crate::output::types::{OutputConfig, OutputMode};
-use crate::postprocess::voice_commands::{segments_to_string, OutputSegment, VoiceCommand};
+use crate::postprocess::voice_commands::{
+    segments_to_string, ComboKey, KeyModifier, OutputSegment, VoiceCommand,
+};
 
 /// Routes transcribed text to the user's focused application.
 ///
@@ -316,6 +318,53 @@ impl OutputRouter {
                     .key(Key::Return, Direction::Click)
                     .map_err(|e| AppError::Output(format!("Enter failed: {e}")))?;
             }
+            VoiceCommand::KeyCombo { modifiers, key } => {
+                Self::run_key_combo(enigo, modifiers, key)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Execute a user-defined key combination: press each modifier, click the
+    /// main key, then release the modifiers in reverse order.
+    ///
+    /// User combos map `Ctrl` literally to `Key::Control` (unlike the built-in
+    /// clipboard commands which use `PASTE_MODIFIER` for the platform "command
+    /// key"), so an explicit `ctrl+…` behaves the same across platforms.
+    fn run_key_combo(
+        enigo: &mut Enigo,
+        modifiers: &[KeyModifier],
+        key: &ComboKey,
+    ) -> AppResult<()> {
+        let mod_keys: Vec<Key> = modifiers
+            .iter()
+            .map(|m| match m {
+                KeyModifier::Ctrl => Key::Control,
+                KeyModifier::Alt => Key::Alt,
+                KeyModifier::Shift => Key::Shift,
+                KeyModifier::Meta => Key::Meta,
+            })
+            .collect();
+        let main = match key {
+            ComboKey::Char(c) => Key::Unicode(*c),
+            ComboKey::Tab => Key::Tab,
+            ComboKey::Escape => Key::Escape,
+            ComboKey::Enter => Key::Return,
+            ComboKey::Space => Key::Space,
+            ComboKey::Backspace => Key::Backspace,
+        };
+        for m in &mod_keys {
+            enigo
+                .key(*m, Direction::Press)
+                .map_err(|e| AppError::Output(format!("Key combo failed: {e}")))?;
+        }
+        enigo
+            .key(main, Direction::Click)
+            .map_err(|e| AppError::Output(format!("Key combo failed: {e}")))?;
+        for m in mod_keys.iter().rev() {
+            enigo
+                .key(*m, Direction::Release)
+                .map_err(|e| AppError::Output(format!("Key combo failed: {e}")))?;
         }
         Ok(())
     }
