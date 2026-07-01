@@ -7,7 +7,8 @@
 
 use crate::error::AppResult;
 use crate::postprocess::voice_commands::{
-    default_command_table, CommandDef, ComboKey, KeyModifier, TriggerScope, VoiceCommand,
+    default_command_table, default_disabled_command_table, CommandDef, ComboKey, KeyModifier,
+    TriggerScope, VoiceCommand,
 };
 use crate::storage::database::Database;
 use crate::storage::types::CustomVoiceCommand;
@@ -35,7 +36,16 @@ pub fn action_to_command(action: &str) -> Option<VoiceCommand> {
         "PressTab" => Some(VoiceCommand::PressTab),
         "PressEscape" => Some(VoiceCommand::PressEscape),
         "PressEnter" => Some(VoiceCommand::PressEnter),
+        "mouse:click" => Some(VoiceCommand::MouseClick),
+        "mouse:right_click" => Some(VoiceCommand::MouseRightClick),
+        "mouse:double_click" => Some(VoiceCommand::MouseDoubleClick),
+        "mouse:scroll_up" => Some(VoiceCommand::ScrollUp),
+        "mouse:scroll_down" => Some(VoiceCommand::ScrollDown),
         other if other.starts_with("key:") => parse_key_combo(other),
+        // Everything after the first ':' is the raw command line (no shell).
+        other if other.starts_with("launch:") => {
+            Some(VoiceCommand::LaunchApp(other["launch:".len()..].to_string()))
+        }
         _ => None,
     }
 }
@@ -56,6 +66,12 @@ pub fn command_to_action(cmd: &VoiceCommand) -> String {
         VoiceCommand::PressEscape => "PressEscape".into(),
         VoiceCommand::PressEnter => "PressEnter".into(),
         VoiceCommand::KeyCombo { modifiers, key } => encode_key_combo(modifiers, key),
+        VoiceCommand::MouseClick => "mouse:click".into(),
+        VoiceCommand::MouseRightClick => "mouse:right_click".into(),
+        VoiceCommand::MouseDoubleClick => "mouse:double_click".into(),
+        VoiceCommand::ScrollUp => "mouse:scroll_up".into(),
+        VoiceCommand::ScrollDown => "mouse:scroll_down".into(),
+        VoiceCommand::LaunchApp(cmd_line) => format!("launch:{cmd_line}"),
     }
 }
 
@@ -185,7 +201,13 @@ pub fn seed_defaults(db: &Database) -> AppResult<()> {
         return Ok(());
     }
     let now = Utc::now().to_rfc3339();
-    for (idx, def) in default_command_table().iter().enumerate() {
+    // Enabled built-ins first, then the opt-in (disabled) mouse/window commands.
+    // The `1`/`0` literal in each INSERT sets the `enabled` flag; both groups are
+    // `built_in = 1`. Disabled commands ship off so a false trigger can't disrupt
+    // dictation — the user turns them on in the Voice Commands page.
+    let enabled = default_command_table();
+    let disabled = default_disabled_command_table();
+    for (idx, def) in enabled.iter().enumerate() {
         conn.execute(
             "INSERT INTO custom_voice_commands
                 (id, phrase, action, trigger_scope, enabled, built_in, sort_order, created_at)
@@ -196,6 +218,21 @@ pub fn seed_defaults(db: &Database) -> AppResult<()> {
                 command_to_action(&def.command),
                 scope_to_str(def.scope),
                 idx as i64,
+                now,
+            ],
+        )?;
+    }
+    for (i, def) in disabled.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO custom_voice_commands
+                (id, phrase, action, trigger_scope, enabled, built_in, sort_order, created_at)
+             VALUES (?1, ?2, ?3, ?4, 0, 1, ?5, ?6)",
+            params![
+                Uuid::new_v4().to_string(),
+                def.phrase,
+                command_to_action(&def.command),
+                scope_to_str(def.scope),
+                (enabled.len() + i) as i64,
                 now,
             ],
         )?;
@@ -385,5 +422,57 @@ mod tests {
         assert_eq!(action_to_command("key:ctrl+"), None);
         assert_eq!(action_to_command("key:bogusmod+k"), None);
         assert_eq!(action_to_command("key:ctrl+notakey"), None);
+    }
+
+    #[test]
+    fn mouse_actions_round_trip() {
+        for cmd in [
+            VoiceCommand::MouseClick,
+            VoiceCommand::MouseRightClick,
+            VoiceCommand::MouseDoubleClick,
+            VoiceCommand::ScrollUp,
+            VoiceCommand::ScrollDown,
+        ] {
+            let action = command_to_action(&cmd);
+            assert_eq!(action_to_command(&action), Some(cmd));
+        }
+        // Exact encodings.
+        assert_eq!(command_to_action(&VoiceCommand::MouseClick), "mouse:click");
+        assert_eq!(
+            command_to_action(&VoiceCommand::MouseRightClick),
+            "mouse:right_click"
+        );
+        assert_eq!(
+            command_to_action(&VoiceCommand::MouseDoubleClick),
+            "mouse:double_click"
+        );
+        assert_eq!(command_to_action(&VoiceCommand::ScrollUp), "mouse:scroll_up");
+        assert_eq!(
+            command_to_action(&VoiceCommand::ScrollDown),
+            "mouse:scroll_down"
+        );
+    }
+
+    #[test]
+    fn launch_app_round_trips_including_spaces_and_colons() {
+        // Everything after "launch:" is the raw command line, colons and all.
+        let cmd = VoiceCommand::LaunchApp(r#"code "C:\My Docs\a.txt""#.to_string());
+        let action = command_to_action(&cmd);
+        assert_eq!(action, r#"launch:code "C:\My Docs\a.txt""#);
+        assert_eq!(action_to_command(&action), Some(cmd));
+
+        // An empty command line still decodes (execution layer no-ops on it).
+        assert_eq!(
+            action_to_command("launch:"),
+            Some(VoiceCommand::LaunchApp(String::new()))
+        );
+    }
+
+    #[test]
+    fn disabled_table_actions_all_decode() {
+        for def in default_disabled_command_table() {
+            let action = command_to_action(&def.command);
+            assert_eq!(action_to_command(&action), Some(def.command));
+        }
     }
 }
