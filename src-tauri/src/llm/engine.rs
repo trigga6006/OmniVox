@@ -52,6 +52,20 @@ pub trait LlmEngine: Send + Sync {
         })
     }
 
+    /// Generate a raw intent-plan JSON string for the command intent layer.
+    ///
+    /// Unlike slot extraction this is intentionally NOT grammar-constrained:
+    /// the decoder (`crate::llm::intent::decode_intent_plan`) tolerates and
+    /// drops anything unexpected, so free-form generation lets the allowed
+    /// action list live in exactly one place (the prompt) instead of a second
+    /// GBNF that could drift.  The default impl errors so test mocks compile
+    /// unchanged; the production `LlamaEngine` overrides it.
+    fn generate_intent_json(&self, _user_text: &str) -> AppResult<String> {
+        Err(AppError::Llm(
+            "intent generation not supported by this engine".into(),
+        ))
+    }
+
     /// Create a stateful extraction session for a dedicated worker thread.
     ///
     /// The default implementation is stateless — every call delegates back to
@@ -350,16 +364,24 @@ impl<'m> LlamaSession<'m> {
     /// - The grammar sampler is first in the chain, so token selection is
     ///   restricted to the GBNF alphabet before greedy picks the max-logit.
     /// - EOG stops generation; `max_tokens` bounds runaway loops.
-    fn generate(&mut self, n_prompt: usize) -> AppResult<String> {
+    fn generate(&mut self, n_prompt: usize, use_grammar: bool) -> AppResult<String> {
         // Fresh sampler per call — the grammar sampler is stateful (tracks
         // the GBNF parse position) and must restart for every extraction.
-        let grammar = LlamaSampler::grammar(
-            &self.engine.model,
-            SLOT_EXTRACTION_V1,
-            SLOT_EXTRACTION_ROOT,
-        )
-        .map_err(|e| AppError::Llm(format!("grammar init: {e:?}")))?;
-        let mut sampler = LlamaSampler::chain_simple([grammar, LlamaSampler::greedy()]);
+        // Slot extraction constrains to the slot GBNF; intent planning runs
+        // free-form (its decoder drops anything unexpected), so the grammar
+        // is optional.
+        let mut samplers: Vec<LlamaSampler> = Vec::new();
+        if use_grammar {
+            let grammar = LlamaSampler::grammar(
+                &self.engine.model,
+                SLOT_EXTRACTION_V1,
+                SLOT_EXTRACTION_ROOT,
+            )
+            .map_err(|e| AppError::Llm(format!("grammar init: {e:?}")))?;
+            samplers.push(grammar);
+        }
+        samplers.push(LlamaSampler::greedy());
+        let mut sampler = LlamaSampler::chain_simple(samplers);
 
         let n_ctx = self.ctx.n_ctx() as usize;
         let mut out = String::new();
@@ -419,7 +441,24 @@ impl<'m> LlamaSession<'m> {
 
         let result = self
             .ensure_prompt(&prompt)
-            .and_then(|n_prompt| self.generate(n_prompt));
+            .and_then(|n_prompt| self.generate(n_prompt, true));
+
+        if result.is_err() {
+            self.ctx.clear_kv_cache();
+            self.cached_tokens.clear();
+        }
+        result
+    }
+
+    /// Build the intent prompt → prefill → free-form generate pass for the
+    /// command intent layer.  Returns the raw JSON string; the caller decodes
+    /// it.  On any error the KV cache is reset so the failure can't corrupt the
+    /// next call.
+    pub fn generate_intent_json(&mut self, user_text: &str) -> AppResult<String> {
+        let prompt = crate::llm::intent::format_intent_prompt(user_text);
+        let result = self
+            .ensure_prompt(&prompt)
+            .and_then(|n_prompt| self.generate(n_prompt, false));
 
         if result.is_err() {
             self.ctx.clear_kv_cache();
@@ -511,6 +550,14 @@ impl LlmEngine for LlamaEngine {
             duration_ms: t0.elapsed().as_millis() as u64,
             model_name: self.model_name.clone(),
         })
+    }
+
+    /// Run one intent-planning generation on a throwaway context.  Mirrors the
+    /// stateless `generate_json` path — intent prompts differ from the warmed
+    /// slot prompt, so there's no KV-cache reuse to preserve.
+    fn generate_intent_json(&self, user_text: &str) -> AppResult<String> {
+        let mut session = LlamaSession::new(self)?;
+        session.generate_intent_json(user_text)
     }
 
     /// KV-cache-backed session: prefills the system prompt once at creation

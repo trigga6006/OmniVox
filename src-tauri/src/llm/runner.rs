@@ -25,18 +25,27 @@ use crate::llm::schema::SlotExtraction;
 /// - Backpressure: if a request arrives while the worker is busy, the caller
 ///   degrades to plain dictation instead of queuing.
 pub struct LlmRunner {
-    tx: SyncSender<LlmRequest>,
+    tx: SyncSender<LlmJob>,
     busy: Arc<AtomicBool>,
     last_used_ns: Arc<AtomicI64>,
     /// Kept alive to stop the worker cleanly on drop.
     _worker: WorkerHandle,
 }
 
-struct LlmRequest {
-    text: String,
-    screen_tokens: Vec<String>,
-    source_app: Option<String>,
-    reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
+/// A unit of work for the worker.  Two shapes share the single in-flight slot:
+/// slot extraction (Structured Mode) and intent planning (the command intent
+/// layer).  Both go through the same busy-guard so they can never overlap.
+enum LlmJob {
+    Slots {
+        text: String,
+        screen_tokens: Vec<String>,
+        source_app: Option<String>,
+        reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
+    },
+    Intent {
+        text: String,
+        reply_tx: oneshot::Sender<AppResult<String>>,
+    },
 }
 
 /// RAII: dropping the handle drops the sender, which lets the worker exit
@@ -67,7 +76,7 @@ impl LlmRunner {
     /// has the same enormous debug-build stack frames that cause
     /// STATUS_STACK_BUFFER_OVERRUN on Windows without this.
     pub fn spawn<E: LlmEngine + 'static>(engine: E) -> AppResult<Self> {
-        let (tx, rx) = sync_channel::<LlmRequest>(1);
+        let (tx, rx) = sync_channel::<LlmJob>(1);
         let busy = Arc::new(AtomicBool::new(false));
         let last_used_ns = Arc::new(AtomicI64::new(now_ns()));
         let worker_busy = Arc::clone(&busy);
@@ -123,26 +132,43 @@ impl LlmRunner {
                     };
 
                     let _busy_reset = BusyReset(Arc::clone(&worker_busy));
-                    // Rebuild the session if it was idle-dropped (or failed
-                    // at init).  The request then pays one full warm-up —
-                    // same cost as the old always-stateless path.
-                    if session.is_none() {
-                        session = engine.new_session().ok();
+                    match req {
+                        LlmJob::Slots {
+                            text,
+                            screen_tokens,
+                            source_app,
+                            reply_tx,
+                        } => {
+                            // Rebuild the session if it was idle-dropped (or
+                            // failed at init).  The request then pays one full
+                            // warm-up — same cost as the old always-stateless
+                            // path.
+                            if session.is_none() {
+                                session = engine.new_session().ok();
+                            }
+                            let result = match session.as_mut() {
+                                Some(s) => s.extract_slots_with_context(
+                                    &text,
+                                    &screen_tokens,
+                                    source_app.as_deref(),
+                                ),
+                                None => engine.extract_slots_with_context(
+                                    &text,
+                                    &screen_tokens,
+                                    source_app.as_deref(),
+                                ),
+                            };
+                            // Receiver may have been dropped by a timeout — ignore.
+                            let _ = reply_tx.send(result);
+                        }
+                        LlmJob::Intent { text, reply_tx } => {
+                            // Intent planning uses a different prompt + grammar
+                            // than slot extraction, so it does not reuse the
+                            // warmed slot session — it runs a throwaway pass.
+                            let result = engine.generate_intent_json(&text);
+                            let _ = reply_tx.send(result);
+                        }
                     }
-                    let result = match session.as_mut() {
-                        Some(s) => s.extract_slots_with_context(
-                            &req.text,
-                            &req.screen_tokens,
-                            req.source_app.as_deref(),
-                        ),
-                        None => engine.extract_slots_with_context(
-                            &req.text,
-                            &req.screen_tokens,
-                            req.source_app.as_deref(),
-                        ),
-                    };
-                    // Receiver may have been dropped by a timeout — ignore.
-                    let _ = req.reply_tx.send(result);
                     worker_last_used.store(now_ns(), Ordering::Relaxed);
                 }
             })
@@ -195,7 +221,7 @@ impl LlmRunner {
             ));
         }
 
-        let req = LlmRequest {
+        let req = LlmJob::Slots {
             text,
             screen_tokens,
             source_app,
@@ -221,6 +247,47 @@ impl LlmRunner {
             Ok(Err(_)) => Err(AppError::Llm("LLM worker dropped reply".into())),
             Err(_) => Err(AppError::Llm(format!(
                 "LLM extraction timed out after {:?}",
+                timeout
+            ))),
+        }
+    }
+
+    /// Submit an intent-planning request and await the raw JSON plan string
+    /// with a timeout.  Shares the single in-flight slot with slot extraction
+    /// (same backpressure + timeout semantics); the caller decodes the JSON via
+    /// [`crate::llm::intent::decode_intent_plan`] and degrades on any error.
+    pub async fn plan_intent_with_timeout(
+        &self,
+        text: String,
+        timeout: Duration,
+    ) -> AppResult<String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(AppError::Llm("LLM busy — another request in flight".into()));
+        }
+
+        let req = LlmJob::Intent { text, reply_tx };
+        match self.tx.try_send(req) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.busy.store(false, Ordering::Release);
+                return Err(AppError::Llm("LLM busy — another request in flight".into()));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.busy.store(false, Ordering::Release);
+                return Err(AppError::Llm("LLM worker has stopped".into()));
+            }
+        }
+
+        match tokio::time::timeout(timeout, reply_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(AppError::Llm("LLM worker dropped reply".into())),
+            Err(_) => Err(AppError::Llm(format!(
+                "LLM intent planning timed out after {:?}",
                 timeout
             ))),
         }
