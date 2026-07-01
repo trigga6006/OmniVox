@@ -5,6 +5,9 @@ pub enum OutputMode {
     Clipboard,
     TypeSimulation,
     Both,
+    /// Injects text directly via the OS text API (enigo). Never touches the
+    /// clipboard — no set, restore, or verify.
+    Typing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

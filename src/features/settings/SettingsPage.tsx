@@ -39,6 +39,12 @@ const outputModes = [
     icon: null,
     description: "Auto-paste AND keep dictation on the clipboard so you can paste it again.",
   },
+  {
+    id: "typing",
+    label: "Typing",
+    icon: Keyboard,
+    description: "Types text directly into the focused app. Doesn't use or change your clipboard.",
+  },
 ] as const;
 
 type OutputMode = (typeof outputModes)[number]["id"];

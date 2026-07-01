@@ -217,6 +217,7 @@ pub async fn update_settings(
     let mode = match settings.output_mode.as_str() {
         "type_simulation" => OutputMode::TypeSimulation,
         "both" => OutputMode::Both,
+        "typing" => OutputMode::Typing,
         _ => OutputMode::Clipboard,
     };
     if let Ok(mut cfg) = state.output_config.lock() {

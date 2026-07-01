@@ -856,6 +856,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             output_config.mode,
             crate::output::types::OutputMode::TypeSimulation
                 | crate::output::types::OutputMode::Both
+                | crate::output::types::OutputMode::Typing
         )
     {
         let _ = tokio::task::spawn_blocking(|| {

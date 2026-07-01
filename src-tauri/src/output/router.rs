@@ -27,7 +27,7 @@ use crate::postprocess::voice_commands::{segments_to_string, OutputSegment, Voic
 
 /// Routes transcribed text to the user's focused application.
 ///
-/// Supports three output modes:
+/// Supports four output modes:
 /// - **Clipboard**: Copies dictation to the clipboard. User pastes manually.
 /// - **TypeSimulation**: Pastes via Ctrl+V, then restores the user's prior
 ///   clipboard so a pre-copied snippet survives the dictation. Paste itself
@@ -36,6 +36,8 @@ use crate::postprocess::voice_commands::{segments_to_string, OutputSegment, Voic
 ///   already consumed the pasted text.
 /// - **Both**: Pastes AND leaves the dictation on the clipboard for repeat
 ///   pasting. The explicit "I want a copy too" mode.
+/// - **Typing**: Injects text directly via the OS text API (enigo). Never
+///   touches the clipboard — works in paste-blocking apps.
 pub struct OutputRouter;
 
 impl OutputRouter {
@@ -57,6 +59,9 @@ impl OutputRouter {
             }
             OutputMode::Both => {
                 self.paste_text(text, false)?;
+            }
+            OutputMode::Typing => {
+                self.type_text(text)?;
             }
         }
 
@@ -91,6 +96,9 @@ impl OutputRouter {
             }
             OutputMode::Both => {
                 self.execute_segments(segments, false)?;
+            }
+            OutputMode::Typing => {
+                self.type_segments(segments)?;
             }
         }
 
@@ -135,73 +143,13 @@ impl OutputRouter {
                         thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
                     }
                 }
-                OutputSegment::Command(VoiceCommand::NewLine) => {
-                    Self::shift_enter(&mut enigo)?;
-                }
-                OutputSegment::Command(VoiceCommand::NewParagraph) => {
-                    Self::shift_enter(&mut enigo)?;
-                    Self::shift_enter(&mut enigo)?;
-                }
-                OutputSegment::Command(VoiceCommand::DeleteLastWord) => {
-                    enigo
-                        .key(DELETE_WORD_MODIFIER, Direction::Press)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                    enigo
-                        .key(Key::Backspace, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                    enigo
-                        .key(DELETE_WORD_MODIFIER, Direction::Release)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                }
-                OutputSegment::Command(VoiceCommand::Send) => {
-                    thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
-                    enigo
-                        .key(Key::Return, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
-                }
-                OutputSegment::Command(VoiceCommand::SelectAll) => {
-                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('a'), "Select all")?;
-                }
-                OutputSegment::Command(VoiceCommand::Copy) => {
-                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('c'), "Copy")?;
-                }
-                OutputSegment::Command(VoiceCommand::Cut) => {
-                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('x'), "Cut")?;
-                }
-                OutputSegment::Command(VoiceCommand::Undo) => {
-                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('z'), "Undo")?;
-                }
-                OutputSegment::Command(VoiceCommand::Redo) => {
-                    enigo
-                        .key(PASTE_MODIFIER, Direction::Press)
-                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
-                    enigo
-                        .key(Key::Shift, Direction::Press)
-                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
-                    enigo
-                        .key(Key::Unicode('z'), Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
-                    enigo
-                        .key(Key::Shift, Direction::Release)
-                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
-                    enigo
-                        .key(PASTE_MODIFIER, Direction::Release)
-                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
-                }
-                OutputSegment::Command(VoiceCommand::PressTab) => {
-                    enigo
-                        .key(Key::Tab, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Tab failed: {e}")))?;
-                }
-                OutputSegment::Command(VoiceCommand::PressEscape) => {
-                    enigo
-                        .key(Key::Escape, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Escape failed: {e}")))?;
-                }
-                OutputSegment::Command(VoiceCommand::PressEnter) => {
-                    enigo
-                        .key(Key::Return, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Enter failed: {e}")))?;
+                OutputSegment::Command(cmd) => {
+                    // Paste path only: give a just-pasted segment time to land
+                    // before pressing Enter to send it.
+                    if matches!(cmd, VoiceCommand::Send) {
+                        thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+                    }
+                    Self::run_command(&mut enigo, cmd)?;
                 }
             }
         }
@@ -259,6 +207,116 @@ impl OutputRouter {
             }
         }
 
+        Ok(())
+    }
+
+    /// Inject `text` directly via the OS text API. Never touches the clipboard.
+    fn type_text(&self, text: &str) -> AppResult<()> {
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+        enigo
+            .text(text)
+            .map_err(|e| AppError::Output(format!("Typing failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Type a sequence of text + command segments directly via the OS text API.
+    /// Text segments are injected with `enigo.text`; command segments reuse the
+    /// shared keystroke helper. The clipboard is never touched.
+    fn type_segments(&self, segments: &[OutputSegment]) -> AppResult<()> {
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+
+        for seg in segments {
+            match seg {
+                OutputSegment::Text(s) => {
+                    if !s.is_empty() {
+                        enigo
+                            .text(s)
+                            .map_err(|e| AppError::Output(format!("Typing failed: {e}")))?;
+                    }
+                }
+                OutputSegment::Command(cmd) => {
+                    Self::run_command(&mut enigo, cmd)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Single source of truth for command → keystroke mapping, shared by the
+    /// paste path (`execute_segments`) and the typing path (`type_segments`).
+    fn run_command(enigo: &mut Enigo, cmd: &VoiceCommand) -> AppResult<()> {
+        match cmd {
+            VoiceCommand::NewLine => {
+                Self::shift_enter(enigo)?;
+            }
+            VoiceCommand::NewParagraph => {
+                Self::shift_enter(enigo)?;
+                Self::shift_enter(enigo)?;
+            }
+            VoiceCommand::DeleteLastWord => {
+                enigo
+                    .key(DELETE_WORD_MODIFIER, Direction::Press)
+                    .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+                enigo
+                    .key(Key::Backspace, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+                enigo
+                    .key(DELETE_WORD_MODIFIER, Direction::Release)
+                    .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+            }
+            VoiceCommand::Send => {
+                enigo
+                    .key(Key::Return, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
+            }
+            VoiceCommand::SelectAll => {
+                Self::modifier_combo(enigo, PASTE_MODIFIER, Key::Unicode('a'), "Select all")?;
+            }
+            VoiceCommand::Copy => {
+                Self::modifier_combo(enigo, PASTE_MODIFIER, Key::Unicode('c'), "Copy")?;
+            }
+            VoiceCommand::Cut => {
+                Self::modifier_combo(enigo, PASTE_MODIFIER, Key::Unicode('x'), "Cut")?;
+            }
+            VoiceCommand::Undo => {
+                Self::modifier_combo(enigo, PASTE_MODIFIER, Key::Unicode('z'), "Undo")?;
+            }
+            VoiceCommand::Redo => {
+                enigo
+                    .key(PASTE_MODIFIER, Direction::Press)
+                    .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                enigo
+                    .key(Key::Shift, Direction::Press)
+                    .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                enigo
+                    .key(Key::Unicode('z'), Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                enigo
+                    .key(Key::Shift, Direction::Release)
+                    .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                enigo
+                    .key(PASTE_MODIFIER, Direction::Release)
+                    .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+            }
+            VoiceCommand::PressTab => {
+                enigo
+                    .key(Key::Tab, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Tab failed: {e}")))?;
+            }
+            VoiceCommand::PressEscape => {
+                enigo
+                    .key(Key::Escape, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Escape failed: {e}")))?;
+            }
+            VoiceCommand::PressEnter => {
+                enigo
+                    .key(Key::Return, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Enter failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 

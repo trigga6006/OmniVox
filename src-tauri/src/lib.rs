@@ -242,6 +242,7 @@ fn apply_persisted_settings(state: &state::AppState) {
         let mode = match settings.output_mode.as_str() {
             "type_simulation" => crate::output::types::OutputMode::TypeSimulation,
             "both" => crate::output::types::OutputMode::Both,
+            "typing" => crate::output::types::OutputMode::Typing,
             _ => crate::output::types::OutputMode::Clipboard,
         };
         if let Ok(mut cfg) = state.output_config.lock() {
