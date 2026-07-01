@@ -50,7 +50,7 @@ export function PillWaveform({ active, color }: PillWaveformProps) {
               width: `${BAR_WIDTH}px`,
               height: `${height}px`,
               backgroundColor: active
-                ? (color ?? "rgb(251,191,36)")
+                ? (color ?? "rgb(245,158,11)")
                 : "rgba(255,255,255,0.12)",
               opacity: active ? 0.8 : 1,
               transition: active

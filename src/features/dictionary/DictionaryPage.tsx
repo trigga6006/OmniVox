@@ -27,10 +27,13 @@ import {
   type Snippet,
   type VocabularyEntry,
 } from "@/lib/tauri";
-import { cn } from "@/lib/utils";
+import { Button, Card, Input, Kbd, Segmented, EmptyState } from "@/components/ui";
 
 const tabs = ["Vocabulary", "Words", "Snippets"] as const;
 type Tab = (typeof tabs)[number];
+
+const eyebrow =
+  "font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted";
 
 /* ──────────────────────── Vocabulary Tab ──────────────────────── */
 
@@ -104,125 +107,138 @@ function VocabularyTab() {
 
   if (!loading && entries.length === 0 && !adding) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4">
-        <div className="relative flex items-center justify-center">
-          <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
-          <Languages size={40} strokeWidth={1.5} className="relative text-text-muted" />
-        </div>
-        <div className="text-center mt-2">
-          <p className="text-sm font-medium text-text-secondary">
-            No vocabulary words yet
-          </p>
-          <p className="text-xs text-text-muted mt-1 max-w-xs">
-            Add words you commonly use so Whisper recognizes them correctly instead of guessing similar-sounding alternatives
-          </p>
-        </div>
-        <button
-          onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-4 py-2 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/50 hover:bg-amber-500/[0.16]"
-        >
-          <Plus size={14} strokeWidth={2} />
-          Add first word
-        </button>
-      </div>
+      <Card className="mt-4 flex flex-1 flex-col p-2">
+        <EmptyState
+          className="flex-1"
+          icon={<Languages strokeWidth={1.5} />}
+          title="No vocabulary words yet"
+          description="Add words you commonly use so Whisper recognizes them correctly instead of guessing similar-sounding alternatives."
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus />}
+              onClick={() => setAdding(true)}
+            >
+              Add first word
+            </Button>
+          }
+        />
+      </Card>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2 flex-1 overflow-y-auto pr-1 mt-4">
+    <div className="mt-4 flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
       {entries.map((entry) => {
         const isEditing = editId === entry.id;
 
         if (isEditing) {
           return (
-            <div
+            <Card
               key={entry.id}
-              className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm"
+              className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm"
             >
-              <input
+              <Input
                 value={editWord}
                 onChange={(e) => setEditWord(e.target.value)}
-                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Word or phrase…"
                 onKeyDown={(e) => e.key === "Enter" && handleUpdate(entry.id)}
                 autoFocus
               />
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2 text-success"
+                aria-label="Save"
                 onClick={() => handleUpdate(entry.id)}
-                className="rounded-md p-1.5 text-success transition-colors hover:bg-surface-3"
               >
-                <Check size={14} />
-              </button>
-              <button
+                <Check />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2"
+                aria-label="Cancel"
                 onClick={() => setEditId(null)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-3"
               >
-                <X size={14} />
-              </button>
-            </div>
+                <X />
+              </Button>
+            </Card>
           );
         }
 
         return (
-          <div
+          <Card
             key={entry.id}
-            className="group flex items-center gap-3 rounded-xl border border-border bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+            className="group flex items-center gap-3 bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
           >
-            <span className="text-sm text-text-primary font-medium flex-1 truncate">
+            <span className="flex-1 truncate text-sm font-medium text-text-primary">
               {entry.word}
             </span>
-            <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
+            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2"
+                aria-label="Edit"
                 onClick={() => startEdit(entry)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
               >
-                <Pencil size={13} />
-              </button>
-              <button
+                <Pencil />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2 text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
+                aria-label="Delete"
                 onClick={() => handleDelete(entry.id)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
               >
-                <Trash2 size={13} />
-              </button>
+                <Trash2 />
+              </Button>
             </div>
-          </div>
+          </Card>
         );
       })}
 
       {/* Inline add row */}
       {adding && (
-        <div className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
-          <input
+        <Card className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm">
+          <Input
             ref={wordRef}
             value={newWord}
             onChange={(e) => setNewWord(e.target.value)}
-            className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
             placeholder="Word or phrase…"
             onKeyDown={(e) => e.key === "Enter" && handleAdd()}
           />
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-2 text-success"
+            aria-label="Save"
             onClick={handleAdd}
-            className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
           >
-            <Check size={14} />
-          </button>
-          <button
+            <Check />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-2"
+            aria-label="Cancel"
             onClick={() => {
               setAdding(false);
               setNewWord("");
             }}
-            className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
           >
-            <X size={14} />
-          </button>
-        </div>
+            <X />
+          </Button>
+        </Card>
       )}
 
       {/* Add button */}
       {!adding && (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
+          className="flex items-center gap-2 rounded-2xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
         >
           <Plus size={14} strokeWidth={2} />
           Add vocabulary word
@@ -313,144 +329,155 @@ function WordsTab() {
 
   if (!loading && entries.length === 0 && !adding) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4">
-        <div className="relative flex items-center justify-center">
-          <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
-          <BookOpen size={40} strokeWidth={1.5} className="relative text-text-muted" />
-        </div>
-        <div className="text-center mt-2">
-          <p className="text-sm font-medium text-text-secondary">
-            No word replacements yet
-          </p>
-          <p className="text-xs text-text-muted mt-1 max-w-xs">
-            Add words that Whisper commonly mis-transcribes and map them to the correct spelling
-          </p>
-        </div>
-        <button
-          onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-4 py-2 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/50 hover:bg-amber-500/[0.16]"
-        >
-          <Plus size={14} strokeWidth={2} />
-          Add first word
-        </button>
-      </div>
+      <Card className="mt-4 flex flex-1 flex-col p-2">
+        <EmptyState
+          className="flex-1"
+          icon={<BookOpen strokeWidth={1.5} />}
+          title="No word replacements yet"
+          description="Add words that Whisper commonly mis-transcribes and map them to the correct spelling."
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus />}
+              onClick={() => setAdding(true)}
+            >
+              Add first word
+            </Button>
+          }
+        />
+      </Card>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2 flex-1 overflow-y-auto pr-1 mt-4">
+    <div className="mt-4 flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
       {/* Existing entries */}
       {entries.map((entry) => {
         const isEditing = editId === entry.id;
 
         if (isEditing) {
           return (
-            <div
+            <Card
               key={entry.id}
-              className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm"
+              className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm"
             >
-              <input
+              <Input
                 value={editPhrase}
                 onChange={(e) => setEditPhrase(e.target.value)}
-                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Heard as…"
               />
-              <ArrowRight size={14} className="text-text-muted shrink-0" />
-              <input
+              <ArrowRight size={14} className="shrink-0 text-text-muted" />
+              <Input
                 value={editReplacement}
                 onChange={(e) => setEditReplacement(e.target.value)}
-                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Replace with…"
                 onKeyDown={(e) => e.key === "Enter" && handleUpdate(entry.id)}
               />
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2 text-success"
+                aria-label="Save"
                 onClick={() => handleUpdate(entry.id)}
-                className="rounded-md p-1.5 text-success transition-colors hover:bg-surface-3"
               >
-                <Check size={14} />
-              </button>
-              <button
+                <Check />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2"
+                aria-label="Cancel"
                 onClick={() => setEditId(null)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-3"
               >
-                <X size={14} />
-              </button>
-            </div>
+                <X />
+              </Button>
+            </Card>
           );
         }
 
         return (
-          <div
+          <Card
             key={entry.id}
-            className="group flex items-center gap-3 rounded-xl border border-border bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+            className="group flex items-center gap-3 bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
           >
-            <span className="text-sm text-text-secondary font-medium flex-1 truncate">
+            <span className="flex-1 truncate text-sm font-medium text-text-secondary">
               {entry.phrase}
             </span>
-            <ArrowRight size={12} className="text-text-muted shrink-0" />
+            <ArrowRight size={12} className="shrink-0 text-text-muted" />
             <span className="flex-1 truncate text-sm text-amber-300/90">
               {entry.replacement}
             </span>
-            <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
+            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2"
+                aria-label="Edit"
                 onClick={() => startEdit(entry)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
               >
-                <Pencil size={13} />
-              </button>
-              <button
+                <Pencil />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2 text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
+                aria-label="Delete"
                 onClick={() => handleDelete(entry.id)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
               >
-                <Trash2 size={13} />
-              </button>
+                <Trash2 />
+              </Button>
             </div>
-          </div>
+          </Card>
         );
       })}
 
       {/* Inline add row */}
       {adding && (
-        <div className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
-          <input
+        <Card className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm">
+          <Input
             ref={phraseRef}
             value={newPhrase}
             onChange={(e) => setNewPhrase(e.target.value)}
-            className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
             placeholder="Heard as…"
           />
-          <ArrowRight size={14} className="text-text-muted shrink-0" />
-          <input
+          <ArrowRight size={14} className="shrink-0 text-text-muted" />
+          <Input
             value={newReplacement}
             onChange={(e) => setNewReplacement(e.target.value)}
-            className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
             placeholder="Replace with…"
             onKeyDown={(e) => e.key === "Enter" && handleAdd()}
           />
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-2 text-success"
+            aria-label="Save"
             onClick={handleAdd}
-            className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
           >
-            <Check size={14} />
-          </button>
-          <button
+            <Check />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-2"
+            aria-label="Cancel"
             onClick={() => {
               setAdding(false);
               setNewPhrase("");
               setNewReplacement("");
             }}
-            className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
           >
-            <X size={14} />
-          </button>
-        </div>
+            <X />
+          </Button>
+        </Card>
       )}
 
       {/* Add button */}
       {!adding && (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
+          className="flex items-center gap-2 rounded-2xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
         >
           <Plus size={14} strokeWidth={2} />
           Add word replacement
@@ -551,166 +578,177 @@ function SnippetsTab() {
 
   if (!loading && snippets.length === 0 && !adding) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4">
-        <div className="relative flex items-center justify-center">
-          <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
-          <FileText size={40} strokeWidth={1.5} className="relative text-text-muted" />
-        </div>
-        <div className="text-center mt-2">
-          <p className="text-sm font-medium text-text-secondary">
-            No snippets yet
-          </p>
-          <p className="text-xs text-text-muted mt-1 max-w-xs">
-            Create text shortcuts — say a trigger word and it expands to longer text
-          </p>
-        </div>
-        <button
-          onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-4 py-2 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/50 hover:bg-amber-500/[0.16]"
-        >
-          <Plus size={14} strokeWidth={2} />
-          Add first snippet
-        </button>
-      </div>
+      <Card className="mt-4 flex flex-1 flex-col p-2">
+        <EmptyState
+          className="flex-1"
+          icon={<FileText strokeWidth={1.5} />}
+          title="No snippets yet"
+          description="Create text shortcuts — say a trigger word and it expands to longer text."
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus />}
+              onClick={() => setAdding(true)}
+            >
+              Add first snippet
+            </Button>
+          }
+        />
+      </Card>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2 flex-1 overflow-y-auto pr-1 mt-4">
+    <div className="mt-4 flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
       {snippets.map((snippet) => {
         const isEditing = editId === snippet.id;
 
         if (isEditing) {
           return (
-            <div
+            <Card
               key={snippet.id}
-              className="flex flex-col gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm"
+              className="flex flex-col gap-2 border-amber-400/40 p-3 shadow-sm"
             >
               <div className="flex items-center gap-2">
-                <input
+                <Input
                   value={editTrigger}
                   onChange={(e) => setEditTrigger(e.target.value)}
-                  className="w-32 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
+                  className="w-32"
                   placeholder="Word…"
                 />
-                <ArrowRight size={14} className="text-text-muted shrink-0" />
-                <input
+                <ArrowRight size={14} className="shrink-0 text-text-muted" />
+                <Input
                   value={editContent}
                   onChange={(e) => setEditContent(e.target.value)}
-                  className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                   placeholder="Expands to…"
                 />
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="px-2 text-success"
+                  aria-label="Save"
                   onClick={() => handleUpdate(snippet.id)}
-                  className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
                 >
-                  <Check size={14} />
-                </button>
-                <button
+                  <Check />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="px-2"
+                  aria-label="Cancel"
                   onClick={() => setEditId(null)}
-                  className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
                 >
-                  <X size={14} />
-                </button>
+                  <X />
+                </Button>
               </div>
-              <input
+              <Input
                 value={editDesc}
                 onChange={(e) => setEditDesc(e.target.value)}
-                className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs text-text-secondary outline-none transition-colors focus:border-amber-400/45 focus:bg-surface-1"
                 placeholder="Description (optional)"
                 onKeyDown={(e) => e.key === "Enter" && handleUpdate(snippet.id)}
               />
-            </div>
+            </Card>
           );
         }
 
         return (
-          <div
+          <Card
             key={snippet.id}
-            className="group rounded-xl border border-border bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+            className="group bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <div className="flex items-center gap-3">
-              <kbd className="shrink-0 rounded-md border border-amber-400/25 bg-amber-500/[0.08] px-2 py-0.5 font-mono text-xs text-amber-300">
+              <Kbd className="shrink-0 border-amber-400/25 bg-amber-500/[0.08] text-amber-300">
                 {snippet.trigger}
-              </kbd>
-              <ArrowRight size={12} className="text-text-muted shrink-0" />
-              <span className="text-sm text-text-primary flex-1 truncate">
+              </Kbd>
+              <ArrowRight size={12} className="shrink-0 text-text-muted" />
+              <span className="flex-1 truncate text-sm text-text-primary">
                 {snippet.content}
               </span>
-              <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
+              <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="px-2"
+                  aria-label="Edit"
                   onClick={() => startEdit(snippet)}
-                  className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
                 >
-                  <Pencil size={13} />
-                </button>
-                <button
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="px-2 text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
+                  aria-label="Delete"
                   onClick={() => handleDelete(snippet.id)}
-                  className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
                 >
-                  <Trash2 size={13} />
-                </button>
+                  <Trash2 />
+                </Button>
               </div>
             </div>
             {snippet.description && (
-              <p className="text-xs text-text-muted mt-1.5 ml-0.5">
+              <p className="ml-0.5 mt-1.5 text-xs text-text-muted">
                 {snippet.description}
               </p>
             )}
-          </div>
+          </Card>
         );
       })}
 
       {/* Inline add */}
       {adding && (
-        <div className="flex flex-col gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
+        <Card className="flex flex-col gap-2 border-amber-400/40 p-3 shadow-sm">
           <div className="flex items-center gap-2">
-            <input
+            <Input
               ref={triggerRef}
               value={newTrigger}
               onChange={(e) => setNewTrigger(e.target.value)}
-              className="w-32 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
+              className="w-32"
               placeholder="Word…"
             />
-            <ArrowRight size={14} className="text-text-muted shrink-0" />
-            <input
+            <ArrowRight size={14} className="shrink-0 text-text-muted" />
+            <Input
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
-              className="flex-1 bg-surface-2 rounded-md px-2.5 py-1.5 text-sm text-text-primary border border-border outline-none focus:border-amber-500/40"
               placeholder="Expands to…"
             />
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2 text-success"
+              aria-label="Save"
               onClick={handleAdd}
-              className="p-1.5 rounded-md hover:bg-surface-3 text-green-400 transition-colors"
             >
-              <Check size={14} />
-            </button>
-            <button
+              <Check />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2"
+              aria-label="Cancel"
               onClick={() => {
                 setAdding(false);
                 setNewTrigger("");
                 setNewContent("");
                 setNewDesc("");
               }}
-              className="p-1.5 rounded-md hover:bg-surface-3 text-text-muted transition-colors"
             >
-              <X size={14} />
-            </button>
+              <X />
+            </Button>
           </div>
-          <input
+          <Input
             value={newDesc}
             onChange={(e) => setNewDesc(e.target.value)}
-            className="bg-surface-2 rounded-md px-2.5 py-1.5 text-xs text-text-muted border border-border outline-none focus:border-amber-500/40"
             placeholder="Description (optional)"
             onKeyDown={(e) => e.key === "Enter" && handleAdd()}
           />
-        </div>
+        </Card>
       )}
 
       {!adding && (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
+          className="flex items-center gap-2 rounded-2xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
         >
           <Plus size={14} strokeWidth={2} />
           Add snippet
@@ -738,27 +776,15 @@ export function DictionaryPage() {
       </div>
 
       {/* Tabs */}
-      <div className="mt-5 flex gap-6 border-b border-border/70">
-        {tabs.map((tab) => {
-          const isActive = activeTab === tab;
-          return (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={cn(
-                "relative pb-3 text-sm font-medium transition-colors",
-                isActive
-                  ? "text-amber-300"
-                  : "text-text-muted hover:text-text-secondary"
-              )}
-            >
-              {tab}
-              {isActive && (
-                <span className="absolute bottom-[-1px] left-0 right-0 h-[2px] rounded-full bg-amber-400" />
-              )}
-            </button>
-          );
-        })}
+      <div className="mt-5">
+        <span className={eyebrow}>Library</span>
+        <div className="mt-2.5">
+          <Segmented
+            options={tabs.map((tab) => ({ value: tab, label: tab }))}
+            value={activeTab}
+            onChange={setActiveTab}
+          />
+        </div>
       </div>
 
       {/* Tab content */}

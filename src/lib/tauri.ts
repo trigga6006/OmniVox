@@ -256,6 +256,8 @@ export const updateSettings = (settings: AppSettings) =>
 // Hotkey commands
 export const suspendHotkey = (suspended: boolean) =>
   invoke<void>("suspend_hotkey", { suspended });
+export const feedHotkeyEvent = (vk: number, down: boolean) =>
+  invoke<void>("feed_hotkey_event", { vk, down });
 export const updateHotkey = (config: HotkeyConfig) =>
   invoke<void>("update_hotkey", { config });
 
@@ -272,6 +274,18 @@ export interface CommandConfirm {
 export const confirmCommand = () => invoke<void>("confirm_command");
 /** Discard the command currently awaiting confirmation. */
 export const cancelCommand = () => invoke<void>("cancel_command");
+
+/** Resolved result of a "Test command" dry-run (no execution). */
+export interface CommandTestResult {
+  /** "matcher" (instant), "llm" (Qwen fallback), or "none". */
+  tier: "matcher" | "llm" | "none";
+  recognized: boolean;
+  summary: string;
+  duration_ms: number;
+}
+/** Dry-run an utterance through the command brain without executing it. */
+export const testCommand = (utterance: string) =>
+  invoke<CommandTestResult>("test_command", { utterance });
 
 export const onCommandStateChange = (
   callback: (state: string) => void
@@ -494,6 +508,17 @@ export const onTranscriptionResult = (
   callback: (text: string) => void
 ): Promise<UnlistenFn> =>
   listen<string>("transcription-result", (e) => callback(e.payload));
+
+/**
+ * Fired when a dictation was aimed at one of OmniVox's own windows.  A
+ * synthetic Ctrl+V doesn't reliably land in our WebView2 inputs, so the
+ * backend hands the text here and the focused window inserts it at the caret
+ * of whatever field the user is in.
+ */
+export const onDictationInsert = (
+  callback: (text: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("dictation-insert", (e) => callback(e.payload));
 
 export const onModelLoaded = (
   callback: (modelId: string) => void

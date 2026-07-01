@@ -21,6 +21,7 @@ import {
   type AppSettings,
 } from "@/lib/tauri";
 import { formatBytes, cn } from "@/lib/utils";
+import { Button, Card, Toggle, Badge } from "@/components/ui";
 
 /**
  * Structured-Mode LLM manager — lives on the Models page alongside the
@@ -250,8 +251,8 @@ export function LlmModelsSection() {
           toggle-only row when Structured Mode is off to avoid noise
           before the user has opted in.  The tab bar identifies this
           section now, so no section-header is rendered here. */}
-      <div
-        className="rounded-xl border border-border bg-surface-1/85 px-4 py-3.5 opacity-0 animate-slide-up"
+      <Card
+        className="px-4 py-3.5 opacity-0 animate-slide-up"
         style={{ animationDelay: "0.05s", animationFillMode: "forwards" }}
       >
         {/* Row 1: Enable toggle */}
@@ -264,23 +265,13 @@ export function LlmModelsSection() {
                 : "First turn-on downloads the default model (~1.0 GB)."}
             </p>
           </div>
-          <button
-            onClick={handleToggle}
+          <Toggle
+            accent="violet"
+            checked={structuredMode}
+            onChange={handleToggle}
             disabled={Object.keys(downloading).length > 0}
-            className={cn(
-              "relative inline-flex h-[22px] w-10 shrink-0 items-center rounded-full transition-colors",
-              structuredMode ? "bg-violet-500" : "bg-surface-3",
-              Object.keys(downloading).length > 0 && "opacity-60"
-            )}
             aria-label="Toggle Structured Mode"
-          >
-            <span
-              className={cn(
-                "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
-                structuredMode ? "translate-x-[21px]" : "translate-x-[3px]"
-              )}
-            />
-          </button>
+          />
         </div>
 
         {/* Row 2: sliders + test, only while enabled */}
@@ -306,29 +297,22 @@ export function LlmModelsSection() {
               suffix="s"
               onChange={(v) => applyPatch({ llm_timeout_secs: v })}
             />
-            <button
+            <Button
+              size="sm"
+              variant="secondary"
               onClick={handleTest}
               disabled={!testAvailable || testing}
+              loading={testing}
+              icon={<FlaskConical strokeWidth={2} />}
+              className="self-center justify-self-end"
               title={
                 testAvailable
                   ? "Run a canned dictation through the active model"
                   : "Download + activate a model to test"
               }
-              className={cn(
-                "flex items-center gap-1.5 self-center justify-self-end rounded-md border px-3 py-1.5 text-[11px] transition-colors",
-                testAvailable
-                  ? "border-violet-400/30 bg-violet-500/[0.12] text-violet-200 hover:border-violet-400/50 hover:bg-violet-500/[0.20]"
-                  : "cursor-not-allowed border-border bg-surface-2 text-text-muted/60",
-                testing && "cursor-wait opacity-60"
-              )}
             >
-              {testing ? (
-                <Loader2 size={11} className="animate-spin" />
-              ) : (
-                <FlaskConical size={11} strokeWidth={2} />
-              )}
               Test prompt
-            </button>
+            </Button>
           </div>
         )}
 
@@ -345,7 +329,7 @@ export function LlmModelsSection() {
             <span>{testError}</span>
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Model list — row chrome deliberately mirrors the Whisper rows
           above so the eye reads both catalogs as the same shape of
@@ -359,10 +343,10 @@ export function LlmModelsSection() {
           const downloadError = downloadErrors[m.id];
 
           return (
-            <div
+            <Card
               key={m.id}
               className={cn(
-                "flex items-center gap-4 rounded-xl border border-border bg-surface-1/85 px-5 py-3.5 opacity-0 transition-all duration-200 hover:border-border-hover hover:bg-surface-1 animate-slide-up",
+                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-all duration-200 hover:border-border-hover animate-slide-up",
                 isActive && "border-l-[3px] border-l-violet-400/80",
                 m.is_default && !isActive && "border-l-[3px] border-l-violet-500/45"
               )}
@@ -377,16 +361,8 @@ export function LlmModelsSection() {
                   <span className="text-[14px] font-medium text-text-primary">
                     {m.name}
                   </span>
-                  {m.is_default && (
-                    <span className="rounded-md border border-violet-400/25 bg-violet-500/[0.12] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.10em] text-violet-200">
-                      Default
-                    </span>
-                  )}
-                  {isActive && (
-                    <span className="rounded-md border border-success/30 bg-success/[0.10] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.10em] text-success">
-                      Active
-                    </span>
-                  )}
+                  {m.is_default && <Badge tone="violet">Default</Badge>}
+                  {isActive && <Badge tone="green">Active</Badge>}
                 </div>
                 <p className="mt-0.5 line-clamp-1 text-xs leading-relaxed text-text-muted">
                   {m.description}
@@ -422,27 +398,29 @@ export function LlmModelsSection() {
               {/* Right: action button(s) */}
               <div className="flex w-[110px] shrink-0 items-center justify-end gap-1.5">
                 {!m.is_downloaded && !isDownloading && (
-                  <button
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon={<Download strokeWidth={2} />}
                     onClick={() => handleDownload(m.id)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-violet-400/30 bg-violet-500/[0.12] px-3 py-1 text-xs font-medium text-violet-200 transition-colors hover:border-violet-400/50 hover:bg-violet-500/[0.20]"
                   >
-                    <Download size={12} strokeWidth={2} />
                     Download
-                  </button>
+                  </Button>
                 )}
                 {isDownloading && (
-                  <div className="inline-flex items-center gap-1.5 text-xs tabular-nums text-violet-200">
+                  <div className="inline-flex items-center gap-1.5 text-xs tabular-nums text-violet-300">
                     <Loader2 size={12} className="animate-spin" />
                     {Math.round(progress ?? 0)}%
                   </div>
                 )}
                 {m.is_downloaded && !isActive && (
-                  <button
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     onClick={() => handleActivate(m.id)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-violet-400/25 bg-violet-500/[0.10] px-3 py-1 text-xs font-medium text-violet-200 transition-colors hover:border-violet-400/45 hover:bg-violet-500/[0.18]"
                   >
                     Activate
-                  </button>
+                  </Button>
                 )}
                 {m.is_downloaded && isActive && (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
@@ -451,12 +429,12 @@ export function LlmModelsSection() {
                   </span>
                 )}
               </div>
-            </div>
+            </Card>
           );
         })}
 
         {models.length === 0 && (
-          <div className="rounded-xl border border-border bg-surface-1/80 px-5 py-6 text-center text-xs text-text-muted">
+          <div className="rounded-2xl border border-border bg-surface-1 px-5 py-6 text-center text-xs text-text-muted">
             No Structured Mode models in the catalog yet.
           </div>
         )}

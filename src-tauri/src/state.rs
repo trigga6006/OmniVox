@@ -28,12 +28,16 @@ pub enum CaptureMode {
     Command,
 }
 
-/// A Command-Mode action awaiting user confirmation — currently only a
-/// low-confidence "open app" match (we never guess-launch the wrong app).
+/// A Command-Mode action awaiting user confirmation (Enter/Esc in the pill).
+/// Used for actions we won't fire blind: a low-confidence "open app" match (we
+/// never guess-launch the wrong app) and consequential ones like closing a
+/// window.
 #[derive(Debug, Clone)]
-pub struct PendingCommand {
-    pub app_id: String,
-    pub name: String,
+pub enum PendingCommand {
+    /// Low-confidence app match — launch this AppsFolder entry on confirm.
+    OpenApp { app_id: String, name: String },
+    /// Close the captured foreground window on confirm.
+    CloseWindow { hwnd: isize, title: String },
 }
 
 /// Central application state, managed by Tauri.

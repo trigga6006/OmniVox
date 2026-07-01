@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>StructuredPanel — graphite·amber recolor lab</title>
+<!-- Link the REAL recolored stylesheet so this screenshot reflects the
+     actual edited file, not a hand-copy. -->
+<link rel="stylesheet" href="../src/features/overlay/StructuredPanel.css" />
+<style>
+  :root {
+    --font-display: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-sans: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-mono: 'Geist Mono', 'IBM Plex Mono', Consolas, monospace;
+  }
+  html, body { margin: 0; padding: 0; }
+  body {
+    /* A representative desktop-ish dark backdrop so the panel's translucency
+       and shadows read the way they will over a real window. */
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #1a1a22 0%, transparent 60%),
+      radial-gradient(1000px 700px at 110% 120%, #161620 0%, transparent 55%),
+      #0a0a0b;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 34px;
+    padding: 48px 24px 64px;
+    font-family: var(--font-sans);
+  }
+  .lab-title {
+    color: #f4f4f5; font-family: var(--font-mono); font-size: 12px;
+    letter-spacing: 0.04em; opacity: 0.7; text-transform: uppercase;
+  }
+  .lab-row { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+  .lab-caption {
+    color: #a1a1aa; font-family: var(--font-mono); font-size: 10px;
+    text-align: center; margin-top: 10px; letter-spacing: 0.03em;
+  }
+  .lab-col { display: flex; flex-direction: column; align-items: center; }
+  /* Kill the entrance animation so the static screenshot shows the final state. */
+  .structured-panel { animation: none !important; }
+  .legend { display: flex; gap: 18px; color: #a1a1aa; font-family: var(--font-mono); font-size: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+  <div class="lab-title">StructuredPanel · Graphite · Amber</div>
+
+  <div class="legend">
+    <span><i style="background:#f59e0b"></i> amber = identity / action / dictation / code</span>
+    <span><i style="background:#ef4444"></i> red = error / urgent</span>
+    <span><i style="background:#4ade80"></i> green = copied</span>
+    <span><i style="background:#94a3b8"></i> slate = low urgency</span>
+  </div>
+
+  <div class="lab-row">
+    <!-- ───────── Preview state ───────── -->
+    <div class="lab-col">
+      <div class="structured-panel">
+        <div class="sp-bloom"></div>
+        <div class="sp-grain"></div>
+        <div class="sp-ring"></div>
+
+        <div class="sp-header">
+          <div class="sp-header-lead">
+            <span class="sp-indicator"></span>
+            <span class="sp-kicker">Structured</span>
+            <span class="sp-kicker-faint">· AI</span>
+          </div>
+          <button class="sp-close">✕</button>
+        </div>
+
+        <div class="sp-meta">
+          <span class="sp-chip" style="background:rgba(245,158,11,0.14);border-color:rgba(245,158,11,0.24);color:rgba(252,195,77,0.95)">
+            <span class="sp-chip-dot" style="background:rgba(245,158,11,0.95)"></span>Normal
+          </span>
+          <span class="sp-chip">◇ 2 files</span>
+        </div>
+
+        <div class="sp-body">
+          <div class="sp-md">
+            <div class="sp-h"><span class="sp-h-rule"></span><span class="sp-h-text">Summary</span></div>
+            <p class="sp-p">Ship the overlay recolor and verify the pill stays idle while dictating into the panel.</p>
+            <div class="sp-h"><span class="sp-h-rule"></span><span class="sp-h-text">Action items</span></div>
+            <ul class="sp-list">
+              <li class="sp-li">Recolor <code class="sp-code">StructuredPanel.css</code> to graphite·amber</li>
+              <li class="sp-li">Map plum → violet, salmon → amber</li>
+              <li class="sp-li">Keep the pill idle during in-panel dictation</li>
+            </ul>
+          </div>
+        </div>
+
+        <button class="sp-raw-toggle">⌄&nbsp; Raw transcript</button>
+
+        <div class="sp-actions">
+          <button class="sp-btn sp-btn--primary">▣ <span class="sp-btn-label">Paste</span>
+            <kbd class="sp-kbd sp-kbd--primary"><span class="sp-kbd-mod">⌘</span>↵</kbd>
+          </button>
+          <button class="sp-btn sp-btn--raw">▤ <span class="sp-btn-label">Raw</span></button>
+          <button class="sp-btn"><span class="sp-btn-label">Copy</span></button>
+          <button class="sp-btn sp-btn--active">✎ <span class="sp-btn-label">Edit</span></button>
+          <div class="sp-spacer"></div>
+          <button class="sp-btn sp-btn--ghost"><span class="sp-btn-label">Dismiss</span></button>
+          <button class="sp-mic">●</button>
+        </div>
+      </div>
+      <div class="lab-caption">preview · normal urgency · "Copy" idle</div>
+    </div>
+
+    <!-- ───────── Edit + dictating state ───────── -->
+    <div class="lab-col">
+      <div class="structured-panel structured-panel--raw-open">
+        <div class="sp-bloom"></div>
+        <div class="sp-grain"></div>
+        <div class="sp-ring"></div>
+
+        <div class="sp-header">
+          <div class="sp-header-lead">
+            <span class="sp-indicator"></span>
+            <span class="sp-kicker">Structured</span>
+            <span class="sp-kicker-faint">· AI</span>
+          </div>
+          <button class="sp-close">✕</button>
+        </div>
+
+        <div class="sp-meta">
+          <span class="sp-chip" style="background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.28);color:rgba(252,165,165,0.96)">
+            <span class="sp-chip-dot" style="background:rgba(239,68,68,1)"></span>Urgent
+          </span>
+        </div>
+
+        <div class="sp-body">
+          <textarea class="sp-textarea">## Summary
+Editing the raw markdown while dictating.
+
+## Notes
+- the mic is recording
+- the pill should stay idle</textarea>
+        </div>
+
+        <button class="sp-raw-toggle sp-raw-toggle--open">⌄&nbsp; Raw transcript</button>
+        <div class="sp-raw sp-raw--open">
+          <div class="sp-raw-inner">
+            <div class="sp-raw-rail"></div>
+            <p>ship the overlay recolor and verify the pill stays idle while dictating into the panel</p>
+          </div>
+        </div>
+
+        <div class="sp-actions sp-actions--dictating">
+          <button class="sp-btn sp-btn--primary">▣ <span class="sp-btn-label">Paste</span></button>
+          <button class="sp-btn sp-btn--raw">▤ <span class="sp-btn-label">Raw</span></button>
+          <button class="sp-btn"><span class="sp-btn-label">Copy</span></button>
+          <button class="sp-btn sp-btn--active">✎ <span class="sp-btn-label">Edit</span></button>
+          <div class="sp-spacer"></div>
+          <button class="sp-btn sp-btn--ghost"><span class="sp-btn-label">Dismiss</span></button>
+          <button class="sp-mic sp-mic--recording">
+            <span class="sp-mic-wave">
+              <span class="sp-mini-wave">
+                <span class="sp-mini-wave-bar" style="height:5px;background-color:rgba(245,158,11,0.95);opacity:.7"></span>
+                <span class="sp-mini-wave-bar" style="height:9px;background-color:rgba(245,158,11,0.95);opacity:.8"></span>
+                <span class="sp-mini-wave-bar" style="height:13px;background-color:rgba(245,158,11,0.95);opacity:.9"></span>
+                <span class="sp-mini-wave-bar" style="height:14px;background-color:rgba(245,158,11,0.95);opacity:.95"></span>
+                <span class="sp-mini-wave-bar" style="height:12px;background-color:rgba(245,158,11,0.95);opacity:.9"></span>
+                <span class="sp-mini-wave-bar" style="height:8px;background-color:rgba(245,158,11,0.95);opacity:.8"></span>
+                <span class="sp-mini-wave-bar" style="height:5px;background-color:rgba(245,158,11,0.95);opacity:.7"></span>
+              </span>
+            </span>
+            <span class="sp-mic-label">Listening · click to stop</span>
+          </button>
+        </div>
+      </div>
+      <div class="lab-caption">edit + dictating · urgent · raw drawer open · amber mic bar</div>
+    </div>
+  </div>
+</body>
+</html>

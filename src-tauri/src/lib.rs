@@ -500,9 +500,10 @@ pub fn run() {
             commands::open_mic_settings,
             commands::open_accessibility_settings,
             commands::get_platform_info,
-            // Command Mode (2)
+            // Command Mode (3)
             commands::confirm_command,
             commands::cancel_command,
+            commands::test_command,
             // Model commands (6)
             commands::list_models,
             commands::download_model,
@@ -531,6 +532,7 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::suspend_hotkey,
+            commands::feed_hotkey_event,
             commands::update_hotkey,
             commands::resize_overlay,
             commands::show_main_window,

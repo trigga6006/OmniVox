@@ -1,15 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Raw `{action, target}` JSON the Command-Mode LLM fallback emits, constrained
-/// by `command_intent_v1.gbnf`.  Mapped to `actions::CommandIntent` via
-/// `CommandIntent::from_llm`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct RawCommand {
-    pub action: String,
-    #[serde(default)]
-    pub target: String,
-}
-
 /// Slot fields the LLM is allowed to emit, in GBNF order.
 ///
 /// Every field except `goal` is optional and must be omitted (not emitted as

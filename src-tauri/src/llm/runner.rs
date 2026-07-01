@@ -44,7 +44,7 @@ enum LlmRequest {
     /// Command Mode free-form classification (one-off throwaway context).
     Classify {
         utterance: String,
-        reply_tx: oneshot::Sender<AppResult<Option<CommandIntent>>>,
+        reply_tx: oneshot::Sender<AppResult<Vec<CommandIntent>>>,
     },
 }
 
@@ -258,14 +258,15 @@ impl LlmRunner {
         self.submit(req, reply_rx, timeout, "extraction").await
     }
 
-    /// Classify a free-form Command-Mode utterance into a `CommandIntent`.
-    /// Same busy-guard + timeout discipline as extraction; returns `Ok(None)`
-    /// when the model decides the input isn't a recognizable command.
+    /// Classify a free-form Command-Mode utterance into an ordered sequence of
+    /// `CommandIntent`s (multi-step chains supported).  Same busy-guard + timeout
+    /// discipline as extraction; returns an empty Vec when the model decides the
+    /// input isn't a recognizable command.
     pub async fn classify_command_with_timeout(
         &self,
         utterance: String,
         timeout: Duration,
-    ) -> AppResult<Option<CommandIntent>> {
+    ) -> AppResult<Vec<CommandIntent>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let req = LlmRequest::Classify { utterance, reply_tx };
         self.submit(req, reply_rx, timeout, "classify").await

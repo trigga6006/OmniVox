@@ -151,10 +151,14 @@ fn score(query_norm: &str, name_norm: &str) -> f32 {
 
     // Fuzzy fallback: best of whole-string and per-token similarity. Token
     // similarity is discounted so a single fuzzy token can't outrank a real
-    // containment match above.
+    // containment match above.  Stopwords are skipped so a shared "and"/"the"
+    // can't inflate a garbage match (e.g. "spotify and play" scoring 0.85
+    // against "Defragment and Optimize Drives" purely on the word "and").
+    const STOPWORDS: &[&str] = &["and", "the", "of", "or", "a", "an", "to", "for"];
     let whole = sim(query_norm, name_norm);
     let token_best = q_tokens
         .iter()
+        .filter(|qt| !STOPWORDS.contains(qt))
         .map(|qt| {
             n_tokens
                 .iter()

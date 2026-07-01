@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OmniVox · Theme Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ── Theme variables (overwritten per-variant by JS) ───────────────── */
+      :root {
+        --bg: #0a0a0b;
+        --s1: #141417;
+        --s2: #1c1c21;
+        --s3: #26262c;
+        --line: rgba(255, 255, 255, 0.08);
+        --line-2: rgba(255, 255, 255, 0.14);
+        --t1: #f4f4f5;
+        --t2: #a1a1aa;
+        --t3: #71717a;
+        --accent: #f59e0b;
+        --accent-weak: rgba(245, 158, 11, 0.14);
+        --on-accent: #1a1206;
+        --rec: #ef4444;
+        --ok: #22c55e;
+        --radius: 12px;
+        --radius-lg: 16px;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--t1);
+        font-family: "Geist", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        letter-spacing: -0.01em;
+        overflow: hidden;
+      }
+      .mono { font-family: "Geist Mono", monospace; letter-spacing: 0; }
+      .kicker {
+        font: 600 10.5px "Geist Mono", monospace;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--t3);
+      }
+
+      /* ── Shell ─────────────────────────────────────────────────────────── */
+      .app { display: flex; height: 100vh; }
+      .rail {
+        width: 64px; flex: none; background: var(--bg);
+        border-right: 1px solid var(--line);
+        display: flex; flex-direction: column; align-items: center;
+        padding: 16px 0; gap: 6px;
+      }
+      .rail .logo {
+        width: 30px; height: 30px; border-radius: 9px; margin-bottom: 14px;
+        background: var(--accent); display: grid; place-items: center;
+        color: var(--on-accent); font-weight: 700; font-size: 15px;
+      }
+      .rail .nav {
+        width: 40px; height: 40px; border-radius: 10px; display: grid;
+        place-items: center; color: var(--t3); position: relative; cursor: pointer;
+      }
+      .rail .nav svg { width: 19px; height: 19px; }
+      .rail .nav:hover { background: var(--s2); color: var(--t2); }
+      .rail .nav.on { color: var(--accent); background: var(--accent-weak); }
+      .rail .nav.on::before {
+        content: ""; position: absolute; left: -12px; top: 9px; bottom: 9px;
+        width: 2.5px; border-radius: 2px; background: var(--accent);
+      }
+      .rail .spacer { flex: 1; }
+
+      .main { flex: 1; overflow: hidden; position: relative; padding: 36px 44px; }
+
+      /* ── Header ────────────────────────────────────────────────────────── */
+      header { margin-bottom: 26px; }
+      header .kicker { margin-bottom: 9px; }
+      h1 { font-size: 27px; font-weight: 600; margin: 0; letter-spacing: -0.025em; }
+      header p { margin: 7px 0 0; color: var(--t2); font-size: 14px; }
+
+      .grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 18px; align-items: start; }
+
+      /* ── Cards ─────────────────────────────────────────────────────────── */
+      .card {
+        background: var(--s1); border: 1px solid var(--line);
+        border-radius: var(--radius-lg); padding: 18px;
+      }
+      .card + .card { margin-top: 18px; }
+      .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+      .card-title { font-size: 14px; font-weight: 600; }
+
+      .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      .stat {
+        background: var(--s1); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 14px 15px;
+      }
+      .stat .n { font: 600 22px "Geist Mono", monospace; letter-spacing: -0.02em; }
+      .stat .l { color: var(--t3); font-size: 11.5px; margin-top: 3px; }
+      .stat .n.accent { color: var(--accent); }
+
+      .transcript {
+        font-size: 13.5px; line-height: 1.62; color: var(--t2);
+        background: var(--s2); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 14px 15px;
+      }
+      .transcript b { color: var(--t1); font-weight: 500; }
+
+      /* ── Buttons ───────────────────────────────────────────────────────── */
+      .btn-row { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+      .btn {
+        font: 500 13px "Geist", sans-serif; padding: 9px 16px; border-radius: 10px;
+        border: 1px solid transparent; cursor: pointer; display: inline-flex;
+        align-items: center; gap: 7px; transition: transform .15s, background .15s, border-color .15s;
+      }
+      .btn:active { transform: scale(.985); }
+      .btn-primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+      .btn-secondary { background: var(--s2); color: var(--t1); border-color: var(--line-2); }
+      .btn-secondary:hover { background: var(--s3); }
+      .btn-ghost { background: transparent; color: var(--t2); }
+      .btn-ghost:hover { background: var(--s2); color: var(--t1); }
+      .btn svg { width: 15px; height: 15px; }
+
+      /* ── Controls: segmented, toggle, input ────────────────────────────── */
+      .field-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--line); }
+      .field-row:last-child { border-bottom: 0; }
+      .field-label { font-size: 13px; }
+      .field-label .sub { color: var(--t3); font-size: 11.5px; margin-top: 2px; }
+
+      .seg { display: inline-flex; background: var(--s2); border: 1px solid var(--line); border-radius: 9px; padding: 3px; gap: 2px; }
+      .seg button {
+        font: 500 12px "Geist", sans-serif; color: var(--t3); background: transparent;
+        border: 0; border-radius: 6px; padding: 5px 12px; cursor: pointer;
+      }
+      .seg button.on { background: var(--s3); color: var(--t1); box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+
+      .toggle { width: 38px; height: 22px; border-radius: 999px; background: var(--s3); border: 1px solid var(--line-2); position: relative; cursor: pointer; }
+      .toggle.on { background: var(--accent); border-color: transparent; }
+      .toggle .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .18s cubic-bezier(.4,0,.2,1); }
+      .toggle.on .knob { transform: translateX(16px); }
+
+      .input {
+        background: var(--s2); border: 1px solid var(--line-2); border-radius: 9px;
+        padding: 8px 12px; color: var(--t1); font: 400 13px "Geist", sans-serif; width: 200px;
+      }
+      .input::placeholder { color: var(--t3); }
+      .input.focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); outline: none; }
+
+      .badge {
+        font: 600 10px "Geist Mono", monospace; letter-spacing: .04em; text-transform: uppercase;
+        color: var(--accent); background: var(--accent-weak); border-radius: 6px; padding: 3px 7px;
+      }
+      kbd {
+        font: 500 11px "Geist Mono", monospace; color: var(--t2); background: var(--s2);
+        border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 6px; padding: 2px 6px;
+      }
+
+      /* ── Floating pill mock ────────────────────────────────────────────── */
+      .pill {
+        display: inline-flex; align-items: center; gap: 11px; height: 38px; padding: 0 7px 0 14px;
+        border-radius: 999px; background: #050505; border: 1px solid var(--line-2);
+        box-shadow: 0 10px 30px -12px rgba(0,0,0,.8);
+      }
+      .pill .timer { font: 500 13px "Geist Mono", monospace; color: var(--t2); letter-spacing: .02em; }
+      .pill .wave { display: flex; align-items: center; gap: 2px; height: 18px; }
+      .pill .wave i { width: 2px; border-radius: 2px; background: var(--accent); display: block; }
+      .pill .mic { width: 26px; height: 26px; border-radius: 50%; background: var(--rec); display: grid; place-items: center; color: #fff; }
+      .pill .mic svg { width: 13px; height: 13px; }
+      .pill-label { color: var(--t3); font-size: 11.5px; margin-top: 9px; }
+
+      /* ── Modal mock ────────────────────────────────────────────────────── */
+      .modal {
+        background: var(--s1); border: 1px solid var(--line-2); border-radius: var(--radius-lg);
+        padding: 18px; box-shadow: 0 24px 60px -28px rgba(0,0,0,.85); width: 100%;
+      }
+      .modal h3 { margin: 0 0 5px; font-size: 15px; font-weight: 600; }
+      .modal p { margin: 0 0 16px; color: var(--t2); font-size: 12.5px; line-height: 1.55; }
+      .modal .row { display: flex; justify-content: flex-end; gap: 8px; }
+
+      /* ── Variant switcher (hidden in shot mode) ────────────────────────── */
+      .switcher {
+        position: fixed; top: 14px; right: 18px; z-index: 50; display: flex; gap: 5px;
+        padding: 5px; border-radius: 999px; background: rgba(0,0,0,.6);
+        border: 1px solid var(--line); backdrop-filter: blur(10px);
+      }
+      .switcher button {
+        font: 600 11px "Geist Mono", monospace; letter-spacing: .03em; text-transform: uppercase;
+        color: var(--t3); background: transparent; border: 0; border-radius: 999px; padding: 6px 13px; cursor: pointer;
+      }
+      .switcher button.on { color: var(--t1); background: var(--s2); }
+    </style>
+  </head>
+  <body>
+    <div class="switcher" id="switcher"></div>
+
+    <div class="app">
+      <nav class="rail">
+        <div class="logo">O</div>
+        <div class="nav on" title="Dictation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg></div>
+        <div class="nav" title="History"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg></div>
+        <div class="nav" title="Notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v12l-4 4H4z"/><path d="M16 20v-4h4"/></svg></div>
+        <div class="nav" title="Dictionary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+        <div class="nav" title="Analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-5"/></svg></div>
+        <div class="spacer"></div>
+        <div class="nav" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+      </nav>
+
+      <main class="main">
+        <header>
+          <div class="kicker">Dictation</div>
+          <h1>Good evening, Ben</h1>
+          <p>2,481 words transcribed today · push-to-talk <kbd>L-Ctrl</kbd> <kbd>L-Alt</kbd></p>
+        </header>
+
+        <div class="grid">
+          <div>
+            <div class="stats">
+              <div class="stat"><div class="n accent">142</div><div class="l">Sessions</div></div>
+              <div class="stat"><div class="n">38.2k</div><div class="l">Words total</div></div>
+              <div class="stat"><div class="n">99.1%</div><div class="l">Accuracy</div></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <div class="card-title">Last transcription</div>
+                <span class="badge">Structured</span>
+              </div>
+              <div class="transcript">
+                <b>Let's ship the overlay redesign this week.</b> The new capture pill
+                should feel native to the OS — restrained, fast, and obviously a developer
+                tool. Keep the motion subtle and the hierarchy unmistakable.
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button>
+                <button class="btn btn-secondary">Re-run structuring</button>
+                <button class="btn btn-ghost">Dismiss</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head"><div class="card-title">Capture settings</div></div>
+              <div class="field-row">
+                <div class="field-label">Structured Mode<div class="sub">LLM cleanup after each capture</div></div>
+                <div class="toggle on"><div class="knob"></div></div>
+              </div>
+              <div class="field-row">
+                <div class="field-label">Output target</div>
+                <div class="seg"><button class="on">Paste</button><button>Clipboard</button><button>Both</button></div>
+              </div>
+              <div class="field-row">
+                <div class="field-label">Trigger phrase</div>
+                <input class="input focus" value="hey omnivox" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="card" style="text-align:center; padding: 26px 18px;">
+              <div class="card-title" style="margin-bottom:18px;">Now capturing</div>
+              <div style="display:flex; flex-direction:column; align-items:center;">
+                <div class="pill">
+                  <span class="timer">00:42</span>
+                  <span class="wave" id="wave"></span>
+                  <span class="mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/></svg></span>
+                </div>
+                <div class="pill-label">timer · waveform · mic — recording state</div>
+              </div>
+            </div>
+
+            <div class="modal">
+              <h3>Delete this transcription?</h3>
+              <p>This permanently removes the capture from your local history. This action can't be undone.</p>
+              <div class="row">
+                <button class="btn btn-ghost">Cancel</button>
+                <button class="btn btn-primary" style="background:var(--rec); color:#fff;">Delete</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const VARIANTS = {
+        graphite: {
+          label: "Graphite",
+          v: {
+            "--bg": "#0a0a0b", "--s1": "#141417", "--s2": "#1c1c21", "--s3": "#26262c",
+            "--line": "rgba(255,255,255,.08)", "--line-2": "rgba(255,255,255,.14)",
+            "--t1": "#f4f4f5", "--t2": "#a1a1aa", "--t3": "#71717a",
+            "--accent": "#f59e0b", "--accent-weak": "rgba(245,158,11,.14)", "--on-accent": "#1a1206",
+            "--rec": "#ef4444", "--ok": "#22c55e",
+          },
+        },
+        slate: {
+          label: "Slate · Indigo",
+          v: {
+            "--bg": "#0b0d13", "--s1": "#12151d", "--s2": "#1a1f2b", "--s3": "#232a39",
+            "--line": "rgba(150,170,210,.10)", "--line-2": "rgba(150,170,210,.20)",
+            "--t1": "#eef1f7", "--t2": "#9aa6bd", "--t3": "#6b7689",
+            "--accent": "#6e7bff", "--accent-weak": "rgba(110,123,255,.16)", "--on-accent": "#ffffff",
+            "--rec": "#f0616d", "--ok": "#3ecf8e",
+          },
+        },
+        iris: {
+          label: "Carbon · Violet",
+          v: {
+            "--bg": "#0a0a0c", "--s1": "#151419", "--s2": "#1e1c24", "--s3": "#28252f",
+            "--line": "rgba(255,255,255,.08)", "--line-2": "rgba(255,255,255,.15)",
+            "--t1": "#f3f1f6", "--t2": "#a3a0ad", "--t3": "#726e7d",
+            "--accent": "#9d7bff", "--accent-weak": "rgba(157,123,255,.16)", "--on-accent": "#ffffff",
+            "--rec": "#ef4444", "--ok": "#34d399",
+          },
+        },
+        mono: {
+          label: "Mono · Vercel",
+          v: {
+            "--bg": "#0a0a0a", "--s1": "#131313", "--s2": "#1c1c1c", "--s3": "#272727",
+            "--line": "rgba(255,255,255,.10)", "--line-2": "rgba(255,255,255,.18)",
+            "--t1": "#fafafa", "--t2": "#a0a0a0", "--t3": "#6e6e6e",
+            "--accent": "#fafafa", "--accent-weak": "rgba(255,255,255,.10)", "--on-accent": "#0a0a0a",
+            "--rec": "#ef4444", "--ok": "#22c55e",
+          },
+        },
+        terminal: {
+          label: "Terminal · Green",
+          v: {
+            "--bg": "#070808", "--s1": "#0e1010", "--s2": "#161a19", "--s3": "#1f2422",
+            "--line": "rgba(140,200,170,.10)", "--line-2": "rgba(140,200,170,.20)",
+            "--t1": "#e6efe9", "--t2": "#8aa399", "--t3": "#5d7268",
+            "--accent": "#3ddc84", "--accent-weak": "rgba(61,220,132,.14)", "--on-accent": "#04130a",
+            "--rec": "#ff5c5c", "--ok": "#3ddc84",
+          },
+        },
+      };
+
+      const params = new URLSearchParams(location.search);
+      const root = document.documentElement;
+      function apply(name) {
+        const def = VARIANTS[name] || VARIANTS.graphite;
+        for (const [k, val] of Object.entries(def.v)) root.style.setProperty(k, val);
+        document.querySelectorAll(".switcher button").forEach((b) =>
+          b.classList.toggle("on", b.dataset.v === name)
+        );
+      }
+
+      // waveform bars (static, mid-amplitude) — colored by --accent
+      const wave = document.getElementById("wave");
+      const HS = [5, 8, 11, 14, 17, 18, 16, 13, 15, 10, 7, 5];
+      wave.innerHTML = HS.map((h) => `<i style="height:${h}px"></i>`).join("");
+
+      // build switcher
+      const sw = document.getElementById("switcher");
+      sw.innerHTML = Object.entries(VARIANTS)
+        .map(([k, d]) => `<button data-v="${k}">${d.label.split(" · ")[0]}</button>`)
+        .join("");
+      sw.addEventListener("click", (e) => {
+        const b = e.target.closest("button");
+        if (b) apply(b.dataset.v);
+      });
+
+      if (params.get("shot")) sw.style.display = "none";
+      apply(params.get("v") || "graphite");
+    </script>
+  </body>
+</html>

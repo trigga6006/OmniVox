@@ -42,6 +42,7 @@ import {
   type AppBinding,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import { Button, Card, Input, Badge, Segmented } from "@/components/ui";
 
 const ICON_OPTIONS = [
   { name: "mic", Icon: Mic },
@@ -59,13 +60,14 @@ const ICON_OPTIONS = [
   { name: "scale", Icon: Scale },
 ] as const;
 
+// Painterly mosaic tesserae (keys preserved for saved modes).
 const COLOR_OPTIONS = [
-  { name: "amber", class: "bg-amber-500" },
-  { name: "blue", class: "bg-blue-500" },
-  { name: "green", class: "bg-emerald-500" },
-  { name: "purple", class: "bg-purple-500" },
-  { name: "red", class: "bg-red-500" },
-  { name: "cyan", class: "bg-cyan-500" },
+  { name: "amber", class: "bg-amber-500" },   // salmon (via token)
+  { name: "blue", class: "bg-[#6e809b]" },    // slate
+  { name: "green", class: "bg-[#9ba97b]" },   // sage
+  { name: "purple", class: "bg-[#a1768e]" },  // plum
+  { name: "red", class: "bg-[#c76a4c]" },     // clay
+  { name: "cyan", class: "bg-[#5e948c]" },    // teal
 ] as const;
 
 function getIconComponent(iconName: string) {
@@ -84,6 +86,39 @@ Clean the following transcribed speech:
 - Preserve the speaker's intended meaning exactly
 - Do not add information or change meaning
 Output ONLY the cleaned text, nothing else. No commentary, no tags, no explanation.`;
+
+/* ──────────────────── Shared layout helpers ──────────────────── */
+
+const eyebrowClass =
+  "font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted";
+
+/** Labeled section in the mode editor — mono eyebrow + content. */
+function FormSection({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <span className={cn("mb-2 block", eyebrowClass)}>{label}</span>
+      {children}
+      {hint && <p className="mt-1.5 text-[11px] text-text-muted">{hint}</p>}
+    </div>
+  );
+}
+
+/** Compact rounded surface that wraps a list of rows + an add-row. */
+function ListShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
+      {children}
+    </div>
+  );
+}
 
 /* ──────────────────── Main Page ──────────────────── */
 
@@ -177,13 +212,15 @@ export function ContextModesPage() {
             snippets, and app bindings.
           </p>
         </div>
-        <button
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<Plus />}
           onClick={() => setCreating(true)}
-          className="mt-1 inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-3 py-1.5 text-sm font-medium text-amber-300 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.18]"
+          className="mt-1 shrink-0"
         >
-          <Plus size={14} />
           New Mode
-        </button>
+        </Button>
       </div>
 
       {/* Mode Cards */}
@@ -197,13 +234,11 @@ export function ContextModesPage() {
             const isActive = mode.id === activeId;
 
             return (
-              <div
+              <Card
                 key={mode.id}
                 className={cn(
-                  "rounded-xl border bg-surface-1/85 p-4 opacity-0 transition-all duration-200 hover:bg-surface-1 animate-slide-up",
-                  isActive
-                    ? "border-amber-400/35 shadow-[0_0_0_1px_rgb(232_180_95_/_0.06)]"
-                    : "border-border hover:border-border-hover"
+                  "animate-slide-up p-4 opacity-0 transition-colors hover:bg-surface-2",
+                  isActive && "border-amber-400/35"
                 )}
                 style={{
                   animationDelay: `${i * 0.04}s`,
@@ -227,11 +262,7 @@ export function ContextModesPage() {
                       <span className="truncate text-[14px] font-medium text-text-primary">
                         {mode.name}
                       </span>
-                      {isActive && (
-                        <span className="rounded-md border border-amber-400/25 bg-amber-500/[0.10] px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-[0.10em] text-amber-300">
-                          Active
-                        </span>
-                      )}
+                      {isActive && <Badge tone="green">Active</Badge>}
                       {mode.is_builtin && (
                         <span className="text-[10.5px] text-text-muted">Built-in</span>
                       )}
@@ -244,33 +275,36 @@ export function ContextModesPage() {
                   {/* Actions */}
                   <div className="flex items-center gap-1.5">
                     {!isActive && (
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Check />}
                         onClick={() => handleActivate(mode.id)}
-                        className="inline-flex items-center gap-1 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-amber-400/25 hover:bg-amber-500/[0.10] hover:text-amber-300"
                       >
-                        <Check size={12} />
                         Activate
-                      </button>
+                      </Button>
                     )}
-                    <button
-                      onClick={() => setEditing(mode)}
-                      className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Pencil />}
+                      aria-label="Edit"
                       title="Edit"
-                    >
-                      <Pencil size={13} />
-                    </button>
+                      onClick={() => setEditing(mode)}
+                    />
                     {!mode.is_builtin && (
-                      <button
-                        onClick={() => handleDelete(mode.id)}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Trash2 />}
+                        aria-label="Delete"
                         title="Delete"
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                        onClick={() => handleDelete(mode.id)}
+                      />
                     )}
                   </div>
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
@@ -420,12 +454,13 @@ function ModeForm({
     <div className="mx-auto max-w-3xl px-8 py-10">
       {/* Header */}
       <div className="mb-7 flex items-center gap-3">
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<X />}
+          aria-label="Back"
           onClick={onCancel}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-        >
-          <X size={16} />
-        </button>
+        />
         <h1 className="font-display text-xl font-semibold tracking-[-0.02em] text-text-primary">
           {isEdit ? "Edit Mode" : "New Context Mode"}
         </h1>
@@ -433,37 +468,26 @@ function ModeForm({
 
       <div className="space-y-5">
         {/* Name */}
-        <div>
-          <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-            Name
-          </label>
-          <input
+        <FormSection label="Name">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Programming"
-            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-amber-400/45 focus:bg-surface-1"
           />
-        </div>
+        </FormSection>
 
         {/* Description */}
-        <div>
-          <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-            Description
-          </label>
-          <input
+        <FormSection label="Description">
+          <Input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Brief description of what this mode is for"
-            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-amber-400/45 focus:bg-surface-1"
           />
-        </div>
+        </FormSection>
 
         {/* Icon + Color row */}
         <div className="flex gap-6">
-          <div>
-            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-              Icon
-            </label>
+          <FormSection label="Icon">
             <div className="flex flex-wrap gap-1">
               {ICON_OPTIONS.map(({ name: n, Icon }) => (
                 <button
@@ -480,12 +504,9 @@ function ModeForm({
                 </button>
               ))}
             </div>
-          </div>
+          </FormSection>
 
-          <div>
-            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-              Color
-            </label>
+          <FormSection label="Color">
             <div className="flex gap-1.5">
               {COLOR_OPTIONS.map(({ name: n, class: cls }) => (
                 <button
@@ -501,161 +522,119 @@ function ModeForm({
                 />
               ))}
             </div>
-          </div>
+          </FormSection>
         </div>
 
         {/* Writing Style */}
-        <div>
-          <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-            Writing Style
-          </label>
-          <div className="inline-flex gap-1 bg-surface-2 rounded-lg p-1">
-            {(
-              [
-                { id: "formal", label: "Formal" },
-                { id: "casual", label: "Casual" },
-                { id: "very_casual", label: "Very Casual" },
-              ] as const
-            ).map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => setWritingStyle(id)}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                  writingStyle === id
-                    ? "border border-amber-400/30 bg-amber-500/[0.10] text-amber-300"
-                    : "border border-transparent text-text-muted hover:text-text-secondary"
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/*
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs font-medium text-text-muted uppercase tracking-wider">
-              AI Cleanup Prompt
-            </label>
-            {isEdit && mode.is_builtin && prompt !== DEFAULT_PROMPT && (
-              <button
-                onClick={() => setPrompt(DEFAULT_PROMPT)}
-                className="text-[11px] text-amber-400 hover:text-amber-300"
-              >
-                Reset to default
-              </button>
-            )}
-          </div>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={8}
-            className="w-full rounded-lg bg-surface-2 border border-border px-3 py-2 text-sm text-text-primary font-mono leading-relaxed placeholder:text-text-muted focus:outline-none focus:border-amber-500/40 resize-y"
-            placeholder="Instructions for the AI cleanup model..."
+        <FormSection label="Writing Style">
+          <Segmented
+            options={[
+              { value: "formal", label: "Formal" },
+              { value: "casual", label: "Casual" },
+              { value: "very_casual", label: "Very Casual" },
+            ]}
+            value={writingStyle}
+            onChange={setWritingStyle}
           />
-          <p className="text-[11px] text-text-muted mt-1">
-            This prompt tells the AI how to clean up your dictation. Customize it
-            for domain-specific terminology and formatting.
-          </p>
-        </div>
-        */}
+        </FormSection>
 
         {/* Mode-scoped Dictionary Entries */}
         {isEdit && (
-          <div>
-            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-              Custom Words ({dictEntries.length})
-            </label>
-            <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
+          <FormSection
+            label={`Custom Words (${dictEntries.length})`}
+            hint="Words and phrases corrected when this mode is active."
+          >
+            <ListShell>
               {dictEntries.length > 0 && (
-                <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                <div className="max-h-48 divide-y divide-border overflow-y-auto">
                   {dictEntries.map((entry) => (
                     <div
                       key={entry.id}
-                      className="flex items-center gap-2 px-3 py-1.5 text-xs group"
+                      className="group flex items-center gap-2 px-3 py-1.5 text-xs"
                     >
-                      <span className="text-text-muted truncate min-w-0">
+                      <span className="min-w-0 truncate text-text-muted">
                         {entry.phrase}
                       </span>
-                      <span className="text-text-muted shrink-0">&rarr;</span>
-                      <span className="text-text-primary truncate flex-1 min-w-0">
+                      <span className="shrink-0 text-text-muted">&rarr;</span>
+                      <span className="min-w-0 flex-1 truncate text-text-primary">
                         {entry.replacement}
                       </span>
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Trash2 />}
+                        aria-label="Delete word"
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
                         onClick={() => handleDeleteDictEntry(entry.id)}
-                        className="shrink-0 opacity-0 group-hover:opacity-100 text-text-muted hover:text-recording-400 transition-opacity"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      />
                     </div>
                   ))}
                 </div>
               )}
-              <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
+              <div className="flex items-center gap-2 border-t border-border px-3 py-2">
                 <input
                   value={newPhrase}
                   onChange={(e) => setNewPhrase(e.target.value)}
                   placeholder="Heard as…"
-                  className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddDictEntry()}
                 />
-                <span className="text-text-muted text-xs shrink-0">&rarr;</span>
+                <span className="shrink-0 text-xs text-text-muted">&rarr;</span>
                 <input
                   value={newReplacement}
                   onChange={(e) => setNewReplacement(e.target.value)}
                   placeholder="Replace with…"
-                  className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddDictEntry()}
                 />
-                <button
-                  onClick={handleAddDictEntry}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Plus />}
+                  aria-label="Add word"
+                  className="shrink-0 text-amber-300"
                   disabled={!newPhrase.trim() || !newReplacement.trim()}
-                  className="shrink-0 rounded-md p-1 text-amber-300 transition-colors hover:bg-amber-500/[0.10] disabled:text-text-muted disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <Plus size={14} />
-                </button>
+                  onClick={handleAddDictEntry}
+                />
               </div>
-            </div>
-            <p className="text-[11px] text-text-muted mt-1">
-              Words and phrases corrected when this mode is active.
-            </p>
-          </div>
+            </ListShell>
+          </FormSection>
         )}
 
         {/* Mode-scoped Snippets */}
         {isEdit && (
-          <div>
-            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-              Snippets ({modeSnippets.length})
-            </label>
-            <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
+          <FormSection
+            label={`Snippets (${modeSnippets.length})`}
+            hint="Trigger words that expand into longer text when this mode is active."
+          >
+            <ListShell>
               {modeSnippets.length > 0 && (
-                <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                <div className="max-h-48 divide-y divide-border overflow-y-auto">
                   {modeSnippets.map((snippet) => (
                     <div
                       key={snippet.id}
-                      className="flex items-center gap-2 px-3 py-1.5 text-xs group"
+                      className="group flex items-center gap-2 px-3 py-1.5 text-xs"
                     >
-                      <span className="text-text-muted truncate min-w-0">
+                      <span className="min-w-0 truncate text-text-muted">
                         {snippet.trigger}
                       </span>
-                      <span className="text-text-muted shrink-0">&rarr;</span>
-                      <span className="text-text-primary truncate flex-1 min-w-0 font-mono">
+                      <span className="shrink-0 text-text-muted">&rarr;</span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-text-primary">
                         {snippet.content}
                       </span>
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Trash2 />}
+                        aria-label="Delete snippet"
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
                         onClick={() => handleDeleteSnippet(snippet.id)}
-                        className="shrink-0 opacity-0 group-hover:opacity-100 text-text-muted hover:text-recording-400 transition-opacity"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      />
                     </div>
                   ))}
                 </div>
               )}
-              <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
+              <div className="flex items-center gap-2 border-t border-border px-3 py-2">
                 <input
                   value={newTrigger}
                   onChange={(e) => setNewTrigger(e.target.value)}
@@ -663,78 +642,77 @@ function ModeForm({
                   className="w-28 shrink-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddSnippet()}
                 />
-                <span className="text-text-muted text-xs shrink-0">&rarr;</span>
+                <span className="shrink-0 text-xs text-text-muted">&rarr;</span>
                 <input
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
                   placeholder="Expands to…"
-                  className="flex-1 min-w-0 bg-transparent text-xs text-text-primary font-mono placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddSnippet()}
                 />
-                <button
-                  onClick={handleAddSnippet}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Plus />}
+                  aria-label="Add snippet"
+                  className="shrink-0 text-amber-300"
                   disabled={!newTrigger.trim() || !newContent.trim()}
-                  className="shrink-0 rounded-md p-1 text-amber-300 transition-colors hover:bg-amber-500/[0.10] disabled:text-text-muted disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <Plus size={14} />
-                </button>
+                  onClick={handleAddSnippet}
+                />
               </div>
-            </div>
-            <p className="text-[11px] text-text-muted mt-1">
-              Trigger words that expand into longer text when this mode is active.
-            </p>
-          </div>
+            </ListShell>
+          </FormSection>
         )}
 
         {/* App Bindings — auto-switch mode when this app is focused */}
         {isEdit && (
-          <div>
-            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-              App Bindings ({bindings.length})
-            </label>
-            <div className="overflow-hidden rounded-xl border border-border bg-surface-2/80">
+          <FormSection
+            label={`App Bindings (${bindings.length})`}
+            hint="When recording starts with this app focused, OmniVox auto-switches to this mode. Enable auto-switch in Settings."
+          >
+            <ListShell>
               {bindings.length > 0 && (
-                <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                <div className="max-h-48 divide-y divide-border overflow-y-auto">
                   {bindings.map((binding) => (
                     <div
                       key={binding.id}
-                      className="flex items-center gap-2 px-3 py-1.5 text-xs group"
+                      className="group flex items-center gap-2 px-3 py-1.5 text-xs"
                     >
-                      <span className="text-text-primary truncate flex-1 min-w-0 font-mono">
+                      <span className="min-w-0 flex-1 truncate font-mono text-text-primary">
                         {binding.process_name}
                       </span>
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Trash2 />}
+                        aria-label="Delete binding"
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
                         onClick={() => handleDeleteBinding(binding.id)}
-                        className="shrink-0 opacity-0 group-hover:opacity-100 text-text-muted hover:text-recording-400 transition-opacity"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      />
                     </div>
                   ))}
                 </div>
               )}
-              <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
+              <div className="flex items-center gap-2 border-t border-border px-3 py-2">
                 <input
                   value={newProcessName}
                   onChange={(e) => setNewProcessName(e.target.value)}
                   placeholder="e.g. Code.exe, chrome.exe"
-                  className="flex-1 min-w-0 bg-transparent text-xs text-text-primary font-mono placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
                   onKeyDown={(e) => e.key === "Enter" && handleAddBinding()}
                 />
-                <button
-                  onClick={handleAddBinding}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Plus />}
+                  aria-label="Add binding"
+                  className="shrink-0 text-amber-300"
                   disabled={!newProcessName.trim()}
-                  className="shrink-0 rounded-md p-1 text-amber-300 transition-colors hover:bg-amber-500/[0.10] disabled:text-text-muted disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <Plus size={14} />
-                </button>
+                  onClick={handleAddBinding}
+                />
               </div>
-            </div>
-            <p className="text-[11px] text-text-muted mt-1">
-              When recording starts with this app focused, OmniVox auto-switches
-              to this mode. Enable auto-switch in Settings.
-            </p>
-          </div>
+            </ListShell>
+          </FormSection>
         )}
 
         {/* Error */}
@@ -746,25 +724,18 @@ function ModeForm({
 
         {/* Actions */}
         <div className="flex items-center gap-3 pt-2">
-          <button
-            onClick={handleSubmit}
+          <Button
+            variant="primary"
+            icon={<Check />}
+            loading={saving}
             disabled={saving}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-              saving
-                ? "bg-amber-500/[0.08] text-amber-300/60"
-                : "border border-amber-400/35 bg-amber-500/[0.14] text-amber-300 hover:border-amber-400/60 hover:bg-amber-500/[0.22]"
-            )}
+            onClick={handleSubmit}
           >
-            <Check size={14} />
             {saving ? "Saving…" : isEdit ? "Save Changes" : "Create & Continue"}
-          </button>
-          <button
-            onClick={onCancel}
-            className="rounded-lg px-4 py-2 text-sm text-text-muted transition-colors hover:text-text-secondary"
-          >
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
             Cancel
-          </button>
+          </Button>
         </div>
         {!isEdit && (
           <p className="text-[11px] text-text-muted">

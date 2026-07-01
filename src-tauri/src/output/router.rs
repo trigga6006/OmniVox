@@ -143,15 +143,11 @@ impl OutputRouter {
                     Self::shift_enter(&mut enigo)?;
                 }
                 OutputSegment::Command(VoiceCommand::DeleteLastWord) => {
-                    enigo
-                        .key(DELETE_WORD_MODIFIER, Direction::Press)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                    enigo
-                        .key(Key::Backspace, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                    enigo
-                        .key(DELETE_WORD_MODIFIER, Direction::Release)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
+                    Self::with_modifier(&mut enigo, DELETE_WORD_MODIFIER, |enigo| {
+                        enigo
+                            .key(Key::Backspace, Direction::Click)
+                            .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))
+                    })?;
                 }
                 OutputSegment::Command(VoiceCommand::Send) => {
                     thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
@@ -289,29 +285,39 @@ impl OutputRouter {
     }
 
     fn paste_keystroke(enigo: &mut Enigo) -> AppResult<()> {
-        enigo
-            .key(PASTE_MODIFIER, Direction::Press)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        enigo
-            .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        enigo
-            .key(PASTE_MODIFIER, Direction::Release)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        Ok(())
+        Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
+            enigo
+                .key(Key::Unicode('v'), Direction::Click)
+                .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))
+        })
     }
 
     /// Send Shift+Enter (line break that works in chat apps too).
     fn shift_enter(enigo: &mut Enigo) -> AppResult<()> {
+        Self::with_modifier(enigo, Key::Shift, |enigo| {
+            enigo
+                .key(Key::Return, Direction::Click)
+                .map_err(|e| AppError::Output(format!("Newline failed: {e}")))
+        })
+    }
+
+    /// Press `modifier`, run `body` (which clicks the actual key), then ALWAYS
+    /// release `modifier` — even if `body` fails.
+    ///
+    /// A modifier left pressed mid-sequence leaks into Windows' system-wide key
+    /// state via SendInput, which is what made Ctrl appear "stuck down" across
+    /// the whole OS after a paste. The release must run on every path, so it is
+    /// deliberately NOT propagated through `?`.
+    fn with_modifier<F>(enigo: &mut Enigo, modifier: Key, body: F) -> AppResult<()>
+    where
+        F: FnOnce(&mut Enigo) -> AppResult<()>,
+    {
         enigo
-            .key(Key::Shift, Direction::Press)
-            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-        enigo
-            .key(Key::Return, Direction::Click)
-            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-        enigo
-            .key(Key::Shift, Direction::Release)
-            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-        Ok(())
+            .key(modifier, Direction::Press)
+            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
+        let result = body(enigo);
+        // Always release, even if `body` errored — never leave a modifier down.
+        let _ = enigo.key(modifier, Direction::Release);
+        result
     }
 }

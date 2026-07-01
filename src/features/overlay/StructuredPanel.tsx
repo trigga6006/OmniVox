@@ -386,7 +386,7 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
           {dictationPhase === "recording" ? (
             <>
               <span className="sp-mic-wave">
-                <MiniWaveform color="rgba(248,200,130,0.95)" />
+                <MiniWaveform color="rgba(245,158,11,0.95)" />
               </span>
               {/* Full-bar label — only visible when the mic has
                   expanded to fill the action row (see
@@ -445,24 +445,24 @@ function MiniWaveform({ color }: { color: string }) {
 function UrgencyChip({ value }: { value: "low" | "normal" | "high" }) {
   const tone = {
     low: {
-      bg: "rgba(110,128,140,0.14)",
-      border: "rgba(150,170,185,0.16)",
-      fg: "rgba(200,215,225,0.85)",
-      dot: "rgba(170,190,205,0.85)",
+      bg: "rgba(148,163,184,0.14)",
+      border: "rgba(148,163,184,0.18)",
+      fg: "rgba(190,200,215,0.88)",
+      dot: "rgba(148,163,184,0.85)",
       label: "Low",
     },
     normal: {
-      bg: "rgba(160,120,50,0.14)",
-      border: "rgba(232,180,95,0.22)",
-      fg: "rgba(240,208,150,0.95)",
-      dot: "rgba(244,190,110,0.95)",
+      bg: "rgba(245,158,11,0.14)",
+      border: "rgba(245,158,11,0.24)",
+      fg: "rgba(252,195,77,0.95)",
+      dot: "rgba(245,158,11,0.95)",
       label: "Normal",
     },
     high: {
-      bg: "rgba(190,64,64,0.16)",
-      border: "rgba(248,140,130,0.26)",
-      fg: "rgba(252,195,185,0.96)",
-      dot: "rgba(250,140,125,1)",
+      bg: "rgba(239,68,68,0.16)",
+      border: "rgba(239,68,68,0.28)",
+      fg: "rgba(252,165,165,0.96)",
+      dot: "rgba(239,68,68,1)",
       label: "Urgent",
     },
   }[value];

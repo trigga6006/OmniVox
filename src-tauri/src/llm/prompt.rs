@@ -150,46 +150,53 @@ pub fn format_prompt_with_context(
 }
 
 /// System prompt for Command Mode's free-form fallback.  Maps a short spoken
-/// command to ONE action from the closed set (matching `command_intent_v1.gbnf`).
-/// Kept terse — commands are short and this runs on a throwaway context.
-pub const COMMAND_SYSTEM_PROMPT: &str = "You convert a short spoken command into ONE JSON action for a desktop assistant.
+/// command to a sequence of actions from the closed set (matching
+/// `command_intent_v1.gbnf`).  Kept terse — runs on a throwaway context.
+pub const COMMAND_SYSTEM_PROMPT: &str = "You convert a short spoken command into a JSON array of one or more actions for a desktop assistant, in the order they should run.
 
-Output exactly one minified JSON object: {\"action\":<action>,\"target\":<string>}.
+Output a minified JSON ARRAY: [{\"action\":<action>,\"target\":<string>}, ...]. Most commands are a single action — then the array has exactly one object. Only use multiple objects when the user clearly asks for several (\"X and Y\", \"X then Y\").
 No prose, no markdown, no <think>.
 
-ACTIONS (choose exactly one):
+ACTIONS (choose one per array object):
 - open_app: launch or switch to an application. target = the app name only (e.g. \"Spotify\", \"Chrome\").
 - web_search: do a web/Google search in the default browser. target = the search query (or \"\" to just open the search page).
 - open_url: open a website in the default browser. target = the site or URL (e.g. \"youtube.com\").
 - copy, paste, cut, undo, redo, select_all, save, new_tab, screenshot: keyboard actions. target = \"\".
+- show_desktop: minimize everything / show the desktop (Win+D). target = \"\".
 - close_tab: close the current browser/editor TAB only (Ctrl+W). target = \"\".
 - play_pause, next_track, prev_track, mute, volume_up, volume_down: media keys. target = \"\".
 - minimize, maximize: act on the current window. target = \"\".
+- close_window: close the CURRENT foreground window (graceful — the app may prompt to save). target = \"\".
 - none: the input is not a recognizable command. target = \"\".
 
 RULES
 - For app requests put ONLY the app name in target — strip verbs like open / launch / bring up / pull up / fire up.
 - target is \"\" for every action except open_app, focus_app, web_search, and open_url.
-- close_tab is ONLY for closing a browser/editor tab. Closing or quitting an APPLICATION or WINDOW is NOT supported — use \"none\" for \"close <app>\", \"quit X\", \"close this window\". Never substitute close_tab for that.
+- close_tab is ONLY a browser/editor TAB (Ctrl+W). close_window closes the CURRENT foreground window (\"close this window\", \"close this\"). For \"close <app name>\" / \"quit X\" (a specific NAMED app), use \"none\" — closing a named app isn't supported yet. Never substitute close_tab for a window/app close.
 - For searching the web or \"google something\", prefer web_search (it uses the user's default browser) over opening a specific browser app.
-- If the request does not clearly match an action above, use \"none\". Do NOT substitute a near-miss action.
+- If any part of the request does not clearly match an action above, use \"none\" for the whole command. Do NOT substitute a near-miss action.
 
 EXAMPLES
-\"bring up spotify\" -> {\"action\":\"open_app\",\"target\":\"Spotify\"}
-\"i want to listen to music\" -> {\"action\":\"open_app\",\"target\":\"Spotify\"}
-\"make a google search\" -> {\"action\":\"web_search\",\"target\":\"\"}
-\"search for the weather in denver\" -> {\"action\":\"web_search\",\"target\":\"weather in denver\"}
-\"go to youtube\" -> {\"action\":\"open_url\",\"target\":\"youtube.com\"}
-\"turn it down\" -> {\"action\":\"volume_down\",\"target\":\"\"}
-\"copy that\" -> {\"action\":\"copy\",\"target\":\"\"}
-\"shrink this window\" -> {\"action\":\"minimize\",\"target\":\"\"}
-\"close internet explorer\" -> {\"action\":\"none\",\"target\":\"\"}
-\"what time is it\" -> {\"action\":\"none\",\"target\":\"\"}";
+\"bring up spotify\" -> [{\"action\":\"open_app\",\"target\":\"Spotify\"}]
+\"i want to listen to music\" -> [{\"action\":\"open_app\",\"target\":\"Spotify\"}]
+\"make a google search\" -> [{\"action\":\"web_search\",\"target\":\"\"}]
+\"search for the weather in denver\" -> [{\"action\":\"web_search\",\"target\":\"weather in denver\"}]
+\"go to youtube\" -> [{\"action\":\"open_url\",\"target\":\"youtube.com\"}]
+\"turn it down\" -> [{\"action\":\"volume_down\",\"target\":\"\"}]
+\"copy that\" -> [{\"action\":\"copy\",\"target\":\"\"}]
+\"shrink this window\" -> [{\"action\":\"minimize\",\"target\":\"\"}]
+\"close this window\" -> [{\"action\":\"close_window\",\"target\":\"\"}]
+\"show me the desktop\" -> [{\"action\":\"show_desktop\",\"target\":\"\"}]
+\"minimize everything\" -> [{\"action\":\"show_desktop\",\"target\":\"\"}]
+\"open spotify and play it\" -> [{\"action\":\"open_app\",\"target\":\"Spotify\"},{\"action\":\"play_pause\",\"target\":\"\"}]
+\"copy this then minimize\" -> [{\"action\":\"copy\",\"target\":\"\"},{\"action\":\"minimize\",\"target\":\"\"}]
+\"close internet explorer\" -> [{\"action\":\"none\",\"target\":\"\"}]
+\"what time is it\" -> [{\"action\":\"none\",\"target\":\"\"}]";
 
 /// Wrap a spoken command in Qwen's ChatML prompt for the Command-Mode fallback.
 pub fn format_command_prompt(utterance: &str) -> String {
     format!(
-        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nCOMMAND: {input}\n\nReturn only the JSON object. /no_think<|im_end|>\n<|im_start|>assistant\n",
+        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nCOMMAND: {input}\n\nReturn only the JSON array. /no_think<|im_end|>\n<|im_start|>assistant\n",
         system = COMMAND_SYSTEM_PROMPT,
         input = utterance,
     )

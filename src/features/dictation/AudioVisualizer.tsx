@@ -43,7 +43,6 @@ export function AudioVisualizer() {
             height: `${barHeights[i]}px`,
             animation: `bar-bounce 0.85s cubic-bezier(0.4, 0, 0.6, 1) ${BAR_DELAYS[i]}ms infinite`,
             transition: "height 120ms cubic-bezier(0.4, 0, 0.2, 1)",
-            boxShadow: "0 0 8px rgb(232 180 95 / 0.35)",
           }}
         />
       ))}

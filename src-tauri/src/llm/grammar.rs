@@ -10,8 +10,9 @@ pub const SLOT_EXTRACTION_V1: &str =
 pub const SLOT_EXTRACTION_ROOT: &str = "root";
 
 /// GBNF grammar for Command Mode's free-form fallback: constrains Qwen to emit
-/// `{"action":<closed enum>,"target":<string>}` so a natural-language command
-/// ("bring up spotify", "turn it down") maps to exactly one allowed action.
+/// a JSON array of `{"action":<closed enum>,"target":<string>}` objects so a
+/// natural-language command maps to an ordered sequence of allowed actions —
+/// one step ("bring up spotify") or several ("open spotify and play it").
 pub const COMMAND_INTENT_V1: &str =
     include_str!("../../resources/grammars/command_intent_v1.gbnf");
 

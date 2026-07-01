@@ -36,8 +36,8 @@ export function Logo({ size = 28, className }: LogoProps) {
           y2="116.2"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#f59e0b" offset="0" />
-          <stop stopColor="#d97706" offset="1" />
+          <stop stopColor="#fcc34d" offset="0" />
+          <stop stopColor="#f59e0b" offset="1" />
         </linearGradient>
         <linearGradient
           id="logo_bottom"
@@ -47,7 +47,7 @@ export function Logo({ size = 28, className }: LogoProps) {
           y2="189.8"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#d97706" offset="0" />
+          <stop stopColor="#f59e0b" offset="0" />
           <stop stopColor="#b45309" offset="1" />
         </linearGradient>
       </defs>

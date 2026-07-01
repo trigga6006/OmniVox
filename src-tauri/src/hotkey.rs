@@ -80,6 +80,15 @@ mod state_machine {
         packed: AtomicU32,
         /// Bitmask of which configured keys are currently held (bit0=key1, bit1=key2).
         keys_down: AtomicU8,
+        /// Bitmask of combo keys whose activating key-DOWN we swallowed, so we
+        /// can swallow the matching key-UP too.  Without this, the release of
+        /// the hotkey modifier leaks to the foreground app — a lone `Alt`-up
+        /// pops the Windows menu/ribbon KeyTips overlay, and any leaked
+        /// modifier release can disturb the focused control.  Tracking it
+        /// per-key keeps the swallow balanced: keys whose down we passed
+        /// through (e.g. the first modifier, which may be the start of a real
+        /// Ctrl+C / Alt+Tab) still get their up passed through.
+        swallowed_down: AtomicU8,
         recording: AtomicBool,
         toggle_locked: AtomicBool,
         last_activate_ms: AtomicU64,
@@ -90,6 +99,7 @@ mod state_machine {
             Self {
                 packed: AtomicU32::new(0),
                 keys_down: AtomicU8::new(0),
+                swallowed_down: AtomicU8::new(0),
                 recording: AtomicBool::new(false),
                 toggle_locked: AtomicBool::new(false),
                 last_activate_ms: AtomicU64::new(0),
@@ -127,7 +137,12 @@ mod state_machine {
         // Claim ownership SYNCHRONOUSLY on this serialized hook thread, before
         // spawning the worker — so the matching release (fire_stop, later on the
         // same thread) can never be processed before the claim happens.
-        if !crate::pipeline::try_claim_capture(&h, action_mode(action)) {
+        let claimed = crate::pipeline::try_claim_capture(&h, action_mode(action));
+        crate::llm::diaglog::log(&format!(
+            "hotkey: fire_start action={:?} claimed={claimed}",
+            action_mode(action)
+        ));
+        if !claimed {
             return;
         }
         tauri::async_runtime::spawn(async move {
@@ -164,6 +179,7 @@ mod state_machine {
 
     fn reset(hk: &Hk) {
         hk.keys_down.store(0, Ordering::Release);
+        hk.swallowed_down.store(0, Ordering::Release);
         hk.recording.store(false, Ordering::Release);
         hk.toggle_locked.store(false, Ordering::Release);
     }
@@ -204,6 +220,14 @@ mod state_machine {
     /// should be swallowed.
     pub fn process_key_event(vk: u16, is_down: bool, is_up: bool) -> bool {
         if HOTKEY_SUSPENDED.load(Ordering::Acquire) {
+            // Log only the keys that belong to a configured combo, so we can
+            // tell a "suspended swallowed my hotkey" case from ordinary typing.
+            let d = DICTATION.packed.load(Ordering::Acquire);
+            if d != 0 && (vk == (d & 0xFFFF) as u16 || vk == ((d >> 16) & 0xFFFF) as u16) {
+                crate::llm::diaglog::log(&format!(
+                    "hotkey: SUSPENDED — passing through combo key vk={vk:#06x} down={is_down}"
+                ));
+            }
             return false;
         }
         // Check both; swallow if either consumed the event. (The default combos
@@ -245,6 +269,10 @@ mod state_machine {
         let recording = hk.recording.load(Ordering::Relaxed);
         let locked = hk.toggle_locked.load(Ordering::Relaxed);
 
+        // The combo-key bit for the CURRENT event (used to balance the
+        // swallowed-down / swallowed-up bookkeeping below).
+        let bit: u8 = if matches_key1 { 0x01 } else { 0x02 };
+
         // ── Both/all keys just pressed ───────────────────────
         if all_down && is_down {
             if !recording {
@@ -254,6 +282,9 @@ mod state_machine {
 
                 hk.recording.store(true, Ordering::Relaxed);
                 hk.toggle_locked.store(is_double_tap, Ordering::Relaxed);
+                // Remember we swallowed this key's press so we also swallow its
+                // release — otherwise the lone modifier-up leaks to the app.
+                hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
                 fire_start(action);
 
                 return true; // swallow
@@ -262,9 +293,26 @@ mod state_machine {
                 hk.recording.store(false, Ordering::Relaxed);
                 hk.toggle_locked.store(false, Ordering::Relaxed);
                 hk.last_activate_ms.store(0, Ordering::Relaxed);
+                hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
                 fire_stop(action);
 
                 return true; // swallow
+            }
+        }
+
+        // ── Swallow auto-repeat key-downs while held ──────────
+        //    Holding a hotkey makes Windows stream WM_KEYDOWN repeats.  If we
+        //    swallowed a key's activating press we must swallow its repeats too —
+        //    otherwise a held single-key hotkey (Right Ctrl for Command Mode)
+        //    leaks a flood of Ctrl-DOWN repeats to the foreground app while its
+        //    key-UP is swallowed below, leaving the modifier stuck "down" with no
+        //    release (only a reboot clears it).  Balanced per-key: a key whose
+        //    down we passed through (the first modifier of a combo, e.g. LCtrl in
+        //    LCtrl+LAlt) is NOT in `swallowed_down`, so its repeats still pass —
+        //    keeping real Ctrl+C / Alt+Tab intact.
+        if is_down && (matches_key1 || matches_key2) {
+            if hk.swallowed_down.load(Ordering::Relaxed) & bit != 0 {
+                return true; // swallow the repeat
             }
         }
 
@@ -272,6 +320,20 @@ mod state_machine {
         if recording && !locked && is_up && (matches_key1 || matches_key2) {
             hk.recording.store(false, Ordering::Relaxed);
             fire_stop(action);
+        }
+
+        // ── Swallow the release of any combo key whose activating press we
+        //    swallowed, so the foreground app never sees a lone modifier
+        //    release.  A leaked `Alt`-up pops the Windows menu/ribbon KeyTips
+        //    overlay (the "letters across the top" the user hits in Notes);
+        //    other leaked modifier releases can disturb the focused control.
+        //    Balanced per-key: a modifier whose down we passed through (the
+        //    first key of the combo, or a real Ctrl+C / Alt+Tab) is NOT in
+        //    `swallowed_down`, so its up still passes — keeping those intact.
+        if is_up && (matches_key1 || matches_key2) {
+            if hk.swallowed_down.fetch_and(!bit, Ordering::Relaxed) & bit != 0 {
+                return true; // swallow the balancing release
+            }
         }
 
         false
@@ -499,4 +561,17 @@ pub fn set_command_mode_enabled(enabled: bool) {
 /// Suspend or resume the hook.
 pub fn set_suspended(suspended: bool) {
     state_machine::set_suspended(suspended);
+}
+
+/// Feed a key event from the frontend (WebView) into the hotkey state machine.
+///
+/// When one of OmniVox's own windows has focus, the global OS keyboard hook
+/// receives no key events — the WebView2 consumes them first — so dictation and
+/// command hotkeys would never fire while the user is inside the app.  The
+/// frontend listens for the relevant modifier keys and forwards them here so the
+/// same hold/toggle state machine drives both paths.  The two are mutually
+/// exclusive by focus (OS hook when another app is forward, this when ours is),
+/// and the state machine's latches make an occasional overlapping event safe.
+pub fn feed_key_event(vk: u16, is_down: bool) {
+    let _ = state_machine::process_key_event(vk, is_down, !is_down);
 }

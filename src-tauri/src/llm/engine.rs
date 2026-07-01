@@ -54,14 +54,15 @@ pub trait LlmEngine: Send + Sync {
         })
     }
 
-    /// Command-Mode fallback: map a free-form spoken command to one
-    /// `CommandIntent`, or `None` if it isn't a recognizable command.  Default
-    /// impl (used by test mocks) returns `None`.
+    /// Command-Mode fallback: map a free-form spoken command to an ordered
+    /// sequence of `CommandIntent`s (one or more — supports multi-step chains),
+    /// or an empty Vec if it isn't a recognizable command.  Default impl (used
+    /// by test mocks) returns no actions.
     fn classify_command(
         &self,
         _utterance: &str,
-    ) -> AppResult<Option<crate::actions::CommandIntent>> {
-        Ok(None)
+    ) -> AppResult<Vec<crate::actions::CommandIntent>> {
+        Ok(Vec::new())
     }
 
     /// Create a stateful extraction session for a dedicated worker thread.
@@ -547,14 +548,18 @@ impl LlmEngine for LlamaEngine {
     fn classify_command(
         &self,
         utterance: &str,
-    ) -> AppResult<Option<crate::actions::CommandIntent>> {
+    ) -> AppResult<Vec<crate::actions::CommandIntent>> {
         let raw = self.classify_command_raw(utterance)?;
-        let parsed: crate::llm::schema::RawCommand = serde_json::from_str(raw.trim())
-            .map_err(|e| AppError::Llm(format!("parse command JSON failed: {e}")))?;
-        Ok(crate::actions::CommandIntent::from_llm(
-            &parsed.action,
-            &parsed.target,
-        ))
+        let intents = crate::actions::CommandIntent::from_llm_list(raw.trim());
+        // Surfaces all-or-nothing rejections: a non-empty raw array that maps to
+        // 0 intents means a `none`/unsupported/empty-target step rejected the
+        // whole utterance.
+        crate::llm::diaglog::log(&format!(
+            "classify_command: raw={:?} -> {} intent(s)",
+            raw.trim(),
+            intents.len()
+        ));
+        Ok(intents)
     }
 
     /// KV-cache-backed session: prefills the system prompt once at creation

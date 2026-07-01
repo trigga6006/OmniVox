@@ -49,7 +49,19 @@ pub fn run_chord(c: KeyChord) -> Result<(), String> {
         KeyChord::NewTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('t')),
         KeyChord::CloseTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('w')),
         KeyChord::Screenshot => screenshot(&mut enigo),
+        KeyChord::ShowDesktop => show_desktop(&mut enigo),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn show_desktop(enigo: &mut Enigo) -> Result<(), String> {
+    // Win+D — toggle "show the desktop" (minimize/restore all). Reversible.
+    chord(enigo, &[Key::Meta], Key::Unicode('d'))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_desktop(_enigo: &mut Enigo) -> Result<(), String> {
+    Err("Show desktop is only wired up on Windows".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -112,6 +124,53 @@ pub fn run_window(a: WindowAction, hwnd: Option<isize>) -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn run_window(_a: WindowAction, _hwnd: Option<isize>) -> Result<(), String> {
     Err("Window control is only supported on Windows".into())
+}
+
+/// Gracefully close a target window via WM_CLOSE (so the app runs its OWN
+/// save-prompt — never a forced kill). `hwnd` is the foreground window captured
+/// at command start. Consequential, so the pipeline confirms before calling.
+#[cfg(windows)]
+pub fn run_close_window(hwnd: Option<isize>) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+
+    let hwnd = hwnd.ok_or("No target window to close")?;
+    // PostMessage (not SendMessage) so we don't block on the app's own
+    // close handling (e.g. an unsaved-changes dialog).
+    let ok = unsafe { PostMessageW(hwnd as *mut core::ffi::c_void, WM_CLOSE, 0, 0) };
+    if ok == 0 {
+        return Err("Failed to close window".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn run_close_window(_hwnd: Option<isize>) -> Result<(), String> {
+    Err("Closing windows is only supported on Windows".into())
+}
+
+/// Best-effort window title for confirm UX ("Close \"Untitled - Notepad\"?").
+/// Empty string if it can't be read.
+#[cfg(windows)]
+pub fn window_title(hwnd: isize) -> String {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+
+    let mut buf = [0u16; 256];
+    let len = unsafe {
+        GetWindowTextW(
+            hwnd as *mut core::ffi::c_void,
+            buf.as_mut_ptr(),
+            buf.len() as i32,
+        )
+    };
+    if len <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buf[..len as usize])
+}
+
+#[cfg(not(windows))]
+pub fn window_title(_hwnd: isize) -> String {
+    String::new()
 }
 
 /// Open a web/Google search in the user's DEFAULT browser.

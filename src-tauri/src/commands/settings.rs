@@ -261,6 +261,15 @@ pub async fn suspend_hotkey(suspended: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Forward a modifier key event from a focused OmniVox window into the hotkey
+/// state machine.  The global OS keyboard hook gets nothing while our own
+/// WebView has focus, so the frontend bridges key down/up events here.
+#[tauri::command]
+pub async fn feed_hotkey_event(vk: u16, down: bool) -> Result<(), String> {
+    crate::hotkey::feed_key_event(vk, down);
+    Ok(())
+}
+
 /// Show and focus the main application window (used by the overlay pill).
 #[tauri::command]
 pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {

@@ -66,6 +66,11 @@ fn zero_arg(norm: &str) -> Option<CommandIntent> {
         "maximize" | "maximise" | "maximize window" | "full screen" => {
             Window(WindowAction::Maximize)
         }
+        "show desktop" | "show the desktop" | "minimize everything" | "minimise everything"
+        | "minimize all" | "hide everything" => Kc(KeyChord::ShowDesktop),
+        "close window" | "close this window" | "close the window" | "close current window" => {
+            CommandIntent::CloseWindow
+        }
         _ => return None,
     };
     Some(intent)
@@ -91,6 +96,13 @@ pub fn match_command(utterance: &str) -> Option<CommandIntent> {
             if let Some(target) = rest.strip_prefix(' ') {
                 let target = target.trim();
                 if !target.is_empty() {
+                    // A conjunction means this is probably a multi-step chain
+                    // ("open spotify and play") — defer to the LLM so it splits
+                    // into ordered intents instead of treating the whole tail as
+                    // one (garbage) app name like "spotify and play".
+                    if target.contains(" and ") || target.contains(" then ") {
+                        return None;
+                    }
                     return Some(CommandIntent::OpenApp(target.to_string()));
                 }
             }
@@ -174,6 +186,25 @@ mod tests {
     }
 
     #[test]
+    fn zero_arg_show_desktop_and_close_window() {
+        assert_eq!(
+            match_command("show desktop"),
+            Some(CommandIntent::KeyChord(KeyChord::ShowDesktop))
+        );
+        assert_eq!(
+            match_command("minimize everything"),
+            Some(CommandIntent::KeyChord(KeyChord::ShowDesktop))
+        );
+        assert_eq!(match_command("close this window"), Some(CommandIntent::CloseWindow));
+        assert_eq!(match_command("close window"), Some(CommandIntent::CloseWindow));
+        // "close tab" must stay the tab chord, never CloseWindow.
+        assert_eq!(
+            match_command("close tab"),
+            Some(CommandIntent::KeyChord(KeyChord::CloseTab))
+        );
+    }
+
+    #[test]
     fn zero_arg_wins_over_open_verb() {
         // "new tab" must be the chord, never OpenApp("tab").
         assert_eq!(match_command("new tab"), Some(CommandIntent::KeyChord(KeyChord::NewTab)));
@@ -183,5 +214,18 @@ mod tests {
     fn non_commands_return_none() {
         assert_eq!(match_command(""), None);
         assert_eq!(match_command("hello world this is dictation"), None);
+    }
+
+    #[test]
+    fn open_with_conjunction_defers_to_llm() {
+        // "open X and Y" is a multi-step chain — the matcher must NOT swallow the
+        // whole tail as one app name; it returns None so the LLM splits it.
+        assert_eq!(match_command("open spotify and play"), None);
+        assert_eq!(match_command("open chrome then minimize"), None);
+        // A plain single open still resolves through the matcher.
+        assert_eq!(
+            match_command("open spotify"),
+            Some(CommandIntent::OpenApp("spotify".into()))
+        );
     }
 }

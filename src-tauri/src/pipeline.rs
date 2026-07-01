@@ -192,6 +192,11 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
 pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppState) {
     // Snapshot the foreground window BEFORE we do anything that might steal focus.
     let fg = capture_foreground_window();
+    crate::llm::diaglog::log(&format!(
+        "pipeline: start_recording_inner fg={:?} fg_proc={:?}",
+        fg,
+        fg.and_then(get_process_name_from_hwnd)
+    ));
     if let Ok(mut prev) = state.prev_foreground.lock() {
         *prev = fg;
     }
@@ -442,15 +447,23 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
                 Err(e) => eprintln!("Preview: failed to spawn worker: {e}"),
             }
 
-            // Async snapshot task — samples audio every 3 s, forwards to
-            // worker.  When recording stops it returns, dropping tx_audio
-            // and cleanly terminating the worker thread.
+            // Async snapshot task — samples the trailing audio ~once a second
+            // and forwards it to the worker.  When recording stops it returns,
+            // dropping tx_audio and cleanly terminating the worker thread.
+            //
+            // Cadence note: the old 3 s first-snapshot + 3 s loop meant a
+            // dictation shorter than ~4 s showed NOTHING (the worker only emits
+            // while still recording), and longer ones lurched forward in big 3 s
+            // jumps.  A short warm-up + ~1 s cadence makes words appear quickly
+            // and stream in small, smooth increments (each tick re-decodes the
+            // trailing window, so a small slide ≈ a near-incremental update).
             let ctrl_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 use std::sync::atomic::Ordering;
                 const PREVIEW_SAMPLES: usize = 16_000 * 5;
 
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                // Short warm-up so the very first words show ~1 s in instead of 3 s+.
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
                 loop {
                     if !is_recording.load(Ordering::Relaxed) {
@@ -480,7 +493,10 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
                         }
                     }
 
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    // ~1 s cadence: frequent, small updates read as smooth
+                    // streaming. Capacity-1 backpressure (above) keeps it from
+                    // piling up if a decode runs longer than the interval.
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
                 }
                 // Drop tx_audio → worker rx.recv errors → worker exits.
             });
@@ -503,6 +519,7 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
         // Announce "recording" only now that the capture is fully live. Emitting
         // it earlier let a frontend stop/cancel land mid-setup and race this
         // worker (release with capture_mode already reset to Idle).
+        crate::llm::diaglog::log("pipeline: emitting recording-state-change=recording");
         let _ = app_handle.emit("recording-state-change", "recording");
     }
 }
@@ -941,7 +958,15 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // 5. Kick off focus restoration in parallel with output.
     //     Skipped for Structured Mode since the panel handles pasting.
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
-    let focus_task = if structured.is_none() {
+
+    // Was the dictation aimed at one of OmniVox's own windows?  A synthetic
+    // Ctrl+V doesn't reliably land in our focused WebView2 input, so for our
+    // own windows we insert the text via the frontend (DOM caret insertion)
+    // instead of OS paste — and we skip focus restoration since our window is
+    // already foreground.
+    let target_is_self = prev_hwnd.map(crate::focus::hwnd_is_own_process).unwrap_or(false);
+
+    let focus_task = if structured.is_none() && !target_is_self {
         prev_hwnd.map(|hwnd| tokio::task::spawn_blocking(move || restore_foreground_window(hwnd)))
     } else {
         None
@@ -962,14 +987,21 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         Err(poisoned) => poisoned.into_inner().clone(),
     };
     if structured.is_none() {
-        let output_result = if let Some(ref segments) = voice_segments {
-            state.output.send_segments(segments, &output_config)
+        if target_is_self {
+            // Dictating into OmniVox itself — hand the text to the focused
+            // window so it can insert at the caret of whatever field the user
+            // is in.  (OS Ctrl+V into our own WebView2 control doesn't land.)
+            let _ = app_handle.emit("dictation-insert", &final_text);
         } else {
-            state.output.send(&final_text, &output_config)
-        };
-        if let Err(e) = output_result {
-            eprintln!("Output failed: {e}");
-            emit_error(app_handle, e.code(), format!("Output failed: {e}"));
+            let output_result = if let Some(ref segments) = voice_segments {
+                state.output.send_segments(segments, &output_config)
+            } else {
+                state.output.send(&final_text, &output_config)
+            };
+            if let Err(e) = output_result {
+                eprintln!("Output failed: {e}");
+                emit_error(app_handle, e.code(), format!("Output failed: {e}"));
+            }
         }
     }
 
@@ -980,6 +1012,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //     Also skipped in Structured Mode — pasting is user-driven from the panel.
     let command_send_active = voice_commands_enabled && command_send_enabled;
     if structured.is_none()
+        && !target_is_self
         && output_config.ship_mode
         && !command_send_active
         && matches!(
@@ -1109,8 +1142,11 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
 
     // Snapshot the foreground window so we can restore focus before firing key
-    // chords / target window actions at it.
-    let fg = capture_foreground_window();
+    // chords / target window actions at it.  Use the command-specific capture
+    // that skips OmniVox's own windows — otherwise, when OmniVox is the
+    // foreground app (the user just clicked it), the target would be our own UI
+    // and focus-dependent commands (copy / minimize / media) would no-op.
+    let fg = crate::focus::capture_command_target_window();
     if let Ok(mut prev) = state.prev_foreground.lock() {
         *prev = fg;
     }
@@ -1120,7 +1156,7 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
 
     // Scope the audio guard so it's provably dropped before any `.await` below
     // (a MutexGuard isn't Send, and this fn is spawned as a Send future).
-    let start_result = {
+    let (start_result, is_recording, rms_level) = {
         let mut audio = match state.audio.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -1129,7 +1165,8 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
                 guard
             }
         };
-        audio.start()
+        let r = audio.start();
+        (r, audio.is_recording_flag(), audio.rms_level_ref())
     };
     if let Err(e) = start_result {
         release_capture(&state);
@@ -1143,6 +1180,22 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
     if take_startup_stop(&state) {
         stop_and_run_command(app_handle, &state).await;
     } else {
+        // Drive the command pill's volume waveform: emit `audio-level` events
+        // while listening, mirroring the dictation path.  Without this the
+        // command waveform sits flat because nothing publishes the mic level
+        // during a command capture (the emitter lived only in start_recording_inner).
+        let handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            use std::sync::atomic::Ordering;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                if !is_recording.load(Ordering::Relaxed) {
+                    break;
+                }
+                let level = f32::from_bits(rms_level.load(Ordering::Relaxed));
+                let _ = handle.emit("audio-level", level);
+            }
+        });
         let _ = app_handle.emit("command-state-change", "listening");
     }
 }
@@ -1211,8 +1264,14 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
     }
 
     // Slow path: free-form phrasing the grammar didn't catch → Qwen fallback.
-    if let Some(intent) = classify_command_via_llm(app_handle, state, &utterance).await {
-        run_intent(app_handle, state, intent).await;
+    // The LLM may interpret one utterance as a multi-step chain.
+    let intents = classify_command_via_llm(app_handle, state, &utterance).await;
+    if !intents.is_empty() {
+        if intents.len() == 1 {
+            run_intent(app_handle, state, intents.into_iter().next().unwrap()).await;
+        } else {
+            run_chain(app_handle, state, intents).await;
+        }
         return;
     }
 
@@ -1257,14 +1316,17 @@ async fn classify_command_via_llm(
     app_handle: &tauri::AppHandle,
     state: &AppState,
     utterance: &str,
-) -> Option<crate::actions::CommandIntent> {
+) -> Vec<crate::actions::CommandIntent> {
     if utterance.is_empty() {
-        return None;
+        return Vec::new();
     }
     let _ = app_handle; // reserved for future "thinking" UI; keeps signature stable
 
     // First free-form command pays a one-time model load; subsequent ones are fast.
-    let runner = ensure_llm_runner(state)?;
+    let runner = match ensure_llm_runner(state) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
 
     let timeout = crate::storage::settings::get_settings(&state.db)
         .map(|s| s.llm_timeout_secs)
@@ -1274,10 +1336,10 @@ async fn classify_command_via_llm(
         .classify_command_with_timeout(utterance.to_string(), Duration::from_secs(timeout as u64))
         .await
     {
-        Ok(opt) => opt,
+        Ok(intents) => intents,
         Err(e) => {
             crate::llm::diaglog::log(&format!("command classify failed: {e}"));
-            None
+            Vec::new()
         }
     }
 }
@@ -1290,6 +1352,8 @@ async fn run_intent(
     use crate::actions::CommandIntent;
 
     match intent {
+        // `OpenApp` keeps the interactive confirm flow for low-confidence/
+        // ambiguous matches.
         CommandIntent::OpenApp(name) => {
             // Resolve off the async runtime — a cold index spawns PowerShell, and
             // even warm scoring shouldn't run on a tokio worker.
@@ -1317,7 +1381,7 @@ async fn run_intent(
                 Some(r) => {
                     // Low confidence or ambiguous (close runner-up) — ask first.
                     if let Ok(mut pending) = state.pending_command.lock() {
-                        *pending = Some(crate::state::PendingCommand {
+                        *pending = Some(crate::state::PendingCommand::OpenApp {
                             app_id: r.app_id,
                             name: r.name.clone(),
                         });
@@ -1331,62 +1395,256 @@ async fn run_intent(
                 }
             }
         }
-        // Foreground keystroke/media actions: restore the user's window first,
-        // then fire the keys at it.
-        CommandIntent::KeyChord(chord) => {
+        // Consequential — never fire blind. Stash the captured window + title and
+        // route through the same Enter/Esc confirm pill that OpenApp uses.
+        CommandIntent::CloseWindow => {
             let hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
-            spawn_report(app_handle, chord.past_tense(), move || {
-                if let Some(h) = hwnd {
-                    crate::focus::restore_foreground_window_public(h);
+            match hwnd {
+                None => emit_command_result(app_handle, "error", "No window to close"),
+                Some(h) => {
+                    let title = crate::actions::executor::window_title(h);
+                    if let Ok(mut pending) = state.pending_command.lock() {
+                        *pending = Some(crate::state::PendingCommand::CloseWindow {
+                            hwnd: h,
+                            title: title.clone(),
+                        });
+                    }
+                    let summary = if title.trim().is_empty() {
+                        "Close this window?".to_string()
+                    } else {
+                        format!("Close \u{201c}{title}\u{201d}?")
+                    };
+                    let _ = app_handle
+                        .emit("command-confirm", &CommandConfirmPayload { summary });
                 }
-                crate::actions::executor::run_chord(chord)
-            })
-            .await;
+            }
         }
-        CommandIntent::Media(action) => {
-            let hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
-            spawn_report(app_handle, action.label(), move || {
-                if let Some(h) = hwnd {
-                    crate::focus::restore_foreground_window_public(h);
-                }
-                crate::actions::executor::run_media(action)
-            })
-            .await;
-        }
-        CommandIntent::Window(action) => {
-            let hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
-            spawn_report(app_handle, action.label(), move || {
-                crate::actions::executor::run_window(action, hwnd)
-            })
-            .await;
-        }
-        // Browser actions open in the default browser — no focus restore needed.
-        CommandIntent::WebSearch(query) => {
-            spawn_report(app_handle, "Web search", move || {
-                crate::actions::executor::run_web_search(&query)
-            })
-            .await;
-        }
-        CommandIntent::OpenUrl(url) => {
-            spawn_report(app_handle, "Opened link", move || {
-                crate::actions::executor::run_open_url(&url)
-            })
-            .await;
+        // Everything else is fire-and-report via the shared no-confirm executor.
+        other => {
+            let target = state.prev_foreground.lock().ok().and_then(|g| *g);
+            let (summary, ok) = execute_intent_now(target, other).await;
+            emit_command_result(app_handle, if ok { "done" } else { "error" }, summary);
         }
     }
 }
 
-/// Run a blocking command action off the async runtime and emit its result to
-/// the command pill.  `label` is the success summary ("Copied", "Web search").
-async fn spawn_report(
+/// Execute a single intent against `target_hwnd` — the window to restore focus
+/// to before a keystroke/window action (`None` = act on whatever is currently
+/// foreground) — and return its `(summary, ok)` result instead of emitting to
+/// the pill.  Unlike `run_intent`, `OpenApp` never prompts here: a chain (and
+/// the single-intent delegation) must not pause mid-sequence, so an app only
+/// launches on a confident, unambiguous match.
+async fn execute_intent_now(
+    target_hwnd: Option<isize>,
+    intent: crate::actions::CommandIntent,
+) -> (String, bool) {
+    use crate::actions::CommandIntent;
+
+    match intent {
+        CommandIntent::OpenApp(name) => {
+            let lookup = name.clone();
+            let resolved =
+                tokio::task::spawn_blocking(move || crate::actions::app_index::resolve(&lookup))
+                    .await
+                    .ok()
+                    .flatten();
+            match resolved {
+                Some(r) if r.score >= crate::actions::app_index::AUTO && !r.ambiguous => {
+                    match crate::actions::app_index::launch(&r.app_id) {
+                        Ok(()) => (format!("Opened {}", r.name), true),
+                        Err(e) => (e, false),
+                    }
+                }
+                // An app resolved but wasn't confident/unambiguous enough to
+                // auto-launch.  In a chain there's no confirm prompt, so report
+                // it as a skip rather than the misleading "no app found".
+                Some(_) => (
+                    format!("Not sure which app you meant by \u{201c}{name}\u{201d}"),
+                    false,
+                ),
+                None => (format!("No app found for \u{201c}{name}\u{201d}"), false),
+            }
+        }
+        // Foreground keystroke action: restore the target window first, then
+        // fire the chord at it (enigo hits whatever has focus).
+        CommandIntent::KeyChord(chord) => {
+            run_blocking(chord.past_tense(), move || {
+                if let Some(h) = target_hwnd {
+                    crate::focus::restore_foreground_window_public(h);
+                }
+                crate::actions::executor::run_chord(chord)
+            })
+            .await
+        }
+        // Media/volume keys are global (system-wide) — they ignore focus, so we
+        // do NOT restore the target window (avoids yanking focus around for a
+        // key that doesn't need it).
+        CommandIntent::Media(action) => {
+            run_blocking(action.label(), move || {
+                crate::actions::executor::run_media(action)
+            })
+            .await
+        }
+        CommandIntent::Window(action) => {
+            run_blocking(action.label(), move || {
+                crate::actions::executor::run_window(action, target_hwnd)
+            })
+            .await
+        }
+        // Browser actions open in the default browser — no focus restore needed.
+        CommandIntent::WebSearch(query) => {
+            run_blocking("Web search", move || {
+                crate::actions::executor::run_web_search(&query)
+            })
+            .await
+        }
+        CommandIntent::OpenUrl(url) => {
+            run_blocking("Opened link", move || {
+                crate::actions::executor::run_open_url(&url)
+            })
+            .await
+        }
+        // CloseWindow is consequential and must be confirmed — `run_intent`
+        // handles the single-intent case interactively.  A chain never pauses to
+        // confirm, so closing a window inside one is refused (this aborts the
+        // rest of the chain rather than closing a window the user didn't OK).
+        CommandIntent::CloseWindow => (
+            "Closing a window isn't supported inside a multi-step command".to_string(),
+            false,
+        ),
+    }
+}
+
+/// Execute a multi-step chain sequentially, settling briefly between steps so a
+/// just-launched app can take focus before the next keystroke lands.  Emits one
+/// combined result to the pill ("Opened Spotify · Play/Pause").
+async fn run_chain(
     app_handle: &tauri::AppHandle,
+    state: &AppState,
+    intents: Vec<crate::actions::CommandIntent>,
+) {
+    use crate::actions::CommandIntent;
+
+    let total = intents.len();
+    let mut summaries = Vec::with_capacity(total);
+    let mut all_ok = true;
+
+    // Focus target for keystroke/window steps.  Starts as the window that was
+    // foreground before command capture; once a step launches an app we re-aim
+    // at that app (now foreground) so "open notepad and paste" targets notepad,
+    // not the window the user spoke from.
+    let mut target = state.prev_foreground.lock().ok().and_then(|g| *g);
+
+    // OmniVox's own windows — never re-aim a chain's keystrokes at our own UI if
+    // the overlay/main happens to be foreground during the launch settle.
+    let own = own_window_hwnds(app_handle);
+
+    // Set when a launch did NOT confirm the new app took the foreground, so
+    // `target` can't be trusted for a focus-dependent step.
+    let mut target_unverified = false;
+
+    for (i, intent) in intents.into_iter().enumerate() {
+        // A focus-dependent step (key chord / window action) after an
+        // unverified launch would fire into the window the user spoke from, not
+        // the app they just opened — refuse it rather than risk a stray
+        // paste/save/close-tab.  Global media keys don't need a window, so they
+        // are exempt and keep going.
+        let needs_focus = matches!(
+            intent,
+            CommandIntent::KeyChord(_) | CommandIntent::Window(_)
+        );
+        if target_unverified && needs_focus {
+            summaries.push("couldn't confirm the launched app's window".to_string());
+            all_ok = false;
+            break;
+        }
+
+        let launched_app = matches!(intent, CommandIntent::OpenApp(_));
+        let (summary, ok) = execute_intent_now(target, intent).await;
+        summaries.push(summary);
+
+        // Abort the rest of the chain on a failed step.  Later steps almost
+        // always depend on this one (keystrokes meant for an app that didn't
+        // open), and firing them blind would hit the wrong window — e.g. a
+        // failed "open notepad" must NOT be followed by "paste" into whatever
+        // the user was looking at.
+        if !ok {
+            all_ok = false;
+            break;
+        }
+
+        if i + 1 < total && launched_app {
+            // Confirm the launched app actually took the foreground before
+            // aiming later steps at it.  Verified (a new non-own window) →
+            // retarget; unverified (app already foreground, or too slow) → keep
+            // the old target but flag it so a following focus-dependent step
+            // won't fire blind.
+            match settle_after_launch(target, &own).await {
+                Some(hwnd) => {
+                    target = Some(hwnd);
+                    target_unverified = false;
+                }
+                None => target_unverified = true,
+            }
+        } else if i + 1 < total {
+            // Brief settle so the prior action lands before the next fires.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    emit_command_result(
+        app_handle,
+        if all_ok { "done" } else { "error" },
+        summaries.join(" \u{00b7} "),
+    );
+}
+
+/// HWNDs of OmniVox's own windows (main + overlay), so a chain never re-aims a
+/// launched-app focus retarget at our own UI.
+#[cfg(target_os = "windows")]
+fn own_window_hwnds(app_handle: &tauri::AppHandle) -> Vec<isize> {
+    app_handle
+        .webview_windows()
+        .values()
+        .filter_map(|w| w.hwnd().ok().map(|h| h.0 as isize))
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn own_window_hwnds(_app_handle: &tauri::AppHandle) -> Vec<isize> {
+    Vec::new()
+}
+
+/// Poll (up to ~2.4s) for a freshly launched app to take the foreground.
+/// Returns `Some(hwnd)` as soon as a window that is NOT `prev` and NOT one of
+/// OmniVox's own windows (`own`) becomes foreground — a verified *non-own*
+/// foreground change, presumed (but not proven — we have no launched-app
+/// identity) to be the new app.  Returns `None` if focus never moves there (app
+/// was already foreground, or is too slow): the caller then cannot trust a
+/// retarget and must not fire a focus-dependent step blind.
+async fn settle_after_launch(prev: Option<isize>, own: &[isize]) -> Option<isize> {
+    for _ in 0..16 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if let Some(h) = capture_foreground_window() {
+            if Some(h) != prev && !own.contains(&h) {
+                return Some(h);
+            }
+        }
+    }
+    None
+}
+
+/// Run a blocking command action off the async runtime and return a
+/// `(summary, ok)` pair.  `label` is the success summary ("Copied", "Web
+/// search"); on failure the error string is returned instead.
+async fn run_blocking(
     label: &str,
     f: impl FnOnce() -> Result<(), String> + Send + 'static,
-) {
+) -> (String, bool) {
     match tokio::task::spawn_blocking(f).await {
-        Ok(Ok(())) => emit_command_result(app_handle, "done", label.to_string()),
-        Ok(Err(e)) => emit_command_result(app_handle, "error", e),
-        Err(_) => emit_command_result(app_handle, "error", "Command execution failed"),
+        Ok(Ok(())) => (label.to_string(), true),
+        Ok(Err(e)) => (e, false),
+        Err(_) => ("Command execution failed".to_string(), false),
     }
 }
 
@@ -1401,9 +1659,24 @@ pub fn confirm_pending_command(app_handle: &tauri::AppHandle, state: &AppState) 
     let Some(p) = pending else {
         return;
     };
-    match crate::actions::app_index::launch(&p.app_id) {
-        Ok(()) => emit_command_result(app_handle, "done", format!("Opened {}", p.name)),
-        Err(e) => emit_command_result(app_handle, "error", e),
+    match p {
+        crate::state::PendingCommand::OpenApp { app_id, name } => {
+            match crate::actions::app_index::launch(&app_id) {
+                Ok(()) => emit_command_result(app_handle, "done", format!("Opened {name}")),
+                Err(e) => emit_command_result(app_handle, "error", e),
+            }
+        }
+        crate::state::PendingCommand::CloseWindow { hwnd, title } => {
+            let label = if title.trim().is_empty() {
+                "Closed window".to_string()
+            } else {
+                format!("Closed {title}")
+            };
+            match crate::actions::executor::run_close_window(Some(hwnd)) {
+                Ok(()) => emit_command_result(app_handle, "done", label),
+                Err(e) => emit_command_result(app_handle, "error", e),
+            }
+        }
     }
 }
 
@@ -1413,4 +1686,81 @@ pub fn cancel_pending_command(app_handle: &tauri::AppHandle, state: &AppState) {
         *g = None;
     }
     let _ = app_handle.emit("command-state-change", "idle");
+}
+
+/// Result of a "Test command" dry-run (Models → Command tab). Reports how the
+/// two-tier brain resolved an utterance WITHOUT executing anything.
+#[derive(Clone, serde::Serialize)]
+pub struct CommandTestResult {
+    /// "matcher" (tier-1 instant), "llm" (Qwen fallback), or "none".
+    pub tier: &'static str,
+    pub recognized: bool,
+    /// Human-readable resolved intent ("Open app: Spotify", "Close current window…").
+    pub summary: String,
+    pub duration_ms: u64,
+}
+
+fn describe_intent(intent: &crate::actions::CommandIntent) -> String {
+    use crate::actions::CommandIntent::*;
+    match intent {
+        OpenApp(name) => format!("Open app: {name}"),
+        KeyChord(k) => format!("Key chord: {}", k.past_tense()),
+        Media(m) => format!("Media: {}", m.label()),
+        Window(w) => format!("Window: {}", w.label()),
+        WebSearch(q) if q.trim().is_empty() => "Web search (open search page)".to_string(),
+        WebSearch(q) => format!("Web search: {q}"),
+        OpenUrl(u) => format!("Open URL: {u}"),
+        CloseWindow => "Close current window (will ask to confirm)".to_string(),
+    }
+}
+
+/// Dry-run an utterance through the SAME two-tier path Command Mode uses
+/// (deterministic matcher → Qwen fallback) but DON'T execute it — powers the
+/// "Test command" box so the user can see how the brain parses a phrase.
+pub async fn test_command(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    utterance: &str,
+) -> CommandTestResult {
+    let utt = utterance.trim();
+    let t0 = std::time::Instant::now();
+    if utt.is_empty() {
+        return CommandTestResult {
+            tier: "none",
+            recognized: false,
+            summary: "Nothing to test".into(),
+            duration_ms: 0,
+        };
+    }
+    // Tier 1 — deterministic matcher (microseconds, no model load).
+    if let Some(intent) = crate::actions::match_command(utt) {
+        return CommandTestResult {
+            tier: "matcher",
+            recognized: true,
+            summary: describe_intent(&intent),
+            duration_ms: t0.elapsed().as_millis() as u64,
+        };
+    }
+    // Tier 2 — Qwen fallback (lazy-loads the active LLM on first use).  The LLM
+    // may return a multi-step chain; describe each step joined for the preview.
+    let intents = classify_command_via_llm(app_handle, state, utt).await;
+    if !intents.is_empty() {
+        let summary = intents
+            .iter()
+            .map(describe_intent)
+            .collect::<Vec<_>>()
+            .join(" \u{00b7} ");
+        return CommandTestResult {
+            tier: "llm",
+            recognized: true,
+            summary,
+            duration_ms: t0.elapsed().as_millis() as u64,
+        };
+    }
+    CommandTestResult {
+        tier: "none",
+        recognized: false,
+        summary: "Not a recognized command".into(),
+        duration_ms: t0.elapsed().as_millis() as u64,
+    }
 }

@@ -19,6 +19,8 @@ pub enum KeyChord {
     CloseTab,
     /// Win+Shift+S on Windows (region snip).
     Screenshot,
+    /// Win+D on Windows — minimize everything / show the desktop (reversible).
+    ShowDesktop,
 }
 
 impl KeyChord {
@@ -35,6 +37,7 @@ impl KeyChord {
             KeyChord::NewTab => "New tab",
             KeyChord::CloseTab => "Closed tab",
             KeyChord::Screenshot => "Screenshot",
+            KeyChord::ShowDesktop => "Showed desktop",
         }
     }
 }
@@ -93,6 +96,10 @@ pub enum CommandIntent {
     WebSearch(String),
     /// Open a URL / website in the user's DEFAULT browser.
     OpenUrl(String),
+    /// Close the current foreground window (graceful WM_CLOSE — the app runs its
+    /// own save-prompt). Consequential, so the pipeline routes it through the
+    /// confirm pill before executing.
+    CloseWindow,
 }
 
 impl CommandIntent {
@@ -121,6 +128,7 @@ impl CommandIntent {
             "new_tab" => CommandIntent::KeyChord(KeyChord::NewTab),
             "close_tab" => CommandIntent::KeyChord(KeyChord::CloseTab),
             "screenshot" => CommandIntent::KeyChord(KeyChord::Screenshot),
+            "show_desktop" => CommandIntent::KeyChord(KeyChord::ShowDesktop),
             "play_pause" => CommandIntent::Media(MediaAction::PlayPause),
             "next_track" => CommandIntent::Media(MediaAction::NextTrack),
             "prev_track" => CommandIntent::Media(MediaAction::PrevTrack),
@@ -129,6 +137,7 @@ impl CommandIntent {
             "volume_down" => CommandIntent::Media(MediaAction::VolumeDown),
             "minimize" => CommandIntent::Window(WindowAction::Minimize),
             "maximize" => CommandIntent::Window(WindowAction::Maximize),
+            "close_window" => CommandIntent::CloseWindow,
             "web_search" => CommandIntent::WebSearch(target.trim().to_string()),
             "open_url" => {
                 let t = target.trim();
@@ -140,6 +149,37 @@ impl CommandIntent {
             _ => return None,
         };
         Some(intent)
+    }
+
+    /// Parse the LLM fallback's JSON array of `{action, target}` objects into an
+    /// ordered sequence of intents.
+    ///
+    /// All-or-nothing: if *any* object fails to map — a `"none"` (the model's
+    /// "not a command" signal), an unknown action, or an empty target where one
+    /// is required — the whole utterance is treated as unrecognized and an empty
+    /// Vec is returned.  This deliberately avoids running a *partial* chain (e.g.
+    /// "open spotify and close internet explorer" silently opening Spotify while
+    /// dropping the unsupported close) and reporting it as success.  An empty Vec
+    /// is also returned if the JSON doesn't parse.
+    pub fn from_llm_list(json: &str) -> Vec<CommandIntent> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            action: String,
+            #[serde(default)]
+            target: String,
+        }
+        let raws = match serde_json::from_str::<Vec<Raw>>(json.trim()) {
+            Ok(raws) => raws,
+            Err(_) => return Vec::new(),
+        };
+        let mut intents = Vec::with_capacity(raws.len());
+        for r in &raws {
+            match CommandIntent::from_llm(&r.action, &r.target) {
+                Some(intent) => intents.push(intent),
+                None => return Vec::new(),
+            }
+        }
+        intents
     }
 }
 
@@ -181,6 +221,14 @@ mod tests {
             CommandIntent::from_llm("open_url", "youtube.com"),
             Some(CommandIntent::OpenUrl("youtube.com".into()))
         );
+        assert_eq!(
+            CommandIntent::from_llm("show_desktop", ""),
+            Some(CommandIntent::KeyChord(KeyChord::ShowDesktop))
+        );
+        assert_eq!(
+            CommandIntent::from_llm("close_window", ""),
+            Some(CommandIntent::CloseWindow)
+        );
     }
 
     #[test]
@@ -189,5 +237,36 @@ mod tests {
         assert_eq!(CommandIntent::from_llm("open_app", "   "), None);
         assert_eq!(CommandIntent::from_llm("open_url", ""), None);
         assert_eq!(CommandIntent::from_llm("bogus_action", "x"), None);
+    }
+
+    #[test]
+    fn from_llm_list_parses_clean_chain() {
+        let json = r#"[{"action":"open_app","target":"Spotify"},{"action":"play_pause","target":""}]"#;
+        assert_eq!(
+            CommandIntent::from_llm_list(json),
+            vec![
+                CommandIntent::OpenApp("Spotify".into()),
+                CommandIntent::Media(MediaAction::PlayPause),
+            ]
+        );
+    }
+
+    #[test]
+    fn from_llm_list_is_all_or_nothing_on_invalid_entry() {
+        // A "none" (or any unsupported step) mixed into an otherwise-valid chain
+        // rejects the WHOLE utterance rather than silently running a partial.
+        let json = r#"[{"action":"open_app","target":"Spotify"},{"action":"none","target":""}]"#;
+        assert!(CommandIntent::from_llm_list(json).is_empty());
+    }
+
+    #[test]
+    fn from_llm_list_handles_single_and_garbage() {
+        assert_eq!(
+            CommandIntent::from_llm_list(r#"[{"action":"copy","target":""}]"#),
+            vec![CommandIntent::KeyChord(KeyChord::Copy)]
+        );
+        assert!(CommandIntent::from_llm_list(r#"[{"action":"none","target":""}]"#).is_empty());
+        assert!(CommandIntent::from_llm_list("not json").is_empty());
+        assert!(CommandIntent::from_llm_list("[]").is_empty());
     }
 }

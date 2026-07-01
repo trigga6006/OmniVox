@@ -35,6 +35,86 @@ pub(crate) fn capture_foreground_window() -> Option<isize> {
     None
 }
 
+/// Like [`capture_foreground_window`], but never returns one of OmniVox's own
+/// windows.  Command Mode fires keystrokes / launches at the user's real app, so
+/// if OmniVox itself is the foreground window (the user just clicked the app or
+/// its overlay pill), walk down the Z-order to the topmost normal window behind
+/// us — the app they were last using — and target that instead.  Without this,
+/// "copy", "minimize", media keys, etc. bounce off our own UI whenever OmniVox
+/// was the last-focused window.
+#[cfg(target_os = "windows")]
+pub(crate) fn capture_command_target_window() -> Option<isize> {
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW,
+        GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, GW_HWNDNEXT, WS_EX_TOOLWINDOW,
+    };
+
+    unsafe {
+        let own_pid = GetCurrentProcessId();
+        let pid_of = |hwnd: *mut core::ffi::c_void| -> u32 {
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            pid
+        };
+
+        let fg = GetForegroundWindow();
+        if fg.is_null() {
+            return None;
+        }
+        // Already a real, non-OmniVox app in front — target it directly.
+        if pid_of(fg) != own_pid {
+            return Some(fg as isize);
+        }
+
+        // Foreground is one of ours — find the first eligible window behind it:
+        // visible, owned by another process, not a tool window, and titled
+        // (skips shell/host/zero-size helper windows).
+        let mut hwnd = fg;
+        loop {
+            hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+            if hwnd.is_null() {
+                return None;
+            }
+            if IsWindowVisible(hwnd) == 0 || pid_of(hwnd) == own_pid {
+                continue;
+            }
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            if ex & WS_EX_TOOLWINDOW != 0 || GetWindowTextLengthW(hwnd) == 0 {
+                continue;
+            }
+            return Some(hwnd as isize);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn capture_command_target_window() -> Option<isize> {
+    capture_foreground_window()
+}
+
+/// True when `hwnd` belongs to OmniVox's own process (the main window or the
+/// overlay pill).  Dictation aimed at one of our own WebView2 controls can't
+/// rely on a synthetic Ctrl+V — the paste doesn't reliably land in the
+/// focused web input — so the pipeline routes that case through the frontend
+/// (DOM caret insertion) instead.
+#[cfg(target_os = "windows")]
+pub(crate) fn hwnd_is_own_process(hwnd: isize) -> bool {
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    unsafe {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd as *mut core::ffi::c_void, &mut pid);
+        pid != 0 && pid == GetCurrentProcessId()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn hwnd_is_own_process(_hwnd: isize) -> bool {
+    false
+}
+
 /// Extract the process executable name (for example, "Code.exe") from a
 /// platform foreground-window handle.
 #[cfg(target_os = "windows")]

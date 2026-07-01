@@ -28,3 +28,14 @@ pub async fn cancel_command(
     crate::pipeline::cancel_pending_command(&app_handle, &state);
     Ok(())
 }
+
+/// Dry-run an utterance through the command brain (matcher → LLM) without
+/// executing it — backs the "Test command" box on the Models → Command tab.
+#[tauri::command]
+pub async fn test_command(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    utterance: String,
+) -> Result<crate::pipeline::CommandTestResult, String> {
+    Ok(crate::pipeline::test_command(&app_handle, &state, &utterance).await)
+}

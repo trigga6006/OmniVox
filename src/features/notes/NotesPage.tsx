@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { StickyNote, Plus, Trash2, ArrowLeft, Check } from "lucide-react";
+import { Button, Card, EmptyState } from "@/components/ui";
 import {
   listNotes,
   addNote,
@@ -148,14 +149,12 @@ export function NotesPage() {
     return (
       <div className="flex h-full flex-col">
         {/* Toolbar — slim, utility-focused */}
-        <div className="flex items-center justify-between border-b border-border/55 px-8 py-3.5">
-          <button
-            onClick={handleBack}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted transition-colors hover:bg-surface-2/60 hover:text-text-secondary"
-          >
-            <ArrowLeft size={14} strokeWidth={1.75} />
-            Notes
-          </button>
+        <div className="flex items-center justify-between border-b border-border/55 px-8 py-3">
+          <Button variant="ghost" size="sm" icon={<ArrowLeft />} onClick={handleBack}>
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em]">
+              Notes
+            </span>
+          </Button>
 
           {/* Save indicator */}
           <div className="flex items-center gap-1.5 text-xs text-text-muted">
@@ -185,7 +184,7 @@ export function NotesPage() {
             {/* Subtle rule */}
             <div className="mb-7 mt-5 h-px w-12 rounded-full bg-amber-400/25" />
 
-            {/* Content */}
+            {/* Content — textarea styled to match the kit Input (no kit primitive) */}
             <textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
@@ -215,13 +214,9 @@ export function NotesPage() {
               : "Your saved notes"}
           </p>
         </div>
-        <button
-          onClick={handleNew}
-          className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/[0.10] px-3 text-xs font-medium uppercase tracking-[0.10em] text-amber-300 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.18]"
-        >
-          <Plus size={13} strokeWidth={2} />
+        <Button variant="primary" size="sm" icon={<Plus />} onClick={handleNew}>
           New
-        </button>
+        </Button>
       </div>
 
       {/* Grid */}
@@ -232,30 +227,31 @@ export function NotesPage() {
           </div>
         ) : notes.length === 0 ? (
           /* ── Empty state ── */
-          <div className="flex h-64 flex-col items-center justify-center text-center">
-            <div className="relative mb-5">
-              <div className="absolute inset-0 -m-3 rounded-2xl border border-amber-500/15 bg-amber-500/[0.04]" />
-              <StickyNote size={28} strokeWidth={1.5} className="relative text-text-muted/70" />
-            </div>
-            <p className="text-sm font-medium text-text-secondary">No notes yet</p>
-            <p className="mb-4 mt-1 text-xs text-text-muted">
-              Create a note to start writing
-            </p>
-            <button
-              onClick={handleNew}
-              className="text-xs font-medium tracking-wide text-amber-300 transition-colors hover:text-amber-200"
-            >
-              + Create note
-            </button>
+          <div className="flex h-64 items-center justify-center">
+            <EmptyState
+              icon={<StickyNote />}
+              title="No notes yet"
+              description="Create a note to start writing"
+              action={
+                <Button variant="primary" size="sm" icon={<Plus />} onClick={handleNew}>
+                  Create note
+                </Button>
+              }
+            />
           </div>
         ) : (
           /* ── Note cards ── */
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
             {notes.map((note, i) => (
-              <button
+              <Card
                 key={note.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => handleOpen(note)}
-                className="group relative flex flex-col rounded-xl border border-border bg-surface-1/80 text-left shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-border-hover hover:bg-surface-1 hover:shadow-md"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") handleOpen(note);
+                }}
+                className="group relative flex cursor-pointer flex-col p-0 text-left transition-all duration-200 hover:-translate-y-px hover:border-border-hover hover:shadow-md"
                 style={{
                   animation: `fade-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) ${i * 0.03}s both`,
                 }}
@@ -292,7 +288,7 @@ export function NotesPage() {
                     <Trash2 size={11} />
                   </div>
                 </div>
-              </button>
+              </Card>
             ))}
           </div>
         )}

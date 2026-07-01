@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BarChart3, CalendarDays, RefreshCw, Zap } from "lucide-react";
 import { getAnalyticsRecords, type AnalyticsRecord } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import { Button, Card, EmptyState as KitEmptyState } from "@/components/ui";
 import {
   computeAnalytics,
   compact,
@@ -64,13 +65,14 @@ export function UserAnalyticsPage() {
             Your dictation, by the numbers
           </p>
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={load}
-          className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-2/70 hover:text-text-secondary"
           title="Refresh"
-        >
-          <RefreshCw size={16} strokeWidth={1.75} />
-        </button>
+          aria-label="Refresh"
+          icon={<RefreshCw strokeWidth={1.75} />}
+        />
       </div>
 
       {loading && !data ? (
@@ -78,27 +80,16 @@ export function UserAnalyticsPage() {
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-text-muted/25 border-t-amber-400" />
         </div>
       ) : !data || data.totalMessages === 0 ? (
-        <EmptyState />
+        <div className="flex flex-1 items-center justify-center">
+          <KitEmptyState
+            icon={<BarChart3 strokeWidth={1.5} />}
+            title="No data yet"
+            description="Start dictating and your stats will appear here"
+          />
+        </div>
       ) : (
         <Dashboard data={data} />
       )}
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-4">
-      <div className="relative flex items-center justify-center">
-        <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
-        <BarChart3 size={36} strokeWidth={1.5} className="relative text-text-muted" />
-      </div>
-      <div className="mt-2 text-center">
-        <p className="text-sm font-medium text-text-secondary">No data yet</p>
-        <p className="mt-1 text-xs text-text-muted">
-          Start dictating and your stats will appear here
-        </p>
-      </div>
     </div>
   );
 }
@@ -157,8 +148,8 @@ function OverviewCard({ data }: { data: AnalyticsData }) {
   ];
 
   return (
-    <section
-      className="animate-slide-up rounded-xl border border-border bg-surface-1/85 p-6"
+    <Card
+      className="animate-slide-up p-6"
       style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
     >
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-0">
@@ -169,7 +160,7 @@ function OverviewCard({ data }: { data: AnalyticsData }) {
           className="sm:border-l sm:border-border/60 sm:pl-8"
         />
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -184,7 +175,7 @@ function LedgerColumn({
 }) {
   return (
     <div className={className}>
-      <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+      <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
         {title}
       </div>
       <div className="flex flex-col">
@@ -229,21 +220,21 @@ function SectionCard({
   delay: number;
 }) {
   return (
-    <section
-      className="animate-slide-up rounded-xl border border-border bg-surface-1/85 p-5"
+    <Card
+      className="animate-slide-up p-5"
       style={{ opacity: 0, animationDelay: `${delay}s`, animationFillMode: "forwards" }}
     >
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Icon size={14} strokeWidth={2} className="text-text-muted" />
-          <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
             {title}
           </span>
         </div>
         {aside}
       </div>
       {children}
-    </section>
+    </Card>
   );
 }
 
@@ -260,7 +251,6 @@ const HEAT_COLORS: Record<number, string> = {
 function cellStyle(cell: HeatCell): React.CSSProperties {
   if (cell.future) return { background: "transparent" };
   const style: React.CSSProperties = { background: HEAT_COLORS[cell.level] };
-  if (cell.level === 4) style.boxShadow = "0 0 6px -1px var(--color-amber-500)";
   return style;
 }
 
@@ -371,7 +361,6 @@ function PeakHoursCard({ data }: { data: AnalyticsData }) {
                     : count > 0
                       ? "var(--bar-fill)"
                       : "var(--bar-empty)",
-                  boxShadow: isPeak ? "0 0 7px -1px var(--color-amber-500)" : undefined,
                 }}
               />
               <BarTooltip>

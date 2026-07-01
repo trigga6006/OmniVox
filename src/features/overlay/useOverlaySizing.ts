@@ -5,10 +5,19 @@ import type { CommandUiState } from "@/stores/commandStore";
 
 type PillState = RecordingStatus | "success";
 
-export const ACTIVE_W = 210;
+export const ACTIVE_W = 156;
 export const ACTIVE_H = 34;
-export const IDLE_W = 56;
-export const IDLE_H = 26;
+export const IDLE_W = 42;
+export const IDLE_H = 14;
+// The idle pill is a tiny dark slit; on a black UI behind it you can't tell
+// where it is. We reserve a small transparent margin around it (kept small so
+// the window doesn't eat clicks meant for apps behind it) for a faint amber
+// locator glow to bleed into. Asymmetric on purpose: full pad on the sides +
+// top, but the pill sits nearly flush at the bottom (just a 2px sliver) so it
+// stays low above the taskbar — centering it floated the slit visibly too high.
+export const IDLE_GLOW_PAD = 10;
+export const IDLE_WIN_W = IDLE_W + IDLE_GLOW_PAD * 2; // 62 (10px each side)
+export const IDLE_WIN_H = IDLE_H + IDLE_GLOW_PAD + 2; // 26 (10px top, 2px bottom)
 
 interface OverlaySizingOptions {
   pillState: PillState;
@@ -27,23 +36,20 @@ export function useOverlaySizing({
   modeCount,
   commandState,
 }: OverlaySizingOptions) {
-  const prevExpandedRef = useRef(false);
-  const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_W, h: IDLE_H });
+  const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_WIN_W, h: IDLE_WIN_H });
   const showContentTimerRef = useRef<number | null>(null);
+  const settleTimerRef = useRef<number | null>(null);
   const [showContent, setShowContent] = useState(false);
 
   // Consolidated overlay sizing.
   //
-  // Prior version had TWO effects that both reacted to the same state
-  // transitions and called resizeOverlay independently. When the user
-  // right-clicked to open the mode selector, effect #1 issued
-  // resizeOverlay(ACTIVE_W, ACTIVE_H) and effect #2 issued
-  // resizeOverlay(600, ACTIVE_H+selectorH+4) in the same tick. Both
-  // go through Tauri IPC; under load the first one could finish AFTER
-  // the second, leaving the overlay clipped to a one-line-tall window.
+  // The window is resized to contain BOTH the old and new pill size (the union)
+  // for the duration of the pill's CSS width/height transition, then settled to
+  // the exact target. This lets the pill animate its size smoothly in either
+  // direction without the window bounds clipping it mid-grow / mid-shrink.
   //
-  // `showContent` is reset to false on every size change, then flipped
-  // back after resize so WebView2 has time to re-layout before painting.
+  // `showContent` is reset to false on every size change, then flipped back
+  // after a short delay so WebView2 has time to re-layout before painting.
   useEffect(() => {
     let targetW: number;
     let targetH: number;
@@ -63,43 +69,56 @@ export function useOverlaySizing({
       targetH = ACTIVE_H + 80;
     } else if (showModeSelector) {
       const selectorH = Math.min(modeCount * 34 + 40 + 34, 240);
-      targetW = 600;
-      targetH = ACTIVE_H + selectorH + 4;
+      // 640 (was 600) so the right-click Ship / Voice-Command popups, which open
+      // to the right of the toggle column, aren't clipped by the window edge.
+      targetW = 640;
+      // The pill collapses to a thin base slit under the menu, so reserve only
+      // the idle height below the menu (not the full active height).
+      targetH = IDLE_H + selectorH + 4;
     } else if (pillState !== "idle") {
       targetW = ACTIVE_W;
       targetH = ACTIVE_H;
     } else {
-      targetW = IDLE_W;
-      targetH = IDLE_H;
+      // Idle window includes the glow margin around the pill.
+      targetW = IDLE_WIN_W;
+      targetH = IDLE_WIN_H;
     }
 
-    const expanded = targetW > IDLE_W || targetH > IDLE_H;
-    const wasExpanded = prevExpandedRef.current;
     const prev = prevTargetRef.current;
     const sizeChanged = prev.w !== targetW || prev.h !== targetH;
-
     if (!sizeChanged) return;
-
-    prevExpandedRef.current = expanded;
     prevTargetRef.current = { w: targetW, h: targetH };
 
     if (showContentTimerRef.current !== null) {
       window.clearTimeout(showContentTimerRef.current);
       showContentTimerRef.current = null;
     }
-
-    if (!expanded && wasExpanded) {
-      setShowContent(false);
-      resizeOverlay(targetW, targetH);
-      return;
+    if (settleTimerRef.current !== null) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
     }
 
+    // Union of old + new, so the animating pill is never clipped.
+    const interW = Math.max(prev.w, targetW);
+    const interH = Math.max(prev.h, targetH);
+    const needsSettle = interW !== targetW || interH !== targetH;
+
     setShowContent(false);
-    resizeOverlay(targetW, targetH);
+    resizeOverlay(interW, interH);
+
     showContentTimerRef.current = window.setTimeout(() => {
       setShowContent(true);
       showContentTimerRef.current = null;
     }, 80);
+
+    // After the pill's size transition completes, shrink the (transparent)
+    // window back to the exact target. Only needed when collapsing.
+    if (needsSettle) {
+      settleTimerRef.current = window.setTimeout(() => {
+        resizeOverlay(targetW, targetH);
+        settleTimerRef.current = null;
+      }, 320);
+    }
   }, [pillState, hasStructuredPayload, structuredDegraded, showModeSelector, modeCount, commandState]);
 
   useEffect(() => {
@@ -107,6 +126,10 @@ export function useOverlaySizing({
       if (showContentTimerRef.current !== null) {
         window.clearTimeout(showContentTimerRef.current);
         showContentTimerRef.current = null;
+      }
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current);
+        settleTimerRef.current = null;
       }
     };
   }, []);

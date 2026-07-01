@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "design-lab",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4321", "--directory", "design-lab"],
+      "port": 4321
+    },
+    {
+      "name": "omnivox-dist",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4322", "--directory", "dist"],
+      "port": 4322
+    }
+  ]
+}

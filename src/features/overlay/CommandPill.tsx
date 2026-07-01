@@ -3,12 +3,13 @@ import { confirmCommand, cancelCommand } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { useCommandStore } from "@/stores/commandStore";
 import { PillWaveform } from "./PillWaveform";
+import { CommandDither } from "./CommandDither";
 
-/** Command-Mode accent — indigo, deliberately distinct from dictation's red /
- * processing amber / structuring violet so the user always knows "this
- * executes, it won't type." Defined once as an RGB triple so the solid color
- * and the translucent glow can't drift apart. */
-const ACCENT_RGB = "129,140,248";
+/** Command-Mode accent — amber, aligned with the app's accent everywhere else.
+ * Command mode is told apart from dictation by its ⚡ glyph + "Command" label
+ * rather than by colour. Defined once as an RGB triple so the solid colour and
+ * the dither field can't drift apart. */
+const ACCENT_RGB = "245,158,11";
 const ACCENT = `rgb(${ACCENT_RGB})`;
 
 /**
@@ -30,13 +31,13 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
     ? "border-recording-500/40"
     : isDone
       ? "border-success/40"
-      : "border-indigo-400/40";
+      : "border-amber-500/40";
 
   return (
     <div
       className={cn(
         isConfirm ? "w-[300px] h-[44px]" : "w-[260px] h-[34px]",
-        "relative flex items-center overflow-hidden shrink-0 rounded-full border gap-2.5 px-3.5",
+        "relative flex items-center overflow-hidden shrink-0 rounded-full border px-3.5",
         "bg-[var(--color-pill-bg)] transition-[border-color] duration-200 ease-out",
         borderClass
       )}
@@ -45,9 +46,13 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
         transition: showContent
           ? "opacity 220ms cubic-bezier(0.4, 0, 0.2, 1) 40ms"
           : "none",
-        boxShadow: `0 8px 24px -10px rgba(0,0,0,0.65), 0 0 18px -8px rgba(${ACCENT_RGB},0.45)`,
+        boxShadow: "0 8px 24px -10px rgba(0,0,0,0.65)",
       }}
     >
+      {/* Ambient command-blue dither field while listening/recognizing. */}
+      <CommandDither active={isListening || isRecognizing} />
+
+      <div className="relative z-[1] flex w-full items-center gap-2.5">
       {/* Left glyph — the ⚡ is the command identity. */}
       <div className="shrink-0 flex items-center justify-center min-w-[20px]">
         {isRecognizing ? (
@@ -113,7 +118,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
               confirmCommand().catch(() => {});
             }}
             title="Yes"
-            className="flex items-center justify-center h-7 w-7 rounded-full border border-indigo-400/50 bg-indigo-400/10 text-indigo-200 hover:bg-indigo-400/25 transition-colors"
+            className="flex items-center justify-center h-7 w-7 rounded-full border border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/25 transition-colors"
           >
             <Check size={14} strokeWidth={2.5} />
           </button>
@@ -140,6 +145,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
           />
         </div>
       )}
+      </div>
     </div>
   );
 }
