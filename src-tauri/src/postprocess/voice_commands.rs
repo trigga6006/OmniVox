@@ -19,6 +19,22 @@ pub enum VoiceCommand {
     DeleteLastWord,
     /// Send the message (Enter). Only triggers when "send" is the last word.
     Send,
+    /// Select all (Ctrl/Cmd+A).
+    SelectAll,
+    /// Copy (Ctrl/Cmd+C).
+    Copy,
+    /// Cut (Ctrl/Cmd+X).
+    Cut,
+    /// Undo (Ctrl/Cmd+Z).
+    Undo,
+    /// Redo (Ctrl/Cmd+Shift+Z).
+    Redo,
+    /// Press Tab.
+    PressTab,
+    /// Press Escape.
+    PressEscape,
+    /// Press Enter inline (fires wherever spoken, unlike "send").
+    PressEnter,
 }
 
 /// A segment of output: either literal text to type, or a command to execute.
@@ -33,7 +49,15 @@ pub enum OutputSegment {
 const COMMANDS: &[(&str, VoiceCommand)] = &[
     ("delete last word", VoiceCommand::DeleteLastWord),
     ("new paragraph", VoiceCommand::NewParagraph),
+    ("press escape", VoiceCommand::PressEscape),
+    ("press enter", VoiceCommand::PressEnter),
+    ("select all", VoiceCommand::SelectAll),
+    ("copy that", VoiceCommand::Copy),
+    ("undo that", VoiceCommand::Undo),
+    ("redo that", VoiceCommand::Redo),
+    ("press tab", VoiceCommand::PressTab),
     ("new line", VoiceCommand::NewLine),
+    ("cut that", VoiceCommand::Cut),
 ];
 
 /// True if a byte is part of a "word" for command boundary matching.
@@ -69,7 +93,6 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
         return Vec::new();
     }
 
-    let lower = text.to_lowercase();
     let bytes = text.as_bytes();
     let mut segments: Vec<OutputSegment> = Vec::new();
     let mut text_start: usize = 0;
@@ -80,12 +103,17 @@ fn parse_commands_inner(text: &str, detect_send: bool) -> Vec<OutputSegment> {
 
         for &(phrase, ref cmd) in COMMANDS {
             let phrase_len = phrase.len();
-            if i + phrase_len > lower.len() {
+            if i + phrase_len > bytes.len() {
                 continue;
             }
 
-            // Case-insensitive match.
-            if &lower[i..i + phrase_len] != phrase {
+            // Case-insensitive match against the original bytes. Phrases are
+            // ASCII, so we compare raw bytes with `eq_ignore_ascii_case`
+            // instead of slicing `text.to_lowercase()`: some non-ASCII
+            // uppercase chars (e.g. Turkish 'İ') change byte length when
+            // lowercased, which would desync the lowercase string from
+            // `text`'s byte indices and could panic on a non-boundary slice.
+            if !bytes[i..i + phrase_len].eq_ignore_ascii_case(phrase.as_bytes()) {
                 continue;
             }
 
@@ -200,6 +228,17 @@ pub fn segments_to_string(segments: &[OutputSegment]) -> String {
             OutputSegment::Command(VoiceCommand::NewParagraph) => out.push_str("\n\n"),
             OutputSegment::Command(VoiceCommand::DeleteLastWord) => {}
             OutputSegment::Command(VoiceCommand::Send) => {} // keystroke-only, omitted in clipboard
+            // Keystroke-only commands: no textual representation in clipboard mode.
+            OutputSegment::Command(
+                VoiceCommand::SelectAll
+                | VoiceCommand::Copy
+                | VoiceCommand::Cut
+                | VoiceCommand::Undo
+                | VoiceCommand::Redo
+                | VoiceCommand::PressTab
+                | VoiceCommand::PressEscape
+                | VoiceCommand::PressEnter,
+            ) => {}
         }
     }
     out
@@ -490,6 +529,209 @@ mod tests {
                 OutputSegment::Command(VoiceCommand::Send),
             ]
         );
+    }
+
+    // ── Non-ASCII robustness (no panic) ───────────────────────────
+
+    #[test]
+    fn multibyte_uppercase_does_not_panic() {
+        // Turkish dotted capital 'İ' (U+0130) grows when lowercased, which
+        // used to desync byte indices between `text` and its lowercase form
+        // and could panic on a non-boundary slice.
+        let result = parse_commands("İ new line");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("İ".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+            ]
+        );
+    }
+
+    #[test]
+    fn accented_text_before_command() {
+        let result = parse_commands("café new line");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("café".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+            ]
+        );
+    }
+
+    // ── New keystroke commands ────────────────────────────────────
+
+    #[test]
+    fn select_all_alone() {
+        assert_eq!(
+            parse_commands("select all"),
+            vec![OutputSegment::Command(VoiceCommand::SelectAll)]
+        );
+    }
+
+    #[test]
+    fn copy_that_alone() {
+        assert_eq!(
+            parse_commands("copy that"),
+            vec![OutputSegment::Command(VoiceCommand::Copy)]
+        );
+    }
+
+    #[test]
+    fn cut_that_alone() {
+        assert_eq!(
+            parse_commands("cut that"),
+            vec![OutputSegment::Command(VoiceCommand::Cut)]
+        );
+    }
+
+    #[test]
+    fn undo_that_alone() {
+        assert_eq!(
+            parse_commands("undo that"),
+            vec![OutputSegment::Command(VoiceCommand::Undo)]
+        );
+    }
+
+    #[test]
+    fn redo_that_alone() {
+        assert_eq!(
+            parse_commands("redo that"),
+            vec![OutputSegment::Command(VoiceCommand::Redo)]
+        );
+    }
+
+    #[test]
+    fn press_tab_alone() {
+        assert_eq!(
+            parse_commands("press tab"),
+            vec![OutputSegment::Command(VoiceCommand::PressTab)]
+        );
+    }
+
+    #[test]
+    fn press_escape_alone() {
+        assert_eq!(
+            parse_commands("press escape"),
+            vec![OutputSegment::Command(VoiceCommand::PressEscape)]
+        );
+    }
+
+    #[test]
+    fn press_enter_alone() {
+        assert_eq!(
+            parse_commands("press enter"),
+            vec![OutputSegment::Command(VoiceCommand::PressEnter)]
+        );
+    }
+
+    #[test]
+    fn select_all_mid_text() {
+        let result = parse_commands("hello select all world");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::SelectAll),
+                OutputSegment::Text("world".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn press_enter_mid_text_fires_inline() {
+        // Unlike "send", "press enter" fires wherever spoken, not just at end.
+        let result = parse_commands("line one press enter line two");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("line one".to_string()),
+                OutputSegment::Command(VoiceCommand::PressEnter),
+                OutputSegment::Text("line two".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn copy_that_case_insensitive() {
+        let result = parse_commands("hello Copy That world");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("hello".to_string()),
+                OutputSegment::Command(VoiceCommand::Copy),
+                OutputSegment::Text("world".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn press_escape_case_insensitive() {
+        assert_eq!(
+            parse_commands("PRESS ESCAPE"),
+            vec![OutputSegment::Command(VoiceCommand::PressEscape)]
+        );
+    }
+
+    #[test]
+    fn redo_takes_priority_over_no_such_shorter_phrase() {
+        // "redo that" must not be mistaken for anything shorter; verifies the
+        // longest-first table still segments cleanly around it.
+        let result = parse_commands("do it redo that now");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("do it".to_string()),
+                OutputSegment::Command(VoiceCommand::Redo),
+                OutputSegment::Text("now".to_string()),
+            ]
+        );
+    }
+
+    // ── False-trigger behavior (documents the boundary matcher) ───
+
+    #[test]
+    fn select_all_triggers_mid_sentence() {
+        // NOTE: the matcher fires at any word boundary, so "select all" DOES
+        // trigger mid-sentence. This is the real, intended behavior — we do
+        // not special-case it. See report for the residual risk.
+        let result = parse_commands("please select all the files");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("please".to_string()),
+                OutputSegment::Command(VoiceCommand::SelectAll),
+                OutputSegment::Text("the files".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn press_tab_not_matched_inside_word() {
+        // "press table" should NOT match "press tab" (boundary enforced).
+        let result = parse_commands("press table");
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("press table".to_string())]
+        );
+    }
+
+    #[test]
+    fn segments_to_string_omits_keystroke_commands() {
+        let segments = vec![
+            OutputSegment::Text("a".to_string()),
+            OutputSegment::Command(VoiceCommand::SelectAll),
+            OutputSegment::Command(VoiceCommand::Copy),
+            OutputSegment::Command(VoiceCommand::Cut),
+            OutputSegment::Command(VoiceCommand::Undo),
+            OutputSegment::Command(VoiceCommand::Redo),
+            OutputSegment::Command(VoiceCommand::PressTab),
+            OutputSegment::Command(VoiceCommand::PressEscape),
+            OutputSegment::Command(VoiceCommand::PressEnter),
+            OutputSegment::Text("b".to_string()),
+        ];
+        assert_eq!(segments_to_string(&segments), "ab");
     }
 
     // ── segments_to_string ────────────────────────────────────────

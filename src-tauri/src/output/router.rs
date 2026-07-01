@@ -159,6 +159,50 @@ impl OutputRouter {
                         .key(Key::Return, Direction::Click)
                         .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
                 }
+                OutputSegment::Command(VoiceCommand::SelectAll) => {
+                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('a'), "Select all")?;
+                }
+                OutputSegment::Command(VoiceCommand::Copy) => {
+                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('c'), "Copy")?;
+                }
+                OutputSegment::Command(VoiceCommand::Cut) => {
+                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('x'), "Cut")?;
+                }
+                OutputSegment::Command(VoiceCommand::Undo) => {
+                    Self::modifier_combo(&mut enigo, PASTE_MODIFIER, Key::Unicode('z'), "Undo")?;
+                }
+                OutputSegment::Command(VoiceCommand::Redo) => {
+                    enigo
+                        .key(PASTE_MODIFIER, Direction::Press)
+                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                    enigo
+                        .key(Key::Shift, Direction::Press)
+                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                    enigo
+                        .key(Key::Unicode('z'), Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                    enigo
+                        .key(Key::Shift, Direction::Release)
+                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                    enigo
+                        .key(PASTE_MODIFIER, Direction::Release)
+                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))?;
+                }
+                OutputSegment::Command(VoiceCommand::PressTab) => {
+                    enigo
+                        .key(Key::Tab, Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Tab failed: {e}")))?;
+                }
+                OutputSegment::Command(VoiceCommand::PressEscape) => {
+                    enigo
+                        .key(Key::Escape, Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Escape failed: {e}")))?;
+                }
+                OutputSegment::Command(VoiceCommand::PressEnter) => {
+                    enigo
+                        .key(Key::Return, Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Enter failed: {e}")))?;
+                }
             }
         }
 
@@ -298,6 +342,20 @@ impl OutputRouter {
         enigo
             .key(PASTE_MODIFIER, Direction::Release)
             .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Press `modifier`, click `key`, release `modifier` (e.g. Ctrl/Cmd+A).
+    fn modifier_combo(enigo: &mut Enigo, modifier: Key, key: Key, label: &str) -> AppResult<()> {
+        enigo
+            .key(modifier, Direction::Press)
+            .map_err(|e| AppError::Output(format!("{label} failed: {e}")))?;
+        enigo
+            .key(key, Direction::Click)
+            .map_err(|e| AppError::Output(format!("{label} failed: {e}")))?;
+        enigo
+            .key(modifier, Direction::Release)
+            .map_err(|e| AppError::Output(format!("{label} failed: {e}")))?;
         Ok(())
     }
 
