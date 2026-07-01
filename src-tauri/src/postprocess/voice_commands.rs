@@ -62,6 +62,19 @@ pub enum VoiceCommand {
         modifiers: Vec<KeyModifier>,
         key: ComboKey,
     },
+    /// Left mouse click at the current cursor position.
+    MouseClick,
+    /// Right mouse click at the current cursor position.
+    MouseRightClick,
+    /// Double left click at the current cursor position.
+    MouseDoubleClick,
+    /// Scroll the mouse wheel up.
+    ScrollUp,
+    /// Scroll the mouse wheel down.
+    ScrollDown,
+    /// Launch a program by command line (program + args, run directly with no
+    /// shell). The string is tokenized with [`tokenize_command_line`].
+    LaunchApp(String),
 }
 
 /// When a command phrase is allowed to fire within an utterance.
@@ -101,6 +114,70 @@ pub fn default_command_table() -> Vec<CommandDef> {
         CommandDef { phrase: "press enter".into(), command: PressEnter, scope: Anywhere },
         CommandDef { phrase: "send".into(), command: Send, scope: EndOfUtterance },
     ]
+}
+
+/// Opt-in commands seeded **disabled** so a stray transcription can't move the
+/// mouse or switch windows mid-dictation. These are deliberately NOT part of
+/// [`default_command_table`], so they never fire via the parser fallback used
+/// when the DB can't be read — they only become active once the user enables
+/// them in the Voice Commands page. They default to `EndOfUtterance` scope as
+/// an extra guard even while disabled.
+///
+/// Only `switch window` (Alt+Tab) is seeded for window management: the other
+/// common shortcuts (minimize/maximize on Meta+Arrow, close on Alt+F4) need
+/// arrow/function keys that [`ComboKey`] does not currently model.
+pub fn default_disabled_command_table() -> Vec<CommandDef> {
+    use TriggerScope::EndOfUtterance;
+    use VoiceCommand::*;
+    vec![
+        CommandDef { phrase: "mouse click".into(), command: MouseClick, scope: EndOfUtterance },
+        CommandDef { phrase: "right click".into(), command: MouseRightClick, scope: EndOfUtterance },
+        CommandDef { phrase: "double click".into(), command: MouseDoubleClick, scope: EndOfUtterance },
+        CommandDef { phrase: "scroll up".into(), command: ScrollUp, scope: EndOfUtterance },
+        CommandDef { phrase: "scroll down".into(), command: ScrollDown, scope: EndOfUtterance },
+        CommandDef {
+            phrase: "switch window".into(),
+            command: KeyCombo { modifiers: vec![KeyModifier::Alt], key: ComboKey::Tab },
+            scope: EndOfUtterance,
+        },
+    ]
+}
+
+/// Split a command line into program + arguments using whitespace splitting
+/// that respects double-quoted spans. There is **no** shell interpretation —
+/// no variable expansion, globbing, or metacharacters — so the tokens can be
+/// passed straight to `std::process::Command` with no injection surface.
+///
+/// Double quotes group whitespace into one token and are removed from the
+/// output (`say "hello world"` → `["say", "hello world"]`). An empty `""` is
+/// preserved as an empty argument. An unbalanced quote runs to end of string.
+pub fn tokenize_command_line(line: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut has_token = false;
+    for c in line.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                has_token = true; // a bare "" is still a (empty) token
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if has_token {
+                    tokens.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if has_token {
+        tokens.push(cur);
+    }
+    tokens
 }
 
 /// A segment of output: either literal text to type, or a command to execute.
@@ -353,7 +430,13 @@ pub fn segments_to_string(segments: &[OutputSegment]) -> String {
                 | VoiceCommand::PressTab
                 | VoiceCommand::PressEscape
                 | VoiceCommand::PressEnter
-                | VoiceCommand::KeyCombo { .. },
+                | VoiceCommand::KeyCombo { .. }
+                | VoiceCommand::MouseClick
+                | VoiceCommand::MouseRightClick
+                | VoiceCommand::MouseDoubleClick
+                | VoiceCommand::ScrollUp
+                | VoiceCommand::ScrollDown
+                | VoiceCommand::LaunchApp(_),
             ) => {}
         }
     }
@@ -1017,6 +1100,115 @@ mod tests {
             vec![
                 OutputSegment::Text("hello".to_string()),
                 OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
+    }
+
+    // ── Mouse commands (opt-in disabled table) ────────────────────
+
+    #[test]
+    fn disabled_table_mouse_phrases_are_excluded_from_defaults() {
+        // Mouse phrases must NOT be in the default (fallback) table, so they
+        // never fire when the DB can't be read.
+        for def in default_command_table() {
+            assert!(!matches!(
+                def.command,
+                VoiceCommand::MouseClick
+                    | VoiceCommand::MouseRightClick
+                    | VoiceCommand::MouseDoubleClick
+                    | VoiceCommand::ScrollUp
+                    | VoiceCommand::ScrollDown
+            ));
+        }
+    }
+
+    #[test]
+    fn disabled_table_all_end_of_utterance() {
+        for def in default_disabled_command_table() {
+            assert_eq!(def.scope, TriggerScope::EndOfUtterance);
+        }
+    }
+
+    #[test]
+    fn mouse_click_parses_when_enabled_via_table() {
+        let table = default_disabled_command_table();
+        assert_eq!(
+            parse_commands_with_table("mouse click", &table),
+            vec![OutputSegment::Command(VoiceCommand::MouseClick)]
+        );
+        assert_eq!(
+            parse_commands_with_table("scroll down", &table),
+            vec![OutputSegment::Command(VoiceCommand::ScrollDown)]
+        );
+        // EndOfUtterance guard: mid-sentence must not trigger.
+        assert_eq!(
+            parse_commands_with_table("please scroll down the page", &table),
+            vec![OutputSegment::Text(
+                "please scroll down the page".to_string()
+            )]
+        );
+    }
+
+    // ── Command-line tokenizer ────────────────────────────────────
+
+    #[test]
+    fn tokenize_plain_whitespace() {
+        assert_eq!(
+            tokenize_command_line("notepad foo.txt"),
+            vec!["notepad".to_string(), "foo.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn tokenize_collapses_runs_of_whitespace() {
+        assert_eq!(
+            tokenize_command_line("  a   b\tc  "),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn tokenize_respects_double_quotes() {
+        assert_eq!(
+            tokenize_command_line(r#"code "C:\My Docs\file.txt""#),
+            vec!["code".to_string(), r"C:\My Docs\file.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn tokenize_empty_quotes_is_empty_arg() {
+        assert_eq!(
+            tokenize_command_line(r#"prog "" x"#),
+            vec!["prog".to_string(), "".to_string(), "x".to_string()]
+        );
+    }
+
+    #[test]
+    fn tokenize_unbalanced_quote_runs_to_end() {
+        assert_eq!(
+            tokenize_command_line(r#"prog "unterminated arg"#),
+            vec!["prog".to_string(), "unterminated arg".to_string()]
+        );
+    }
+
+    #[test]
+    fn tokenize_empty_line_is_empty() {
+        assert!(tokenize_command_line("   ").is_empty());
+        assert!(tokenize_command_line("").is_empty());
+    }
+
+    #[test]
+    fn tokenize_no_shell_metacharacters_are_split() {
+        // Metacharacters are literal — never interpreted. `;` and `&&` stay
+        // inside their tokens; nothing is executed as a separate command.
+        assert_eq!(
+            tokenize_command_line("echo hi; rm -rf /"),
+            vec![
+                "echo".to_string(),
+                "hi;".to_string(),
+                "rm".to_string(),
+                "-rf".to_string(),
+                "/".to_string(),
             ]
         );
     }

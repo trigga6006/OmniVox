@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
 /// The modifier key used for paste (Ctrl+V on Windows/Linux, Cmd+V on macOS).
 #[cfg(target_os = "macos")]
@@ -321,8 +321,80 @@ impl OutputRouter {
             VoiceCommand::KeyCombo { modifiers, key } => {
                 Self::run_key_combo(enigo, modifiers, key)?;
             }
+            VoiceCommand::MouseClick => {
+                enigo
+                    .button(Button::Left, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse click failed: {e}")))?;
+            }
+            VoiceCommand::MouseRightClick => {
+                enigo
+                    .button(Button::Right, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse right click failed: {e}")))?;
+            }
+            VoiceCommand::MouseDoubleClick => {
+                // enigo has no native double-click: two Left clicks in quick
+                // succession are interpreted as a double-click by the OS.
+                enigo
+                    .button(Button::Left, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse double click failed: {e}")))?;
+                enigo
+                    .button(Button::Left, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse double click failed: {e}")))?;
+            }
+            VoiceCommand::ScrollUp => {
+                // enigo 0.2.1: with Axis::Vertical a positive length scrolls
+                // DOWN and a negative one scrolls UP (see Mouse::scroll docs).
+                enigo
+                    .scroll(-1, Axis::Vertical)
+                    .map_err(|e| AppError::Output(format!("Scroll up failed: {e}")))?;
+            }
+            VoiceCommand::ScrollDown => {
+                // Positive length scrolls DOWN (see ScrollUp comment).
+                enigo
+                    .scroll(1, Axis::Vertical)
+                    .map_err(|e| AppError::Output(format!("Scroll down failed: {e}")))?;
+            }
+            VoiceCommand::LaunchApp(command_line) => {
+                Self::launch_app(command_line);
+            }
         }
         Ok(())
+    }
+
+    /// Launch a program directly (program + args, no shell). The command line
+    /// is tokenized respecting double quotes, so there is no shell
+    /// interpretation and no injection surface. The child is spawned detached
+    /// and dropped; on Windows it is given `CREATE_NO_WINDOW | DETACHED_PROCESS`
+    /// so no console flashes. A spawn failure is logged and swallowed — a bad
+    /// launch must never break the dictation output pipeline.
+    fn launch_app(command_line: &str) {
+        use crate::postprocess::voice_commands::tokenize_command_line;
+
+        let tokens = tokenize_command_line(command_line);
+        let (program, args) = match tokens.split_first() {
+            Some(parts) => parts,
+            None => {
+                crate::llm::diaglog::log("LaunchApp: empty command line, nothing to run");
+                return;
+            }
+        };
+
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW (0x0800_0000) | DETACHED_PROCESS (0x0000_0008)
+            cmd.creation_flags(0x0800_0000 | 0x0000_0008);
+        }
+
+        match cmd.spawn() {
+            Ok(_child) => {} // detached: drop the handle, do not wait
+            Err(e) => {
+                crate::llm::diaglog::log(&format!("LaunchApp: failed to spawn '{program}': {e}"));
+            }
+        }
     }
 
     /// Execute a user-defined key combination: press each modifier, click the
