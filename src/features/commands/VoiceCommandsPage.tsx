@@ -35,9 +35,20 @@ const ACTION_LABELS: Record<string, string> = {
   PressEnter: "Enter",
 };
 
-/** Render an action string (built-in name or `key:ctrl+shift+k`) for display. */
+/** Friendly labels for the mouse action encodings (`mouse:click`, …). */
+const MOUSE_LABELS: Record<string, string> = {
+  "mouse:click": "Mouse click",
+  "mouse:right_click": "Right click",
+  "mouse:double_click": "Double click",
+  "mouse:scroll_up": "Scroll up",
+  "mouse:scroll_down": "Scroll down",
+};
+
+/** Render an action string (built-in name, `key:…`, `mouse:…`, or `launch:…`). */
 function actionLabel(action: string): string {
   if (action in ACTION_LABELS) return ACTION_LABELS[action];
+  if (action in MOUSE_LABELS) return MOUSE_LABELS[action];
+  if (action.startsWith("launch:")) return `Launch: ${action.slice(7)}`;
   if (action.startsWith("key:")) {
     return action
       .slice(4)
@@ -47,6 +58,9 @@ function actionLabel(action: string): string {
   }
   return action;
 }
+
+/** The kind of action being composed in the add form. */
+type ActionType = "key" | "mouse" | "launch";
 
 const SCOPE_LABELS: Record<TriggerScope, string> = {
   anywhere: "Anywhere",
@@ -79,7 +93,10 @@ export function VoiceCommandsPage() {
   // Inline add (custom command)
   const [adding, setAdding] = useState(false);
   const [newPhrase, setNewPhrase] = useState("");
+  const [newActionType, setNewActionType] = useState<ActionType>("key");
   const [newCombo, setNewCombo] = useState("");
+  const [newMouse, setNewMouse] = useState("mouse:click");
+  const [newLaunch, setNewLaunch] = useState("");
   const phraseRef = useRef<HTMLInputElement>(null);
 
   // Inline edit (phrase only)
@@ -102,20 +119,43 @@ export function VoiceCommandsPage() {
     if (adding) phraseRef.current?.focus();
   }, [adding]);
 
+  const resetAddForm = useCallback(() => {
+    setNewPhrase("");
+    setNewCombo("");
+    setNewLaunch("");
+    setNewMouse("mouse:click");
+    setNewActionType("key");
+    setAdding(false);
+  }, []);
+
   const handleAdd = useCallback(() => {
     const p = newPhrase.trim();
-    const combo = newCombo.trim();
-    if (!p || !combo) return;
-    const action = combo.startsWith("key:") ? combo : `key:${combo}`;
-    addVoiceCommand(p, action, "anywhere")
+    if (!p) return;
+
+    // Build the stored action string and default scope from the chosen type.
+    // Mouse commands default to end-of-utterance as a false-trigger guard.
+    let action: string;
+    let scope: TriggerScope = "anywhere";
+    if (newActionType === "mouse") {
+      action = newMouse;
+      scope = "end_of_utterance";
+    } else if (newActionType === "launch") {
+      const cl = newLaunch.trim();
+      if (!cl) return;
+      action = `launch:${cl}`;
+    } else {
+      const combo = newCombo.trim();
+      if (!combo) return;
+      action = combo.startsWith("key:") ? combo : `key:${combo}`;
+    }
+
+    addVoiceCommand(p, action, scope)
       .then((cmd) => {
         setCommands((prev) => [...prev, cmd]);
-        setNewPhrase("");
-        setNewCombo("");
-        setAdding(false);
+        resetAddForm();
       })
       .catch((e) => console.error("Failed to add voice command:", e));
-  }, [newPhrase, newCombo]);
+  }, [newPhrase, newActionType, newCombo, newMouse, newLaunch, resetAddForm]);
 
   const handleUpdatePhrase = useCallback(
     (cmd: VoiceCommand) => {
@@ -288,39 +328,78 @@ export function VoiceCommandsPage() {
           );
         })}
 
-        {/* Inline add row (custom key combo) */}
+        {/* Inline add row (custom command) */}
         {adding && (
-          <div className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
-            <input
-              ref={phraseRef}
-              value={newPhrase}
-              onChange={(e) => setNewPhrase(e.target.value)}
-              className="flex-1 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-sm text-text-primary outline-none focus:border-amber-500/40"
-              placeholder="Spoken phrase…"
-            />
-            <input
-              value={newCombo}
-              onChange={(e) => setNewCombo(e.target.value)}
-              className="w-40 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-sm text-text-primary outline-none focus:border-amber-500/40"
-              placeholder="ctrl+shift+k"
-              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-            />
-            <button
-              onClick={handleAdd}
-              className="rounded-md p-1.5 text-green-400 transition-colors hover:bg-surface-3"
-            >
-              <Check size={14} />
-            </button>
-            <button
-              onClick={() => {
-                setAdding(false);
-                setNewPhrase("");
-                setNewCombo("");
-              }}
-              className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-3"
-            >
-              <X size={14} />
-            </button>
+          <div className="flex flex-col gap-2 rounded-xl border border-amber-400/40 bg-surface-1 p-3 shadow-sm">
+            <div className="flex items-center gap-2">
+              <input
+                ref={phraseRef}
+                value={newPhrase}
+                onChange={(e) => setNewPhrase(e.target.value)}
+                className="flex-1 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-sm text-text-primary outline-none focus:border-amber-500/40"
+                placeholder="Spoken phrase…"
+              />
+              <select
+                value={newActionType}
+                onChange={(e) => setNewActionType(e.target.value as ActionType)}
+                className="rounded-md border border-border bg-surface-2 px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors focus:border-amber-400/45"
+              >
+                <option value="key">Key combo</option>
+                <option value="mouse">Mouse</option>
+                <option value="launch">Launch app</option>
+              </select>
+
+              {newActionType === "key" && (
+                <input
+                  value={newCombo}
+                  onChange={(e) => setNewCombo(e.target.value)}
+                  className="w-40 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-sm text-text-primary outline-none focus:border-amber-500/40"
+                  placeholder="ctrl+shift+k"
+                  onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                />
+              )}
+              {newActionType === "mouse" && (
+                <select
+                  value={newMouse}
+                  onChange={(e) => setNewMouse(e.target.value)}
+                  className="w-40 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-amber-500/40"
+                >
+                  {Object.entries(MOUSE_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {newActionType === "launch" && (
+                <input
+                  value={newLaunch}
+                  onChange={(e) => setNewLaunch(e.target.value)}
+                  className="w-56 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-sm text-text-primary outline-none focus:border-amber-500/40"
+                  placeholder={`notepad "C:\\file.txt"`}
+                  onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                />
+              )}
+
+              <button
+                onClick={handleAdd}
+                className="rounded-md p-1.5 text-green-400 transition-colors hover:bg-surface-3"
+              >
+                <Check size={14} />
+              </button>
+              <button
+                onClick={resetAddForm}
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-3"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            {newActionType === "launch" && (
+              <p className="px-0.5 text-xs text-text-muted">
+                Runs this program directly with its arguments — no shell, so
+                variables and metacharacters are not interpreted.
+              </p>
+            )}
           </div>
         )}
 
@@ -331,7 +410,7 @@ export function VoiceCommandsPage() {
             className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm text-text-muted transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-500/[0.05] hover:text-amber-300"
           >
             <Plus size={14} strokeWidth={2} />
-            Add custom command (key combo)
+            Add custom command
           </button>
         )}
 
