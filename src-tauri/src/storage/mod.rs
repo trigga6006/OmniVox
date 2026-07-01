@@ -9,3 +9,4 @@ pub mod settings;
 pub mod snippets;
 pub mod types;
 pub mod vocabulary;
+pub mod voice_commands;

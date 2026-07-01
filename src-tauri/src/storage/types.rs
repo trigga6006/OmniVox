@@ -88,6 +88,23 @@ pub struct VocabularyEntry {
     pub mode_id: Option<String>,
 }
 
+/// A user-editable voice command row (built-in or custom).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomVoiceCommand {
+    pub id: Uuid,
+    /// The spoken trigger, stored lowercased.
+    pub phrase: String,
+    /// Encoded action: a built-in variant name ("NewLine") or a KeyCombo spec
+    /// ("key:ctrl+shift+k").
+    pub action: String,
+    /// "anywhere" | "end_of_utterance".
+    pub trigger_scope: String,
+    pub enabled: bool,
+    pub built_in: bool,
+    pub sort_order: i32,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {
     pub id: Uuid,

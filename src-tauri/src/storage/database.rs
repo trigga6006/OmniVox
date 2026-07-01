@@ -121,6 +121,17 @@ impl Database {
                 CREATE INDEX IF NOT EXISTS idx_mode_app_bindings_mode_id
                     ON mode_app_bindings(mode_id);
 
+                CREATE TABLE IF NOT EXISTS custom_voice_commands (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    phrase TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    trigger_scope TEXT NOT NULL DEFAULT 'anywhere',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    built_in INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
                 PRAGMA user_version = 3;
             ",
             )?;
@@ -150,6 +161,10 @@ impl Database {
             ",
             )?;
         }
+
+        // Seed the built-in voice commands on first run (empty table), so the
+        // shipped behavior is preserved and users have rows to edit.
+        crate::storage::voice_commands::seed_defaults(self)?;
 
         Ok(())
     }
