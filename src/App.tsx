@@ -22,6 +22,11 @@ const UserAnalyticsPage = lazy(() =>
 const DictionaryPage = lazy(() =>
   import("@/features/dictionary/DictionaryPage").then((m) => ({ default: m.DictionaryPage }))
 );
+const VoiceCommandsPage = lazy(() =>
+  import("@/features/commands/VoiceCommandsPage").then((m) => ({
+    default: m.VoiceCommandsPage,
+  }))
+);
 const ModelsPage = lazy(() =>
   import("@/features/models/ModelsPage").then((m) => ({ default: m.ModelsPage }))
 );
@@ -113,6 +118,8 @@ function PageRouter() {
             return <UserAnalyticsPage />;
           case "dictionary":
             return <DictionaryPage />;
+          case "commands":
+            return <VoiceCommandsPage />;
           case "modes":
             return <ContextModesPage />;
           case "notes":

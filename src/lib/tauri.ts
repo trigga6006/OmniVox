@@ -194,6 +194,48 @@ export const deleteVocabularyEntry = (id: string) =>
 export const listVocabularyEntries = () =>
   invoke<VocabularyEntry[]>("list_vocabulary_entries");
 
+// Voice command registry
+export type TriggerScope = "anywhere" | "end_of_utterance";
+
+export interface VoiceCommand {
+  id: string;
+  /** Spoken trigger, stored lowercased. */
+  phrase: string;
+  /** Built-in variant name ("NewLine") or a combo spec ("key:ctrl+shift+k"). */
+  action: string;
+  trigger_scope: TriggerScope;
+  enabled: boolean;
+  built_in: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export const listVoiceCommands = () =>
+  invoke<VoiceCommand[]>("list_voice_commands");
+export const addVoiceCommand = (
+  phrase: string,
+  action: string,
+  triggerScope: TriggerScope
+) => invoke<VoiceCommand>("add_voice_command", { phrase, action, triggerScope });
+export const updateVoiceCommand = (
+  id: string,
+  phrase: string,
+  action: string,
+  triggerScope: TriggerScope,
+  enabled: boolean
+) =>
+  invoke<void>("update_voice_command", {
+    id,
+    phrase,
+    action,
+    triggerScope,
+    enabled,
+  });
+export const deleteVoiceCommand = (id: string) =>
+  invoke<void>("delete_voice_command", { id });
+export const resetVoiceCommands = () =>
+  invoke<VoiceCommand[]>("reset_voice_commands");
+
 // History commands
 export interface DictationStats {
   total_words: number;
