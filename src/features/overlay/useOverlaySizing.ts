@@ -12,6 +12,7 @@ export const IDLE_H = 26;
 interface OverlaySizingOptions {
   pillState: PillState;
   hasStructuredPayload: boolean;
+  hasCommandPlan: boolean;
   structuredDegraded: string | null;
   showModeSelector: boolean;
   modeCount: number;
@@ -20,6 +21,7 @@ interface OverlaySizingOptions {
 export function useOverlaySizing({
   pillState,
   hasStructuredPayload,
+  hasCommandPlan,
   structuredDegraded,
   showModeSelector,
   modeCount,
@@ -44,7 +46,10 @@ export function useOverlaySizing({
   useEffect(() => {
     let targetW: number;
     let targetH: number;
-    if (hasStructuredPayload) {
+    if (hasCommandPlan) {
+      targetW = 440;
+      targetH = 360;
+    } else if (hasStructuredPayload) {
       targetW = 440;
       targetH = 480;
     } else if (structuredDegraded) {
@@ -89,7 +94,7 @@ export function useOverlaySizing({
       setShowContent(true);
       showContentTimerRef.current = null;
     }, 80);
-  }, [pillState, hasStructuredPayload, structuredDegraded, showModeSelector, modeCount]);
+  }, [pillState, hasStructuredPayload, hasCommandPlan, structuredDegraded, showModeSelector, modeCount]);
 
   useEffect(() => {
     return () => {

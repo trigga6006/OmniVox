@@ -24,10 +24,13 @@ import {
   onSettingsChanged,
   onStructuredOutputReady,
   onStructuredModeDegraded,
+  onCommandPlanProposed,
+  confirmCommandPlan,
   onWhisperGpuFallback,
   getSettings,
   type ContextMode,
   type StructuredOutputPayload,
+  type CommandPlanPayload,
 } from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
@@ -88,6 +91,11 @@ export function FloatingPill() {
   const [structuredDegraded, setStructuredDegraded] = useState<string | null>(
     null
   );
+  // Command-intent plan awaiting confirmation because it is destructive —
+  // populated by `command-plan-proposed`, cleared on approve / cancel.
+  const [commandPlan, setCommandPlan] = useState<CommandPlanPayload | null>(
+    null
+  );
   const { settingsRef, replaceSettings, patchSettings } = useSettingsPatch();
 
   // True while the user is dictating *into the StructuredPanel's textarea*.
@@ -108,10 +116,21 @@ export function FloatingPill() {
   const showContent = useOverlaySizing({
     pillState,
     hasStructuredPayload: Boolean(structuredPayload),
+    hasCommandPlan: Boolean(commandPlan),
     structuredDegraded,
     showModeSelector,
     modeCount: modes.length,
   });
+  const handleApproveCommandPlan = useCallback(() => {
+    confirmCommandPlan(true).catch(console.error);
+    setCommandPlan(null);
+  }, []);
+
+  const handleCancelCommandPlan = useCallback(() => {
+    confirmCommandPlan(false).catch(console.error);
+    setCommandPlan(null);
+  }, []);
+
   const handleDictatingChange = useCallback((active: boolean) => {
     if (dictatingGraceTimerRef.current !== null) {
       window.clearTimeout(dictatingGraceTimerRef.current);
@@ -268,6 +287,16 @@ export function FloatingPill() {
       }, 15000);
     });
 
+    // Command-intent confirmation: a destructive plan needs explicit approval
+    // before it runs.  Show the prompt even in ghost mode — swallowing a
+    // guardrail would be worse than briefly revealing the pill.
+    const unlistenCommandPlan = onCommandPlanProposed((payload) => {
+      setShowModeSelector(false);
+      setShowShipPopup(false);
+      setStructuredDegraded(null);
+      setCommandPlan(payload);
+    });
+
     // GPU→CPU fallback at model load: same banner — the user otherwise has
     // no way to tell why transcription is suddenly several times slower.
     const unlistenGpuFallback = onWhisperGpuFallback((message) => {
@@ -287,6 +316,7 @@ export function FloatingPill() {
       unlistenSettings.then((fn) => fn());
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
+      unlistenCommandPlan.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
     };
   }, []);
@@ -494,6 +524,84 @@ export function FloatingPill() {
             onClose={() => setStructuredPayload(null)}
             onDictatingChange={handleDictatingChange}
           />
+        </div>
+      )}
+
+      {/* Command-intent confirmation — a destructive plan awaiting approval.
+          Mirrors the structured panel's mounting gate. */}
+      {showContent && commandPlan && (
+        <div className="shrink-0 mb-1.5">
+          <div
+            className="flex flex-col gap-2.5 px-3.5 py-3 rounded-xl w-[400px]"
+            style={{
+              background:
+                "linear-gradient(180deg, rgba(60,42,22,0.94) 0%, rgba(38,28,16,0.94) 100%)",
+              border: "1px solid rgba(232,180,95,0.30)",
+              boxShadow:
+                "inset 0 1px 0 rgba(255,225,175,0.08), 0 8px 24px -8px rgba(0,0,0,0.75)",
+              animation: "sp-in 220ms cubic-bezier(0.16,1,0.3,1) both",
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="h-1.5 w-1.5 rounded-full shrink-0"
+                style={{
+                  backgroundColor: "rgba(244,190,110,0.95)",
+                  boxShadow: "0 0 6px rgba(244,190,110,0.7)",
+                }}
+              />
+              <span
+                className="text-[9px] font-semibold uppercase tracking-[0.18em]"
+                style={{
+                  fontFamily: "var(--font-display)",
+                  color: "rgba(244,200,130,0.95)",
+                }}
+              >
+                Confirm command
+              </span>
+            </div>
+            <p
+              className="text-[11px] leading-snug"
+              style={{ color: "rgba(248,215,170,0.9)" }}
+            >
+              This plan includes a destructive action. Run it?
+            </p>
+            <ol className="flex flex-col gap-1 max-h-[180px] overflow-y-auto pr-1">
+              {commandPlan.steps.map((step, i) => (
+                <li
+                  key={i}
+                  className="flex gap-2 text-[11px] leading-snug"
+                  style={{ color: "rgba(240,225,200,0.92)" }}
+                >
+                  <span style={{ color: "rgba(244,200,130,0.7)" }}>{i + 1}.</span>
+                  <span className="break-words">{step}</span>
+                </li>
+              ))}
+            </ol>
+            <div className="flex items-center justify-end gap-2 pt-0.5">
+              <button
+                onClick={handleCancelCommandPlan}
+                className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors"
+                style={{
+                  color: "rgba(248,215,170,0.85)",
+                  border: "1px solid rgba(232,180,95,0.25)",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleApproveCommandPlan}
+                className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
+                style={{
+                  color: "rgb(30,20,10)",
+                  background: "rgba(244,200,130,0.95)",
+                }}
+              >
+                Run plan
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

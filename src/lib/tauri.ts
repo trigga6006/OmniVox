@@ -128,6 +128,18 @@ export interface AppSettings {
    * path covers most cases on its own.
    */
   structured_use_screen_context: boolean;
+  /**
+   * Command intent (experimental).  When true, prefixing a dictation with the
+   * trigger word "computer" routes it through the local LLM to build and
+   * execute a plan of known actions instead of typing the words.
+   */
+  command_intent: boolean;
+  /**
+   * Require a confirmation prompt before executing any intent plan that
+   * contains a destructive step (launch app, cut, close window).  On by
+   * default — safe by default.
+   */
+  intent_confirm_destructive: boolean;
 }
 
 export interface AppBinding {
@@ -455,6 +467,15 @@ export const llmTestExtract = (text?: string) =>
 export const pasteStructuredOutput = (markdown: string) =>
   invoke<void>("paste_structured_output", { markdown });
 
+/** A command-intent plan awaiting confirmation because it is destructive. */
+export interface CommandPlanPayload {
+  steps: string[];
+  destructive: boolean;
+}
+
+export const confirmCommandPlan = (approve: boolean) =>
+  invoke<void>("confirm_command_plan", { approve });
+
 export const onLlmDownloadProgress = (
   callback: (progress: LlmDownloadProgress) => void
 ): Promise<UnlistenFn> =>
@@ -478,6 +499,11 @@ export const onStructuredModeDegraded = (
   callback: (reason: string) => void
 ): Promise<UnlistenFn> =>
   listen<string>("structured-mode-degraded", (e) => callback(e.payload));
+
+export const onCommandPlanProposed = (
+  callback: (payload: CommandPlanPayload) => void
+): Promise<UnlistenFn> =>
+  listen<CommandPlanPayload>("command-plan-proposed", (e) => callback(e.payload));
 
 // Fired when a model was loaded on CPU because the GPU load failed (even
 // after a retry). Without this the fallback is invisible: the UI shows the

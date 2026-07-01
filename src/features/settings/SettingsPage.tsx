@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText, Terminal } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
@@ -288,6 +288,16 @@ export function SettingsPage() {
     })).catch(console.error);
   }, [patchSettings]);
 
+  const handleCommandIntentToggle = useCallback(() => {
+    patchSettings((current) => ({ command_intent: !current.command_intent })).catch(console.error);
+  }, [patchSettings]);
+
+  const handleIntentConfirmToggle = useCallback(() => {
+    patchSettings((current) => ({
+      intent_confirm_destructive: !current.intent_confirm_destructive,
+    })).catch(console.error);
+  }, [patchSettings]);
+
   const handleAudioDuckingToggle = useCallback(() => {
     patchSettings((current) => ({ audio_ducking: !current.audio_ducking })).catch(console.error);
   }, [patchSettings]);
@@ -553,6 +563,43 @@ export function SettingsPage() {
                       {settings?.command_send ? "Enabled" : "Disabled"}
                     </span>
                   </div>
+                </div>
+              </div>
+            )}
+          </Row>
+
+          <Row
+            icon={Terminal}
+            title={
+              <span className="inline-flex items-center gap-2">
+                Command intent
+                <span className="rounded-md border border-amber-400/30 bg-amber-500/[0.12] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-amber-200">
+                  Experimental
+                </span>
+              </span>
+            }
+            description={'Start a command with "computer" to have the local LLM turn it into actions and run them.'}
+            control={<Toggle on={!!settings?.command_intent} onClick={handleCommandIntentToggle} />}
+          >
+            {settings?.command_intent && (
+              <div className="rounded-lg border border-border/60 bg-surface-2/40 p-3">
+                <div className="mb-2 flex items-center gap-1.5">
+                  <ShieldCheck size={12} strokeWidth={2} className="text-text-muted" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                    Confirm before destructive actions
+                  </span>
+                </div>
+                <p className="mb-3 text-xs leading-relaxed text-text-muted">
+                  Ask before running a plan that could close a window, cut text, or launch an app.
+                </p>
+                <div className="flex items-center gap-3">
+                  <Toggle
+                    on={!!settings?.intent_confirm_destructive}
+                    onClick={handleIntentConfirmToggle}
+                  />
+                  <span className="text-xs text-text-secondary">
+                    {settings?.intent_confirm_destructive ? "Enabled" : "Disabled"}
+                  </span>
                 </div>
               </div>
             )}
