@@ -90,8 +90,7 @@ pub(crate) fn get_process_name_from_hwnd(_hwnd: isize) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn restore_foreground_window(hwnd: isize) {
-    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::AttachThreadInput;
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
     };

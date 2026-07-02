@@ -8,7 +8,7 @@
 use crate::error::AppResult;
 use crate::postprocess::voice_commands::{
     action_to_command, command_to_action, default_command_table, default_disabled_command_table,
-    CommandDef, TriggerScope, VoiceCommand,
+    CommandDef, TriggerScope,
 };
 use crate::storage::database::Database;
 use crate::storage::types::CustomVoiceCommand;
@@ -247,7 +247,7 @@ pub fn reset_to_defaults(db: &Database) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::postprocess::voice_commands::{ComboKey, KeyModifier};
+    use crate::postprocess::voice_commands::{ComboKey, KeyModifier, VoiceCommand};
 
     #[test]
     fn key_combo_encode_decode_round_trips() {
