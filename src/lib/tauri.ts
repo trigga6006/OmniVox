@@ -94,6 +94,8 @@ export interface AppSettings {
   auto_switch_modes: boolean;
   voice_commands: boolean;
   command_send: boolean;
+  /** Command Mode: hold Right Ctrl and speak a command (launch app, key chord, media). */
+  command_mode: boolean;
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
@@ -194,6 +196,48 @@ export const deleteVocabularyEntry = (id: string) =>
 export const listVocabularyEntries = () =>
   invoke<VocabularyEntry[]>("list_vocabulary_entries");
 
+// Voice command registry
+export type TriggerScope = "anywhere" | "end_of_utterance";
+
+export interface VoiceCommand {
+  id: string;
+  /** Spoken trigger, stored lowercased. */
+  phrase: string;
+  /** Built-in variant name ("NewLine") or a combo spec ("key:ctrl+shift+k"). */
+  action: string;
+  trigger_scope: TriggerScope;
+  enabled: boolean;
+  built_in: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export const listVoiceCommands = () =>
+  invoke<VoiceCommand[]>("list_voice_commands");
+export const addVoiceCommand = (
+  phrase: string,
+  action: string,
+  triggerScope: TriggerScope
+) => invoke<VoiceCommand>("add_voice_command", { phrase, action, triggerScope });
+export const updateVoiceCommand = (
+  id: string,
+  phrase: string,
+  action: string,
+  triggerScope: TriggerScope,
+  enabled: boolean
+) =>
+  invoke<void>("update_voice_command", {
+    id,
+    phrase,
+    action,
+    triggerScope,
+    enabled,
+  });
+export const deleteVoiceCommand = (id: string) =>
+  invoke<void>("delete_voice_command", { id });
+export const resetVoiceCommands = () =>
+  invoke<VoiceCommand[]>("reset_voice_commands");
+
 // History commands
 export interface DictationStats {
   total_words: number;
@@ -254,8 +298,51 @@ export const updateSettings = (settings: AppSettings) =>
 // Hotkey commands
 export const suspendHotkey = (suspended: boolean) =>
   invoke<void>("suspend_hotkey", { suspended });
+export const feedHotkeyEvent = (vk: number, down: boolean) =>
+  invoke<void>("feed_hotkey_event", { vk, down });
 export const updateHotkey = (config: HotkeyConfig) =>
   invoke<void>("update_hotkey", { config });
+
+// ── Command Mode ─────────────────────────────────────────────────────────
+export interface CommandResult {
+  status: "done" | "error";
+  summary: string;
+}
+export interface CommandConfirm {
+  summary: string;
+}
+
+/** Execute the command currently awaiting confirmation. */
+export const confirmCommand = () => invoke<void>("confirm_command");
+/** Discard the command currently awaiting confirmation. */
+export const cancelCommand = () => invoke<void>("cancel_command");
+
+/** Resolved result of a "Test command" dry-run (no execution). */
+export interface CommandTestResult {
+  /** "matcher" (instant), "llm" (Qwen fallback), or "none". */
+  tier: "matcher" | "llm" | "none";
+  recognized: boolean;
+  summary: string;
+  duration_ms: number;
+}
+/** Dry-run an utterance through the command brain without executing it. */
+export const testCommand = (utterance: string) =>
+  invoke<CommandTestResult>("test_command", { utterance });
+
+export const onCommandStateChange = (
+  callback: (state: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("command-state-change", (e) => callback(e.payload));
+
+export const onCommandConfirm = (
+  callback: (payload: CommandConfirm) => void
+): Promise<UnlistenFn> =>
+  listen<CommandConfirm>("command-confirm", (e) => callback(e.payload));
+
+export const onCommandResult = (
+  callback: (payload: CommandResult) => void
+): Promise<UnlistenFn> =>
+  listen<CommandResult>("command-result", (e) => callback(e.payload));
 
 // Context mode types and commands
 export interface ContextMode {
@@ -463,6 +550,17 @@ export const onTranscriptionResult = (
   callback: (text: string) => void
 ): Promise<UnlistenFn> =>
   listen<string>("transcription-result", (e) => callback(e.payload));
+
+/**
+ * Fired when a dictation was aimed at one of OmniVox's own windows.  A
+ * synthetic Ctrl+V doesn't reliably land in our WebView2 inputs, so the
+ * backend hands the text here and the focused window inserts it at the caret
+ * of whatever field the user is in.
+ */
+export const onDictationInsert = (
+  callback: (text: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("dictation-insert", (e) => callback(e.payload));
 
 export const onModelLoaded = (
   callback: (modelId: string) => void

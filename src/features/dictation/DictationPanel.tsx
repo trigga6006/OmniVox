@@ -6,6 +6,7 @@ import { useRecordingStore } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
 import { getSettings, getDictationStats, type DictationStats, type AppSettings } from "@/lib/tauri";
 import { useAppStore } from "@/stores/appStore";
+import { Button, Card, Kbd } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 export function DictationPanel() {
@@ -64,11 +65,7 @@ export function DictationPanel() {
         >
           {isIdle && (
             <>
-              Press{" "}
-              <kbd className="mx-1.5 rounded-md border border-border bg-surface-1 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
-                {hotkeyLabel}
-              </kbd>{" "}
-              to begin
+              Press <Kbd className="mx-1.5">{hotkeyLabel}</Kbd> to begin
             </>
           )}
           {isRecording && "Speak now — press again to stop"}
@@ -119,6 +116,7 @@ export function DictationPanel() {
 
 function TranscriptionCard({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const setPage = useAppStore((s) => s.setPage);
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text).then(() => {
@@ -131,30 +129,40 @@ function TranscriptionCard({ text }: { text: string }) {
     // min-h-0 + internal overflow: the card grows naturally for short
     // dictations, but when space runs out it compresses and ONLY the text
     // area scrolls — the page itself never does.
-    <div
-      className={cn(
-        "flex min-h-0 w-full max-w-lg flex-col rounded-xl border border-border/70 bg-surface-1/80 px-5 py-4 mt-4",
-        "backdrop-blur-sm shadow-sm opacity-0 animate-slide-up"
-      )}
-    >
+    <Card className="mt-4 flex min-h-0 w-full max-w-lg flex-col px-5 py-4 opacity-0 animate-slide-up">
       <div className="mb-2.5 flex shrink-0 items-center justify-between">
-        <p className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-          Last transcription
-        </p>
-        <button
+        <div className="flex items-center gap-2.5">
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+            Last transcription
+          </span>
+          <button
+            onClick={() => setPage("history")}
+            title="View all transcriptions"
+            className="group inline-flex items-center gap-0.5 text-[10px] font-medium text-text-muted/60 transition-colors hover:text-amber-300"
+          >
+            All transcriptions
+            <ArrowRight
+              size={10}
+              strokeWidth={2}
+              className="opacity-60 transition-transform group-hover:translate-x-0.5"
+            />
+          </button>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={copied ? <Check className="text-success" /> : <Copy />}
           onClick={handleCopy}
-          className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-text-muted hover:text-text-secondary hover:bg-surface-2/70 transition-colors"
         >
-          {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
-          <span>{copied ? "Copied" : "Copy"}</span>
-        </button>
+          {copied ? "Copied" : "Copy"}
+        </Button>
       </div>
       <div className="min-h-0 overflow-y-auto">
         <p className="font-sans text-[15px] leading-[1.65] text-text-primary select-text">
           {text}
         </p>
       </div>
-    </div>
+    </Card>
   );
 }
 

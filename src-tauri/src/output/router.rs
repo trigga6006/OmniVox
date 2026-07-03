@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
 /// The modifier key used for paste (Ctrl+V on Windows/Linux, Cmd+V on macOS).
 #[cfg(target_os = "macos")]
@@ -23,7 +23,9 @@ const POST_PASTE_GUARD_MS: u64 = 250;
 
 use crate::error::{AppError, AppResult};
 use crate::output::types::{OutputConfig, OutputMode};
-use crate::postprocess::voice_commands::{segments_to_string, OutputSegment, VoiceCommand};
+use crate::postprocess::voice_commands::{
+    segments_to_string, ComboKey, KeyModifier, OutputSegment, VoiceCommand,
+};
 
 /// Routes transcribed text to the user's focused application.
 ///
@@ -135,29 +137,8 @@ impl OutputRouter {
                         thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
                     }
                 }
-                OutputSegment::Command(VoiceCommand::NewLine) => {
-                    Self::shift_enter(&mut enigo)?;
-                }
-                OutputSegment::Command(VoiceCommand::NewParagraph) => {
-                    Self::shift_enter(&mut enigo)?;
-                    Self::shift_enter(&mut enigo)?;
-                }
-                OutputSegment::Command(VoiceCommand::DeleteLastWord) => {
-                    enigo
-                        .key(DELETE_WORD_MODIFIER, Direction::Press)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                    enigo
-                        .key(Key::Backspace, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                    enigo
-                        .key(DELETE_WORD_MODIFIER, Direction::Release)
-                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))?;
-                }
-                OutputSegment::Command(VoiceCommand::Send) => {
-                    thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
-                    enigo
-                        .key(Key::Return, Direction::Click)
-                        .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
+                OutputSegment::Command(cmd) => {
+                    Self::run_command(&mut enigo, cmd)?;
                 }
             }
         }
@@ -188,7 +169,9 @@ impl OutputRouter {
     /// When `restore_prior_clipboard` is true (TypeSimulation), the user's
     /// prior clipboard text is captured first and restored after the
     /// deferred-read guard so pre-copied snippets survive dictation.
-    fn paste_text(&self, text: &str, restore_prior_clipboard: bool) -> AppResult<()> {
+    /// `pub(crate)` so Command Mode's `type_text` reuses the exact same
+    /// clipboard-verified paste instead of growing a second injection path.
+    pub(crate) fn paste_text(&self, text: &str, restore_prior_clipboard: bool) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
 
@@ -289,29 +272,257 @@ impl OutputRouter {
     }
 
     fn paste_keystroke(enigo: &mut Enigo) -> AppResult<()> {
-        enigo
-            .key(PASTE_MODIFIER, Direction::Press)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        enigo
-            .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        enigo
-            .key(PASTE_MODIFIER, Direction::Release)
-            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
-        Ok(())
+        Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
+            enigo
+                .key(Key::Unicode('v'), Direction::Click)
+                .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))
+        })
     }
 
     /// Send Shift+Enter (line break that works in chat apps too).
     fn shift_enter(enigo: &mut Enigo) -> AppResult<()> {
+        Self::with_modifier(enigo, Key::Shift, |enigo| {
+            enigo
+                .key(Key::Return, Direction::Click)
+                .map_err(|e| AppError::Output(format!("Newline failed: {e}")))
+        })
+    }
+
+    /// Press `modifier`, run `body` (which clicks the actual key), then ALWAYS
+    /// release `modifier` — even if `body` fails.
+    ///
+    /// A modifier left pressed mid-sequence leaks into Windows' system-wide key
+    /// state via SendInput, which is what made Ctrl appear "stuck down" across
+    /// the whole OS after a paste. The release must run on every path, so it is
+    /// deliberately NOT propagated through `?`.
+    fn with_modifier<F>(enigo: &mut Enigo, modifier: Key, body: F) -> AppResult<()>
+    where
+        F: FnOnce(&mut Enigo) -> AppResult<()>,
+    {
         enigo
-            .key(Key::Shift, Direction::Press)
-            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-        enigo
-            .key(Key::Return, Direction::Click)
-            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
-        enigo
-            .key(Key::Shift, Direction::Release)
-            .map_err(|e| AppError::Output(format!("Newline failed: {e}")))?;
+            .key(modifier, Direction::Press)
+            .map_err(|e| AppError::Output(format!("Keystroke failed: {e}")))?;
+        let result = body(enigo);
+        // Always release, even if `body` errored — never leave a modifier down.
+        let _ = enigo.key(modifier, Direction::Release);
+        result
+    }
+
+    /// Multi-modifier variant of [`with_modifier`]: press each modifier in
+    /// order, run `body`, then ALWAYS release them in reverse order — even if a
+    /// press or `body` fails partway. Guarantees no modifier is ever left down.
+    fn with_modifiers<F>(enigo: &mut Enigo, modifiers: &[Key], body: F) -> AppResult<()>
+    where
+        F: FnOnce(&mut Enigo) -> AppResult<()>,
+    {
+        let mut pressed: Vec<Key> = Vec::with_capacity(modifiers.len());
+        let mut press_result = Ok(());
+        for m in modifiers {
+            match enigo.key(*m, Direction::Press) {
+                Ok(()) => pressed.push(*m),
+                Err(e) => {
+                    press_result = Err(AppError::Output(format!("Keystroke failed: {e}")));
+                    break;
+                }
+            }
+        }
+        // Only run the body if every modifier went down cleanly.
+        let result = if press_result.is_ok() {
+            body(enigo)
+        } else {
+            press_result
+        };
+        // Release whatever we actually pressed, in reverse order, on every path.
+        for m in pressed.iter().rev() {
+            let _ = enigo.key(*m, Direction::Release);
+        }
+        result
+    }
+
+    /// Execute a single voice command as OS-level input. Every modifier-bearing
+    /// action routes through [`with_modifier`]/[`with_modifiers`] so a failure
+    /// mid-chord can never leak a stuck Ctrl/Shift/Alt into the OS.
+    fn run_command(enigo: &mut Enigo, cmd: &VoiceCommand) -> AppResult<()> {
+        match cmd {
+            VoiceCommand::NewLine => {
+                Self::shift_enter(enigo)?;
+            }
+            VoiceCommand::NewParagraph => {
+                Self::shift_enter(enigo)?;
+                Self::shift_enter(enigo)?;
+            }
+            VoiceCommand::DeleteLastWord => {
+                Self::with_modifier(enigo, DELETE_WORD_MODIFIER, |enigo| {
+                    enigo
+                        .key(Key::Backspace, Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Delete word failed: {e}")))
+                })?;
+            }
+            VoiceCommand::Send => {
+                // Keep the paste-guard so trailing "send" doesn't fire before the
+                // dictation text has landed in the target app.
+                thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+                enigo
+                    .key(Key::Return, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
+            }
+            VoiceCommand::SelectAll => {
+                Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
+                    enigo
+                        .key(Key::Unicode('a'), Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Select all failed: {e}")))
+                })?;
+            }
+            VoiceCommand::Copy => {
+                Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
+                    enigo
+                        .key(Key::Unicode('c'), Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Copy failed: {e}")))
+                })?;
+            }
+            VoiceCommand::Cut => {
+                Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
+                    enigo
+                        .key(Key::Unicode('x'), Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Cut failed: {e}")))
+                })?;
+            }
+            VoiceCommand::Undo => {
+                Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
+                    enigo
+                        .key(Key::Unicode('z'), Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Undo failed: {e}")))
+                })?;
+            }
+            VoiceCommand::Redo => {
+                Self::with_modifiers(enigo, &[PASTE_MODIFIER, Key::Shift], |enigo| {
+                    enigo
+                        .key(Key::Unicode('z'), Direction::Click)
+                        .map_err(|e| AppError::Output(format!("Redo failed: {e}")))
+                })?;
+            }
+            VoiceCommand::PressTab => {
+                enigo
+                    .key(Key::Tab, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Tab failed: {e}")))?;
+            }
+            VoiceCommand::PressEscape => {
+                enigo
+                    .key(Key::Escape, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Escape failed: {e}")))?;
+            }
+            VoiceCommand::PressEnter => {
+                enigo
+                    .key(Key::Return, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Enter failed: {e}")))?;
+            }
+            VoiceCommand::KeyCombo { modifiers, key } => {
+                Self::run_key_combo(enigo, modifiers, key)?;
+            }
+            VoiceCommand::MouseClick => {
+                enigo
+                    .button(Button::Left, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse click failed: {e}")))?;
+            }
+            VoiceCommand::MouseRightClick => {
+                enigo
+                    .button(Button::Right, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse right click failed: {e}")))?;
+            }
+            VoiceCommand::MouseDoubleClick => {
+                // enigo has no native double-click: two quick Left clicks are
+                // interpreted as a double-click by the OS.
+                enigo
+                    .button(Button::Left, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse double click failed: {e}")))?;
+                enigo
+                    .button(Button::Left, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Mouse double click failed: {e}")))?;
+            }
+            VoiceCommand::ScrollUp => {
+                // enigo 0.2: with Axis::Vertical a negative length scrolls UP.
+                enigo
+                    .scroll(-1, Axis::Vertical)
+                    .map_err(|e| AppError::Output(format!("Scroll up failed: {e}")))?;
+            }
+            VoiceCommand::ScrollDown => {
+                enigo
+                    .scroll(1, Axis::Vertical)
+                    .map_err(|e| AppError::Output(format!("Scroll down failed: {e}")))?;
+            }
+            VoiceCommand::LaunchApp(command_line) => {
+                Self::launch_app(command_line);
+            }
+        }
         Ok(())
+    }
+
+    /// Execute a user-defined key combination: press each modifier, click the
+    /// main key, then release the modifiers in reverse order — always, via
+    /// [`with_modifiers`]. `Ctrl` maps literally to `Key::Control` (unlike the
+    /// built-in clipboard commands which use the platform `PASTE_MODIFIER`).
+    fn run_key_combo(
+        enigo: &mut Enigo,
+        modifiers: &[KeyModifier],
+        key: &ComboKey,
+    ) -> AppResult<()> {
+        let mod_keys: Vec<Key> = modifiers
+            .iter()
+            .map(|m| match m {
+                KeyModifier::Ctrl => Key::Control,
+                KeyModifier::Alt => Key::Alt,
+                KeyModifier::Shift => Key::Shift,
+                KeyModifier::Meta => Key::Meta,
+            })
+            .collect();
+        let main = match key {
+            ComboKey::Char(c) => Key::Unicode(*c),
+            ComboKey::Tab => Key::Tab,
+            ComboKey::Escape => Key::Escape,
+            ComboKey::Enter => Key::Return,
+            ComboKey::Space => Key::Space,
+            ComboKey::Backspace => Key::Backspace,
+        };
+        Self::with_modifiers(enigo, &mod_keys, |enigo| {
+            enigo
+                .key(main, Direction::Click)
+                .map_err(|e| AppError::Output(format!("Key combo failed: {e}")))
+        })
+    }
+
+    /// Launch a program directly (program + args, no shell). The command line
+    /// is tokenized respecting double quotes, so there is no shell
+    /// interpretation and no injection surface. The child is spawned detached;
+    /// on Windows it gets `CREATE_NO_WINDOW | DETACHED_PROCESS` so no console
+    /// flashes. A spawn failure is logged and swallowed — a bad launch must
+    /// never break the dictation output pipeline.
+    fn launch_app(command_line: &str) {
+        use crate::postprocess::voice_commands::tokenize_command_line;
+
+        let tokens = tokenize_command_line(command_line);
+        let (program, args) = match tokens.split_first() {
+            Some(parts) => parts,
+            None => {
+                crate::llm::diaglog::log("LaunchApp: empty command line, nothing to run");
+                return;
+            }
+        };
+
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW (0x0800_0000) | DETACHED_PROCESS (0x0000_0008)
+            cmd.creation_flags(0x0800_0000 | 0x0000_0008);
+        }
+
+        match cmd.spawn() {
+            Ok(_child) => {} // detached: drop the handle, do not wait
+            Err(e) => {
+                crate::llm::diaglog::log(&format!("LaunchApp: failed to spawn '{program}': {e}"));
+            }
+        }
     }
 }

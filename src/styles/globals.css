@@ -57,7 +57,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  font-feature-settings: "cv11", "ss01", "ss03";
+  font-feature-settings: normal;
   overflow: hidden;
   user-select: none;
 }
@@ -66,7 +66,7 @@ body {
 .font-display {
   font-family: var(--font-display);
   letter-spacing: -0.02em;
-  font-feature-settings: "ss01";
+  font-feature-settings: normal;
 }
 
 /* Numeric — tabular figures everywhere they should align (timers,
@@ -140,12 +140,12 @@ html.overlay-window body::after,
 /* ── Selection ────────────────────────────────────────────── */
 
 ::selection {
-  background: oklch(0.735 0.130 62 / 0.28);
+  background: rgba(245, 158, 11, 0.26);
   color: var(--color-text-primary);
 }
 
 [data-theme="light"] ::selection {
-  background: oklch(0.640 0.125 55 / 0.22);
+  background: rgba(180, 83, 9, 0.20);
 }
 
 /* ── Focus ring ───────────────────────────────────────────── */

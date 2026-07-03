@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { Mic, Sparkles } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Mic, Sparkles, Terminal } from "lucide-react";
+import { Segmented } from "@/components/ui";
 import { SpeechModelsSection } from "./SpeechModelsSection";
 import { LlmModelsSection } from "./LlmModelsSection";
+import { CommandModeSection } from "./CommandModeSection";
 
-type Tab = "speech" | "llm";
+type Tab = "speech" | "llm" | "command";
 
 /**
  * Models page — a tabbed catalog.
@@ -33,31 +34,36 @@ export function ModelsPage() {
           Models
         </h1>
         <p className="mt-1 text-sm text-text-muted">
-          Speech recognition and structured-output language models.
+          Speech recognition, structured output, and voice commands.
         </p>
       </div>
 
-      {/* Tab bar — amber for speech (matches the Whisper accent),
-          violet for LLM (matches the Structured Mode accent). */}
+      {/* Tab bar — speech & LLM catalogs. Per-tab accent (amber / violet)
+          lives on the cards' stripes and chips below. */}
       <div
-        className="mt-6 flex items-center gap-1 border-b border-border/70 opacity-0 animate-slide-up"
+        className="mt-6 opacity-0 animate-slide-up"
         style={{ animationDelay: "0.08s", animationFillMode: "forwards" }}
-        role="tablist"
-        aria-label="Model catalog"
       >
-        <TabButton
-          label="Speech Recognition"
-          icon={<Mic size={14} strokeWidth={2} />}
-          active={tab === "speech"}
-          accent="amber"
-          onClick={() => setTab("speech")}
-        />
-        <TabButton
-          label="LLM Structuring"
-          icon={<Sparkles size={14} strokeWidth={2} />}
-          active={tab === "llm"}
-          accent="violet"
-          onClick={() => setTab("llm")}
+        <Segmented<Tab>
+          options={[
+            {
+              value: "speech",
+              label: "Speech Recognition",
+              icon: <Mic strokeWidth={2} />,
+            },
+            {
+              value: "llm",
+              label: "LLM Structuring",
+              icon: <Sparkles strokeWidth={2} />,
+            },
+            {
+              value: "command",
+              label: "Command",
+              icon: <Terminal strokeWidth={2} />,
+            },
+          ]}
+          value={tab}
+          onChange={setTab}
         />
       </div>
 
@@ -66,49 +72,12 @@ export function ModelsPage() {
       <div className="mt-5">
         {tab === "speech" ? (
           <SpeechModelsSection key="speech" />
-        ) : (
+        ) : tab === "llm" ? (
           <LlmModelsSection key="llm" />
+        ) : (
+          <CommandModeSection key="command" />
         )}
       </div>
     </div>
-  );
-}
-
-function TabButton({
-  label,
-  icon,
-  active,
-  accent,
-  onClick,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  active: boolean;
-  accent: "amber" | "violet";
-  onClick: () => void;
-}) {
-  const activeText = accent === "amber" ? "text-amber-300" : "text-violet-300";
-  const activeUnderline =
-    accent === "amber" ? "bg-amber-400" : "bg-violet-400";
-  return (
-    <button
-      onClick={onClick}
-      role="tab"
-      aria-selected={active}
-      className={cn(
-        "relative flex items-center gap-2 px-3.5 py-3 text-sm font-medium transition-colors",
-        active ? activeText : "text-text-muted hover:text-text-secondary"
-      )}
-    >
-      {icon}
-      <span>{label}</span>
-      <span
-        className={cn(
-          "absolute bottom-[-1px] left-0 right-0 h-[2px] rounded-full transition-opacity",
-          activeUnderline,
-          active ? "opacity-100" : "opacity-0"
-        )}
-      />
-    </button>
   );
 }

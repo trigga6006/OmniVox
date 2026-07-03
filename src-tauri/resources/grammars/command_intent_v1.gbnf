@@ -1,0 +1,10 @@
+root ::= "[" obj ("," obj){0,4} "]"
+
+obj ::= "{\"action\":" action ",\"target\":" target "}"
+
+action ::= "\"open_app\"" | "\"focus_app\"" | "\"web_search\"" | "\"open_url\"" | "\"type_text\"" | "\"send_message\"" | "\"copy\"" | "\"paste\"" | "\"cut\"" | "\"undo\"" | "\"redo\"" | "\"select_all\"" | "\"save\"" | "\"new_tab\"" | "\"close_tab\"" | "\"screenshot\"" | "\"show_desktop\"" | "\"play_pause\"" | "\"next_track\"" | "\"prev_track\"" | "\"mute\"" | "\"volume_up\"" | "\"volume_down\"" | "\"minimize\"" | "\"maximize\"" | "\"close_window\"" | "\"none\""
+
+target ::= "\"" char{0,200} "\""
+char ::= [^"\\\x00-\x1F] | "\\" escape
+escape ::= ["\\/bfnrt] | "u" hex{4}
+hex ::= [0-9a-fA-F]

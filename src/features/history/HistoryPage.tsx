@@ -8,6 +8,7 @@ import {
   type TranscriptionRecord,
 } from "@/lib/tauri";
 import { formatDuration } from "@/lib/utils";
+import { Button, Card, Input, EmptyState } from "@/components/ui";
 
 const PAGE_SIZE = 50;
 
@@ -107,53 +108,51 @@ export function HistoryPage() {
           </h1>
           <p className="mt-1 text-sm text-text-muted">Transcription archive</p>
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<RefreshCw />}
           onClick={() => load()}
-          className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-2/70 hover:text-text-secondary"
+          aria-label="Refresh"
           title="Refresh"
-        >
-          <RefreshCw size={16} strokeWidth={1.75} />
-        </button>
+        />
       </div>
 
       {/* Search */}
-      <div className="mt-4">
-        <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-1/70 px-3.5 py-2.5 transition-colors focus-within:border-amber-400/40 focus-within:bg-surface-1">
-          <Search size={14} strokeWidth={1.75} className="shrink-0 text-text-muted" />
-          <input
-            type="text"
-            placeholder="Search transcriptions…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
-          />
-        </div>
+      <div className="relative mt-4">
+        <Search
+          size={15}
+          strokeWidth={1.75}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted"
+        />
+        <Input
+          type="text"
+          placeholder="Search transcriptions…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="pl-9"
+        />
       </div>
 
       {/* List */}
       {!loading && records.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4">
-          <div className="relative flex items-center justify-center">
-            <div className="absolute h-20 w-20 rounded-full border border-amber-500/15 bg-amber-500/[0.05]" />
-            <Clock size={36} strokeWidth={1.5} className="relative text-text-muted" />
-          </div>
-          <div className="mt-2 text-center">
-            <p className="text-sm font-medium text-text-secondary">
-              {query ? "No matching transcriptions" : "No transcriptions yet"}
-            </p>
-            <p className="mt-1 text-xs text-text-muted">
-              {query
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState
+            icon={<Clock />}
+            title={query ? "No matching transcriptions" : "No transcriptions yet"}
+            description={
+              query
                 ? "Try a different search term"
-                : "Your dictation history will appear here"}
-            </p>
-          </div>
+                : "Your dictation history will appear here"
+            }
+          />
         </div>
       ) : (
         <div className="mt-5 flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
           {records.map((rec) => (
-            <div
+            <Card
               key={rec.id}
-              className="group rounded-xl border border-border bg-surface-1/80 px-4 py-3.5 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+              className="group px-4 py-3.5 transition-colors hover:border-border-hover"
             >
               <div className="flex items-start justify-between gap-3">
                 <p className="flex-1 select-text text-[14.5px] leading-[1.55] text-text-primary">
@@ -161,24 +160,28 @@ export function HistoryPage() {
                 </p>
 
                 <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={
+                      copiedId === rec.id ? (
+                        <Check className="text-success" />
+                      ) : (
+                        <Copy />
+                      )
+                    }
                     onClick={() => handleCopy(rec.text, rec.id)}
-                    className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                    aria-label="Copy"
                     title="Copy"
-                  >
-                    {copiedId === rec.id ? (
-                      <Check size={14} className="text-success" />
-                    ) : (
-                      <Copy size={14} />
-                    )}
-                  </button>
-                  <button
+                  />
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    icon={<Trash2 />}
                     onClick={() => handleDelete(rec.id)}
-                    className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
+                    aria-label="Delete"
                     title="Delete"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  />
                 </div>
               </div>
 
@@ -187,16 +190,18 @@ export function HistoryPage() {
                 <span className="opacity-40">·</span>
                 <span>{formatDuration(rec.duration_ms)}</span>
               </div>
-            </div>
+            </Card>
           ))}
           {hasMore && records.length > 0 && (
-            <button
+            <Button
+              variant="secondary"
+              loading={loading}
               onClick={() => load(undefined, true)}
               disabled={loading}
-              className="py-3 text-xs text-text-muted transition-colors hover:text-text-secondary disabled:opacity-50"
+              className="mt-1 self-center"
             >
               {loading ? "Loading…" : "Load more"}
-            </button>
+            </Button>
           )}
         </div>
       )}

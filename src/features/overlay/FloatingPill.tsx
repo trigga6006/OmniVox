@@ -25,6 +25,9 @@ import {
   onStructuredOutputReady,
   onStructuredModeDegraded,
   onWhisperGpuFallback,
+  onCommandStateChange,
+  onCommandConfirm,
+  onCommandResult,
   getSettings,
   type ContextMode,
   type StructuredOutputPayload,
@@ -35,20 +38,22 @@ import { PillWaveform } from "./PillWaveform";
 import { ModeSelector } from "./ModeSelector";
 import { StructuredPanel } from "./StructuredPanel";
 import { StructuredModeToggle } from "./StructuredModeToggle";
-import { IdleWaveform } from "./IdleWaveform";
-import { IDLE_H, IDLE_W, useOverlaySizing } from "./useOverlaySizing";
+import { CommandPill } from "./CommandPill";
+import { useCommandStore } from "@/stores/commandStore";
+import { IDLE_WIN_H, IDLE_WIN_W, useOverlaySizing } from "./useOverlaySizing";
 import "./FloatingPill.css";
 
 type PillState = RecordingStatus | "success";
 
-// Map mode color names → CSS color values for waveform bars
+// Map mode color names → CSS color values for waveform bars.
+// Graphite-system roles (keys kept for backward-compat with saved modes).
 const MODE_COLORS: Record<string, string> = {
-  amber: "rgb(251,191,36)",
-  blue: "rgb(96,165,250)",
-  green: "rgb(52,211,153)",
-  purple: "rgb(192,132,252)",
-  red: "rgb(248,113,113)",
-  cyan: "rgb(34,211,238)",
+  amber: "rgb(245,158,11)",   // amber — primary / dictation
+  blue: "rgb(96,165,250)",    // blue — command
+  green: "rgb(74,222,128)",   // green — success
+  purple: "rgb(167,139,250)", // violet — structured
+  red: "rgb(239,68,68)",      // red — recording / error
+  cyan: "rgb(45,212,191)",    // teal — spare
 };
 
 // Window sizes — button always fills the window 100%
@@ -58,6 +63,7 @@ export function FloatingPill() {
   const status = useRecordingStore((s) => s.status);
   const duration = useRecordingStore((s) => s.duration);
   const lastTranscription = useRecordingStore((s) => s.lastTranscription);
+  const commandState = useCommandStore((s) => s.state);
 
   const [pillState, setPillState] = useState<PillState>("idle");
   const [flashText, setFlashText] = useState<string | null>(null);
@@ -103,6 +109,11 @@ export function FloatingPill() {
   // clobber the in-progress panel.  600ms is comfortably longer than any
   // realistic gap between two adjacent Tauri event emits.
   const dictatingInPanelRef = useRef(false);
+  // State mirror of the ref above.  The ref is read synchronously by the event
+  // handlers (panel-close guard, structured-output-ready drop), but the
+  // pill-state effect needs a reactive dependency to re-run and force the pill
+  // back to idle when in-panel dictation toggles via the global-hotkey path.
+  const [dictatingInPanel, setDictatingInPanel] = useState(false);
   const dictatingGraceTimerRef = useRef<number | null>(null);
   const degradedTimerRef = useRef<number | null>(null);
   const showContent = useOverlaySizing({
@@ -111,6 +122,7 @@ export function FloatingPill() {
     structuredDegraded,
     showModeSelector,
     modeCount: modes.length,
+    commandState,
   });
   const handleDictatingChange = useCallback((active: boolean) => {
     if (dictatingGraceTimerRef.current !== null) {
@@ -119,15 +131,32 @@ export function FloatingPill() {
     }
     if (active) {
       dictatingInPanelRef.current = true;
+      setDictatingInPanel(true);
     } else {
       dictatingGraceTimerRef.current = window.setTimeout(() => {
         dictatingInPanelRef.current = false;
+        setDictatingInPanel(false);
         dictatingGraceTimerRef.current = null;
       }, 600);
     }
   }, []);
 
   useEffect(() => {
+    // While the user is dictating into the StructuredPanel's own textarea, the
+    // panel renders its own recording/processing animation — keep the pill
+    // itself idle so the active state doesn't double up.  Gated on
+    // `structuredPayload` so a panel that was just dismissed can never suppress
+    // a fresh, unrelated dictation during the 600ms grace tail.  The ref is set
+    // synchronously before startRecording on the mic-button path (clean); the
+    // `dictatingInPanel` mirror re-runs this effect for the global-hotkey path,
+    // which may still show a 1–2 frame recording blip before it snaps idle.
+    if (structuredPayload && (dictatingInPanel || dictatingInPanelRef.current)) {
+      if (pillState !== "idle") {
+        setPillState("idle");
+        setFlashText(null);
+      }
+      return;
+    }
     if (status === "idle" && lastTranscription && pillState === "processing") {
       setFlashText(
         lastTranscription.length > 30
@@ -144,7 +173,7 @@ export function FloatingPill() {
     if (status !== "idle" || pillState !== "success") {
       setPillState(status);
     }
-  }, [status, lastTranscription]);
+  }, [status, lastTranscription, dictatingInPanel, structuredPayload]);
 
   useEffect(() => {
     return () => {
@@ -171,7 +200,7 @@ export function FloatingPill() {
     document.body.style.padding = "0";
     document.body.style.overflow = "hidden";
     document.body.classList.add("overlay-window");
-    resizeOverlay(IDLE_W, IDLE_H);
+    resizeOverlay(IDLE_WIN_W, IDLE_WIN_H);
   }, []);
 
   // Load modes on mount and listen for changes
@@ -218,8 +247,10 @@ export function FloatingPill() {
       .catch(() => {});
 
     const unlistenPreview = onTranscriptionPreview((text) => {
-      const trimmed = text.length > 30 ? "…" + text.slice(-29) : text;
-      setPreviewText(trimmed);
+      // Keep a generous tail; the pill right-anchors the text and clips the
+      // older words off the left, so the newest speech stays visible.
+      const tail = text.length > 90 ? text.slice(-90) : text;
+      setPreviewText(tail.replace(/^\s+/, ""));
     });
 
     // Stay in sync when settings change from the main window (or any window)
@@ -288,6 +319,50 @@ export function FloatingPill() {
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
+    };
+  }, []);
+
+  // Command Mode events → drive the command pill (a separate, mutually-
+  // exclusive surface from dictation).  done/error are transient: they linger
+  // briefly then the pill collapses back to idle.
+  useEffect(() => {
+    let clearTimer: number | null = null;
+    const scheduleClear = () => {
+      if (clearTimer !== null) window.clearTimeout(clearTimer);
+      clearTimer = window.setTimeout(() => {
+        useCommandStore.getState().reset();
+        clearTimer = null;
+      }, 2600);
+    };
+
+    const unState = onCommandStateChange((s) => {
+      if (clearTimer !== null) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      if (s === "listening") useCommandStore.getState().setState("listening");
+      else if (s === "recognizing") useCommandStore.getState().setState("recognizing");
+      else useCommandStore.getState().reset();
+    });
+    const unConfirm = onCommandConfirm((p) => {
+      if (clearTimer !== null) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      useCommandStore.getState().setState("confirm", p.summary);
+    });
+    const unResult = onCommandResult((p) => {
+      useCommandStore
+        .getState()
+        .setState(p.status === "done" ? "done" : "error", p.summary);
+      scheduleClear();
+    });
+
+    return () => {
+      if (clearTimer !== null) window.clearTimeout(clearTimer);
+      unState.then((fn) => fn());
+      unConfirm.then((fn) => fn());
+      unResult.then((fn) => fn());
     };
   }, []);
 
@@ -476,6 +551,16 @@ export function FloatingPill() {
 
   const modeColor = MODE_COLORS[activeColor] ?? MODE_COLORS.amber;
 
+  // Command Mode takes over the overlay while active — it's mutually exclusive
+  // with dictation (the backend's capture-mode guard guarantees only one runs).
+  if (commandState !== "idle") {
+    return (
+      <div className="w-screen h-screen flex flex-col justify-end items-center">
+        <CommandPill showContent={showContent} />
+      </div>
+    );
+  }
+
   return (
     <div className="w-screen h-screen flex flex-col justify-end items-center">
       {/* Structured Mode panel — sits flush on top of the pill, forming a
@@ -506,10 +591,9 @@ export function FloatingPill() {
           title="Click to dismiss"
           style={{
             background:
-              "linear-gradient(180deg, rgba(60,42,22,0.92) 0%, rgba(42,30,18,0.92) 100%)",
-            border: "1px solid rgba(232,180,95,0.28)",
-            boxShadow:
-              "inset 0 1px 0 rgba(255,225,175,0.08), 0 6px 18px -6px rgba(0,0,0,0.7), 0 0 20px -8px rgba(232,180,95,0.3)",
+              "linear-gradient(180deg, rgba(26,26,30,0.96) 0%, rgba(16,15,18,0.96) 100%)",
+            border: "1px solid rgba(245,158,11,0.30)",
+            boxShadow: "0 10px 28px -14px rgba(0,0,0,0.8)",
             animation: "sp-in 220ms cubic-bezier(0.16,1,0.3,1) both",
           }}
         >
@@ -517,15 +601,14 @@ export function FloatingPill() {
             aria-hidden="true"
             className="h-1.5 w-1.5 rounded-full shrink-0"
             style={{
-              backgroundColor: "rgba(244,190,110,0.95)",
-              boxShadow: "0 0 6px rgba(244,190,110,0.7)",
+              backgroundColor: "rgba(245,158,11,0.95)",
             }}
           />
           <span
             className="text-[9px] font-semibold uppercase tracking-[0.18em] shrink-0"
             style={{
               fontFamily: "var(--font-display)",
-              color: "rgba(244,200,130,0.9)",
+              color: "rgba(252,195,77,0.92)",
             }}
           >
             Structured
@@ -533,7 +616,7 @@ export function FloatingPill() {
           <span
             className="text-[10px] leading-snug truncate"
             style={{
-              color: "rgba(248,215,170,0.88)",
+              color: "rgba(244,244,245,0.9)",
               letterSpacing: "-0.005em",
             }}
           >
@@ -648,7 +731,8 @@ export function FloatingPill() {
                 e.preventDefault();
                 handleToggleAutoSwitch();
               }}
-              title={autoSwitchModes ? "Auto context switch: on" : "Auto context switch: off"}
+              data-tip="Auto-switch mode by active app"
+              aria-label="Auto-switch mode by active app"
               className={cn(
                 "quick-toggle",
                 autoSwitchModes && "quick-toggle--on"
@@ -662,7 +746,8 @@ export function FloatingPill() {
                 e.preventDefault();
                 handleToggleLivePreview();
               }}
-              title={livePreviewEnabled ? "Live preview: on" : "Live preview: off"}
+              data-tip="Show words live as you speak"
+              aria-label="Show words live as you speak"
               className={cn(
                 "quick-toggle",
                 livePreviewEnabled && "quick-toggle--on"
@@ -676,7 +761,8 @@ export function FloatingPill() {
                 e.preventDefault();
                 handleToggleNoiseReduction();
               }}
-              title={noiseReduction ? "Noise suppression: on" : "Noise suppression: off"}
+              data-tip="Suppress background noise"
+              aria-label="Suppress background noise"
               className={cn(
                 "quick-toggle",
                 noiseReduction && "quick-toggle--on"
@@ -778,7 +864,8 @@ export function FloatingPill() {
                 e.preventDefault();
                 handleToggleGhostMode();
               }}
-              title={ghostMode ? "Ghost mode: on — pill hidden" : "Ghost mode: off"}
+              data-tip="Hide the pill until you summon it"
+              aria-label="Hide the pill until you summon it"
               className={cn("quick-toggle quick-toggle--ghost", ghostMode && "quick-toggle--ghost-on")}
             >
               <Ghost size={12} strokeWidth={2} className="quick-toggle-icon" />
@@ -794,7 +881,15 @@ export function FloatingPill() {
       style={{
         // Ghost mode: fully transparent but still interactive
         opacity: ghostMode && !showModeSelector ? 0 : 1,
-        transition: "opacity 0.25s ease",
+        // Idle locator — a super-faint amber glow so the dark slit stays
+        // findable on a black UI behind it. It bleeds into the transparent
+        // margin the idle window reserves around the pill (IDLE_GLOW_PAD); kept
+        // off in every active state (the content itself marks the spot there).
+        boxShadow:
+          isIdle && !showModeSelector
+            ? "0 0 3px rgba(251,191,36,0.34), 0 0 9px 1px rgba(251,191,36,0.20)"
+            : undefined,
+        transition: "opacity 0.25s ease, box-shadow 0.3s ease",
       }}
       className={cn(
         // The pill — sized to match resizeOverlay dimensions.  Every
@@ -805,37 +900,42 @@ export function FloatingPill() {
         // producing a visible one-frame jolt.  Colour + background
         // transitions below pick up those same class changes and
         // smooth them over 200 ms.
-        isIdle && !showModeSelector ? "w-[56px] h-[26px]" : "w-[200px] h-[34px]",
+        // Idle = 42-px slit · menu-open = a thin base slit the exact width of the
+        // mode-selector panel (196) · active = the snug recording pill.
+        showModeSelector
+          ? "w-[196px] h-[14px]"
+          : isIdle
+            ? "w-[42px] h-[14px] mb-[2px]"
+            : "w-[148px] h-[34px]",
         "relative flex items-center overflow-hidden shrink-0 border border-transparent rounded-full",
-        "transition-[border-color,background-color,box-shadow] duration-200 ease-out",
+        "transition-[border-color,background-color,box-shadow,width,height] duration-[280ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
         isProcessing ? "cursor-default" : "cursor-pointer",
 
-        // Idle (just the base background; border inherits transparent).
-        isIdle && "bg-[var(--color-pill-bg)]",
+        // Idle — a small black slit with a faint hairline so it stays findable.
+        isIdle && "bg-[var(--color-pill-bg)] border-white/10",
 
         // Recording
-        isRecording && "bg-[var(--color-pill-bg)] border-recording-500/30 gap-2.5 px-3.5",
+        isRecording && "bg-[var(--color-pill-bg)] border-recording-500/30 gap-2 px-3",
 
         // Processing
-        isProcessing && "bg-[var(--color-pill-bg)] border-amber-500/25 gap-2.5 px-3.5",
+        isProcessing && "bg-[var(--color-pill-bg)] border-amber-500/25 gap-2 px-3",
 
         // Structuring (Structured Mode — LLM slot extraction in flight)
-        isStructuring && "bg-[var(--color-pill-bg)] border-violet-400/30 gap-2.5 px-3.5",
+        isStructuring && "bg-[var(--color-pill-bg)] border-amber-500/30 gap-2 px-3",
 
         // Success
-        isSuccess && "bg-[var(--color-pill-bg)] border-success/30 gap-2.5 px-3.5",
+        isSuccess && "bg-[var(--color-pill-bg)] border-success/30 gap-2 px-3",
 
         // Error
-        isError && "bg-[var(--color-pill-bg)] border-recording-500/35 gap-2.5 px-3.5",
+        isError && "bg-[var(--color-pill-bg)] border-recording-500/35 gap-2 px-3",
       )}
     >
-      {/* ── Idle: sleek ambient waveform ── */}
-      {isIdle && <IdleWaveform color={modeColor} />}
-
-      {/* ── Active states: full pill content with fade ── */}
-      {!isIdle && (
+      {/* ── Active states: full pill content with fade. Idle is a totally black
+          slit (no content); when the menu is open the pill is just a thin base
+          slit, so suppress content there too. ── */}
+      {!isIdle && !showModeSelector && (
         <div
-          className="flex items-center w-full h-full gap-2.5"
+          className="flex items-center w-full h-full gap-2"
           style={{
             opacity: showContent ? 1 : 0,
             // Asymmetric transition — key polish fix.
@@ -864,7 +964,7 @@ export function FloatingPill() {
                 className="absolute inset-0 -translate-x-full"
                 style={{
                   background:
-                    "linear-gradient(90deg, transparent 0%, oklch(0.65 0.16 55 / 0.06) 50%, transparent 100%)",
+                    "linear-gradient(90deg, transparent 0%, rgba(245,158,11,0.06) 50%, transparent 100%)",
                   animation: "shimmer 2s ease-in-out infinite",
                 }}
               />
@@ -872,38 +972,20 @@ export function FloatingPill() {
           )}
 
           {/* Left: timer / spinner / icon */}
-          <div className="shrink-0 flex items-center justify-center min-w-[34px]">
+          <div className="shrink-0 flex items-center justify-center min-w-[28px]">
             {isRecording && (
               <span className="font-mono text-[11px] tabular-nums text-recording-300/80 tracking-wide">
                 {formatDuration(duration)}
               </span>
             )}
-            {isProcessing && (
-              <Loader2
-                size={12}
-                className="text-amber-400/70 animate-spin"
-                strokeWidth={2.5}
-              />
-            )}
             {isStructuring && (
               <span className="relative flex items-center justify-center">
-                <span
-                  aria-hidden="true"
-                  className="absolute h-[18px] w-[18px] rounded-full"
-                  style={{
-                    background:
-                      "radial-gradient(circle, rgba(186,148,234,0.35) 0%, rgba(186,148,234,0) 70%)",
-                    animation: "structuring-halo 1.8s ease-in-out infinite",
-                  }}
-                />
                 <Sparkles
                   size={12}
-                  className="relative text-violet-300"
+                  className="relative text-amber-300"
                   strokeWidth={2.5}
                   style={{
                     animation: "structuring-spark 2.2s ease-in-out infinite",
-                    filter:
-                      "drop-shadow(0 0 3px rgba(186,148,234,0.5))",
                   }}
                 />
               </span>
@@ -925,18 +1007,20 @@ export function FloatingPill() {
           {/* Center: waveform / preview text / status text */}
           <div className="flex-1 flex items-center justify-center overflow-hidden">
             {isRecording && previewText && (
-              <span
-                className="text-[10px] truncate font-normal tracking-tight"
-                style={{ color: modeColor, opacity: 0.7 }}
-              >
-                {previewText}
-              </span>
+              // Right-anchored teleprompter: newest words pinned to the right,
+              // older ones clipped off the left as speech streams in.
+              <div className="flex w-full justify-end overflow-hidden">
+                <span
+                  className="whitespace-nowrap text-[10px] font-normal tracking-tight"
+                  style={{ color: modeColor, opacity: 0.7 }}
+                >
+                  {previewText}
+                </span>
+              </div>
             )}
             {isRecording && !previewText && <PillWaveform active color={modeColor} />}
             {isProcessing && (
-              <span className="text-[10px] font-medium text-amber-400/60 tracking-wide truncate">
-                Transcribing…
-              </span>
+              <Loader2 size={13} className="text-amber-400/70 animate-spin" strokeWidth={2.5} />
             )}
             {isStructuring && (
               <span
@@ -944,7 +1028,7 @@ export function FloatingPill() {
                 style={{
                   fontFamily: "var(--font-display)",
                   background:
-                    "linear-gradient(90deg, rgba(186,148,234,0.35) 0%, rgba(218,195,244,0.95) 50%, rgba(186,148,234,0.35) 100%)",
+                    "linear-gradient(90deg, rgba(245,158,11,0.45) 0%, rgba(252,195,77,0.95) 50%, rgba(245,158,11,0.45) 100%)",
                   backgroundSize: "220% 100%",
                   WebkitBackgroundClip: "text",
                   WebkitTextFillColor: "transparent",
@@ -1001,34 +1085,22 @@ export function FloatingPill() {
           </div>
 
           {/* Right: record dot */}
-          <div className="shrink-0 w-[20px] flex items-center justify-end">
+          <div className="shrink-0 w-[16px] flex items-center justify-end">
             {isRecording && (
               <div className="relative flex items-center justify-center">
                 <span
                   className="absolute h-3.5 w-3.5 rounded-full bg-recording-500/15"
                   style={{ animation: "recording-pulse 2s ease-in-out infinite" }}
                 />
-                <span className="relative h-1.5 w-1.5 rounded-full bg-recording-500 shadow-[0_0_6px_rgba(180,50,40,0.4)]" />
+                <span className="relative h-1.5 w-1.5 rounded-full bg-recording-500" />
               </div>
-            )}
-            {isProcessing && (
-              <div className="h-1.5 w-1.5 rounded-full bg-amber-500/40" />
             )}
             {isStructuring && (
               <div className="relative flex items-center justify-center">
                 <span
-                  className="absolute h-3 w-3 rounded-full"
-                  style={{
-                    background:
-                      "radial-gradient(circle, rgba(186,148,234,0.35) 0%, rgba(186,148,234,0) 70%)",
-                    animation: "structuring-halo 1.8s ease-in-out infinite",
-                  }}
-                />
-                <span
                   className="relative h-1.5 w-1.5 rounded-full"
                   style={{
-                    backgroundColor: "rgb(186,148,234)",
-                    boxShadow: "0 0 6px rgba(186,148,234,0.6)",
+                    backgroundColor: "rgb(245,158,11)",
                     animation: "structuring-pulse 2s ease-in-out infinite",
                   }}
                 />

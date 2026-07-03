@@ -101,9 +101,9 @@ export function RecordButton() {
             isIdle && [
               "bg-gradient-to-b from-surface-2 to-surface-1",
               "border border-amber-400/35",
-              "shadow-[0_1px_0_0_rgb(255_255_255_/_0.04)_inset,0_8px_24px_-12px_rgb(232_180_95_/_0.30),0_2px_4px_-2px_rgb(0_0_0_/_0.30)]",
+              "shadow-[0_1px_0_0_rgb(255_255_255_/_0.04)_inset,0_2px_4px_-2px_rgb(0_0_0_/_0.30)]",
               "hover:border-amber-400/65 hover:scale-[1.025]",
-              "hover:shadow-[0_1px_0_0_rgb(255_255_255_/_0.06)_inset,0_12px_30px_-10px_rgb(232_180_95_/_0.45),0_2px_4px_-2px_rgb(0_0_0_/_0.30)]",
+              "hover:shadow-[0_1px_0_0_rgb(255_255_255_/_0.06)_inset,0_2px_4px_-2px_rgb(0_0_0_/_0.30)]",
             ],
 
             // Recording state
@@ -111,7 +111,7 @@ export function RecordButton() {
               "bg-gradient-to-b from-recording-400 to-recording-500",
               "border border-recording-300/55",
               "animate-recording-pulse",
-              "shadow-[0_0_0_1px_rgb(255_255_255_/_0.04)_inset,0_0_36px_-4px_rgb(216_67_47_/_0.55),0_4px_12px_-4px_rgb(0_0_0_/_0.40)]",
+              "shadow-[0_0_0_1px_rgb(255_255_255_/_0.04)_inset,0_4px_12px_-4px_rgb(0_0_0_/_0.40)]",
             ],
 
             // Processing state

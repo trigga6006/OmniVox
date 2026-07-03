@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OmniVox · Settings (re-skin preview)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg:#0a0a0b; --s1:#141417; --s2:#1c1c21; --s3:#26262c;
+        --t1:#f4f4f5; --t2:#a1a1aa; --t3:#71717a;
+        --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+        --amber:#f59e0b; --amber3:#fcc34d; --violet:#8b5cf6; --indigo3:#93c5fd;
+      }
+      * { box-sizing:border-box; }
+      body { margin:0; background:var(--bg); color:var(--t1); font-family:"Geist",system-ui,sans-serif;
+        letter-spacing:-.01em; -webkit-font-smoothing:antialiased; padding:24px 32px 40px; }
+      h1 { font-size:24px; font-weight:600; letter-spacing:-.025em; margin:0; }
+      .sub { color:var(--t3); font-size:14px; margin:4px 0 0; }
+      .masonry { margin-top:20px; max-width:1024px; columns:2; column-gap:16px; }
+      .card { break-inside:avoid; margin-bottom:16px; border:1px solid var(--line); background:var(--s1);
+        border-radius:16px; padding:20px; }
+      .eyebrow { font:600 10px "Geist Mono",monospace; letter-spacing:.2em; text-transform:uppercase; color:var(--t3); margin-bottom:10px; }
+      .rows > .row + .row { border-top:1px solid rgba(255,255,255,.045); }
+      .row { padding:14px 0; }
+      .row:first-child { padding-top:0; } .row:last-child { padding-bottom:0; }
+      .row-main { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+      .row-l { display:flex; align-items:flex-start; gap:10px; min-width:0; }
+      .row-l svg.ico { width:15px; height:15px; color:var(--t3); margin-top:1px; flex:none; }
+      .rt { font-size:13.5px; font-weight:500; color:var(--t1); }
+      .rd { margin-top:4px; font-size:12px; line-height:1.5; color:var(--t3); }
+      .row-child { margin-top:12px; padding-left:26px; }
+
+      .tg { position:relative; width:38px; height:22px; border-radius:999px; border:1px solid var(--line2); background:var(--s3); flex:none; }
+      .tg .knob { position:absolute; left:2px; top:2px; width:16px; height:16px; border-radius:50%; background:#fff; }
+      .tg.on { background:var(--amber); border-color:transparent; } .tg.on.violet { background:var(--violet); }
+      .tg.on .knob { transform:translateX(16px); }
+
+      .seg { display:inline-flex; gap:2px; padding:3px; border-radius:9px; border:1px solid var(--line); background:var(--s2); }
+      .seg button { display:inline-flex; align-items:center; gap:6px; border:0; background:transparent; color:var(--t3);
+        font:500 12px "Geist"; padding:5px 12px; border-radius:6px; }
+      .seg button.on { background:var(--s3); color:var(--t1); box-shadow:0 1px 2px rgba(0,0,0,.3); }
+      .seg svg { width:14px; height:14px; }
+
+      .badge { display:inline-flex; align-items:center; border-radius:6px; padding:3px 7px; font:600 10px "Geist Mono";
+        letter-spacing:.04em; text-transform:uppercase; color:var(--amber3); background:rgba(245,158,11,.14); }
+      .device { display:flex; align-items:center; gap:8px; width:230px; border:1px solid var(--line2); background:var(--s2);
+        border-radius:9px; padding:8px 12px; color:var(--t1); font-size:13px; }
+      .device svg { width:14px; height:14px; color:var(--t3); }
+      .nest { margin-top:12px; border:1px solid var(--line); background:rgba(28,28,33,.4); border-radius:10px; padding:12px; }
+      .nest p { margin:0 0 10px; font-size:12px; line-height:1.5; color:var(--t3); }
+      .nest .r { display:flex; align-items:center; gap:12px; }
+      .slider { margin-top:4px; height:4px; border-radius:999px; background:var(--s3); position:relative; }
+      .slider::after { content:""; position:absolute; left:50%; top:50%; width:14px; height:14px; border-radius:50%;
+        background:var(--amber); border:2px solid var(--bg); transform:translate(-50%,-50%); }
+      .amber-txt { color:rgba(252,195,77,.85); } .indigo-txt { color:rgba(147,197,253,.9); }
+      .ctl { flex:none; padding-top:2px; }
+      svg { stroke:currentColor; stroke-width:1.75; fill:none; }
+    </style>
+  </head>
+  <body>
+    <h1>Settings</h1>
+    <p class="sub">Configure how OmniVox listens, transcribes, and behaves.</p>
+
+    <div class="masonry">
+      <!-- Output -->
+      <div class="card">
+        <div class="eyebrow">Output</div>
+        <div class="rows">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l">
+                <svg class="ico" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                <div><div class="rt">Transcription delivery</div><div class="rd">Copy dictation to the clipboard. Paste it yourself with Ctrl+V.</div></div>
+              </div>
+            </div>
+            <div class="row-child">
+              <div class="seg">
+                <button class="on"><svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>Clipboard</button>
+                <button><svg viewBox="0 0 24 24"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>Type</button>
+                <button>Both</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main"><div class="row-l">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+              <div><div class="rt">Writing style</div><div class="rd">Default capitalization and punctuation. Context modes can override this.</div></div>
+            </div></div>
+            <div class="row-child"><div class="seg"><button class="on">Formal</button><button>Casual</button><button>Very Casual</button></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transcription -->
+      <div class="card">
+        <div class="eyebrow">Transcription</div>
+        <div class="rows">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
+                <div><div class="rt">Screen context</div><div class="rd">Read visible text in the focused app to transcribe file paths and commands verbatim. Local only.</div></div></div>
+              <div class="ctl"><div class="tg on"><div class="knob"></div></div></div>
+            </div>
+            <div class="row-child"><div class="nest">
+              <p>Also pass screen-context tokens into Structured Mode so the LLM substitutes phonetic guesses with verbatim screen text.</p>
+              <div class="r"><div class="tg on violet"><div class="knob"></div></div><span style="font-size:12px;color:var(--t2)">Used in Structured Mode</span></div>
+            </div></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                <div><div class="rt">Live preview</div><div class="rd">Show live transcription words in the floating pill while recording.<span class="amber-txt"> Adds latency</span> — runs inference during recording.</div></div></div>
+              <div class="ctl"><div class="tg"><div class="knob"></div></div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/></svg>
+                <div><div class="rt">Command mode</div><div class="rd">Hold <span class="indigo-txt">Right Ctrl</span> and speak a command — "open Spotify", "copy", "play". Performs an action instead of typing.</div></div></div>
+              <div class="ctl"><div class="tg on"><div class="knob"></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Audio -->
+      <div class="card">
+        <div class="eyebrow">Audio</div>
+        <div class="rows">
+          <div class="row">
+            <div class="row-main"><div class="row-l">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+              <div><div class="rt">Input device</div><div class="rd">Sample rate: 16,000 Hz</div></div></div></div>
+            <div class="row-child"><div class="device"><svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/></svg><span style="flex:1">MacBook Pro Microphone</span><svg viewBox="0 0 12 12" style="width:12px;height:12px"><path d="M3 4.5L6 7.5L9 4.5"/></svg></div></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5 8 8 8 8s8-3 8-8V6z"/></svg>
+                <div><div class="rt">Noise reduction</div><div class="rd">Filter fan noise, keyboard clicks, and other non-speech sounds with RNNoise.</div></div></div>
+              <div class="ctl"><div class="tg on"><div class="knob"></div></div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M22 9l-6 6"/><path d="M16 9l6 6"/></svg>
+                <div><div class="rt">Audio ducking</div><div class="rd">Lower system volume while dictating so other audio doesn't compete with your mic.</div></div></div>
+              <div class="ctl"><div class="tg on"><div class="knob"></div></div></div>
+            </div>
+            <div class="row-child">
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:12px;color:var(--t3)">Reduction amount</span><span style="font-size:12px;color:var(--t2)">50%</span></div>
+              <div class="slider"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Behavior -->
+      <div class="card">
+        <div class="eyebrow">Behavior</div>
+        <div class="rows">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                <div><div class="rt">Auto context switching</div><div class="rd">Switch context mode based on the focused app when recording starts.</div></div></div>
+              <div class="ctl"><div class="tg"><div class="knob"></div></div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-l"><svg class="ico" viewBox="0 0 24 24"><path d="M4.5 16.5L3 21l4.5-1.5"/><path d="M15 5l4 4"/><path d="M14.5 4.5l5 5L9 20l-5-5z"/></svg>
+                <div><div class="rt" style="display:inline-flex;align-items:center;gap:8px">Ship Mode <span class="badge">Beta</span></div><div class="rd">Press Enter automatically after output to send the message.<span class="amber-txt" style="display:block">Sends immediately, with no chance to edit.</span></div></div></div>
+              <div class="ctl"><div class="tg"><div class="knob"></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Appearance -->
+      <div class="card">
+        <div class="eyebrow">Appearance</div>
+        <div class="rows">
+          <div class="row">
+            <div class="row-main"><div class="row-l"><div><div class="rt">Theme</div></div></div></div>
+            <div class="row-child"><div class="seg">
+              <button class="on"><svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>Dark</button>
+              <button><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>Light</button>
+            </div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- About -->
+      <div class="card">
+        <div class="eyebrow">About</div>
+        <div class="rows"><div class="row"><div class="row-main"><div class="row-l"><div>
+          <div class="rt">OmniVox v0.3.1</div>
+          <div class="rd">Local-first AI dictation · Developed by Omni Impact</div>
+        </div></div></div></div></div>
+      </div>
+    </div>
+  </body>
+</html>

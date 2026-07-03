@@ -1,0 +1,29 @@
+# Normalize all text files to LF in the repo; check out per platform.
+# This stops the CRLF<->LF churn that inflated diffs during cloud-agent handoffs.
+* text=auto eol=lf
+
+# Windows-only scripts that need CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.gguf binary
+*.bin binary
+*.onnx binary
+*.dll binary
+*.exe binary
+*.node binary

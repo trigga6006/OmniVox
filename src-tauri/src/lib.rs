@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod asr;
 pub mod audio;
 pub mod commands;
@@ -256,6 +257,10 @@ fn apply_persisted_settings(state: &state::AppState) {
             hotkey::update_hotkey_keys(key1, key2);
         }
 
+        // Activate the Command-Mode hotkey (Right Ctrl) only when enabled, so
+        // Right Ctrl passes through untouched when Command Mode is off.
+        hotkey::set_command_mode_enabled(settings.command_mode);
+
         // Hydrate the in-memory active-LLM id.  The actual runner load
         // happens later (see `load_default_llm_deferred`) so setup() stays
         // fast, but the id is cheap to stash now so any early get_active
@@ -453,6 +458,15 @@ pub fn run() {
                 // Runs after the Whisper model so it doesn't compete with
                 // that load for the background pool's first slot.
                 load_default_llm_deferred(&handle, &st);
+
+                // Pre-warm the Command-Mode app index so the first "open <app>"
+                // resolves instantly instead of spawning PowerShell mid-command.
+                if crate::storage::settings::get_settings(&st.db)
+                    .map(|s| s.command_mode)
+                    .unwrap_or(false)
+                {
+                    let _ = tokio::task::spawn_blocking(crate::actions::app_index::refresh).await;
+                }
             });
 
             // Create the floating overlay pill — always-on-top, transparent,
@@ -486,6 +500,16 @@ pub fn run() {
             commands::open_mic_settings,
             commands::open_accessibility_settings,
             commands::get_platform_info,
+            // Command Mode (3)
+            commands::confirm_command,
+            commands::cancel_command,
+            commands::test_command,
+            // Voice Commands (5)
+            commands::list_voice_commands,
+            commands::add_voice_command,
+            commands::update_voice_command,
+            commands::delete_voice_command,
+            commands::reset_voice_commands,
             // Model commands (6)
             commands::list_models,
             commands::download_model,
@@ -514,6 +538,7 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::suspend_hotkey,
+            commands::feed_hotkey_event,
             commands::update_hotkey,
             commands::resize_overlay,
             commands::show_main_window,

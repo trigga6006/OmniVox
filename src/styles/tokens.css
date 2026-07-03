@@ -1,73 +1,97 @@
 @theme {
   /* ═══════════════════════════════════════════════════════════
-     OmniVox — Design System
-     Premium, software-grade surfaces with a restrained amber
-     brand accent. Inspired by the type and tonal restraint of
-     Linear, Vercel, and Anthropic.
+     OmniVox — Design System · Graphite · Amber · Dev-grade
+     True-neutral graphite canvas, cool off-white text, a single
+     confident gold-amber accent. Cursor / Anthropic-refined.
+     Mirrors design-lab/theme-explorer.html (variant: graphite).
+
+     NOTE: legacy scale names (`amber`, `recording`, `violet`,
+     `indigo`) are kept and remapped onto the new hues so existing
+     `text-amber-*` / `border-violet-*` utilities recolor in place.
+     Canonical role tokens (`--color-lava` …) are kept too; the
+     names are historical — the values are now graphite-system.
      ═══════════════════════════════════════════════════════════ */
 
-  /* Amber / Gold — brand accent (kept warm but desaturated so it
-     feels "honey" instead of "highlighter"). Used sparingly:
-     active nav state, primary action, recording indicator. */
-  --color-amber-50:  oklch(0.985 0.012 80);
-  --color-amber-100: oklch(0.955 0.028 78);
-  --color-amber-200: oklch(0.910 0.060 75);
-  --color-amber-300: oklch(0.855 0.095 72);
-  --color-amber-400: oklch(0.795 0.115 68);
-  --color-amber-500: oklch(0.735 0.130 62);
-  --color-amber-600: oklch(0.640 0.125 55);
-  --color-amber-700: oklch(0.525 0.105 50);
-  --color-amber-800: oklch(0.405 0.080 48);
-  --color-amber-900: oklch(0.290 0.055 48);
+  /* Amber — brand / primary accent (legacy `amber` scale). Clean gold,
+     never salmon: hue sits at ~38, high enough chroma to read molten-gold. */
+  --color-amber-50:  #fef6e6;
+  --color-amber-100: #fde9c2;
+  --color-amber-200: #fbd38a;
+  --color-amber-300: #fcc34d;
+  --color-amber-400: #f9ad28;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97f08;
+  --color-amber-700: #b45309;
+  --color-amber-800: #8a3f0c;
+  --color-amber-900: #5c2f0e;
 
-  /* Recording — warm vermilion. Saturated enough to read as
-     "live mic" against the lighter neutral surfaces. */
-  --color-recording-300: oklch(0.760 0.155 25);
-  --color-recording-400: oklch(0.680 0.190 22);
-  --color-recording-500: oklch(0.595 0.215 22);
-  --color-recording-600: oklch(0.495 0.190 20);
+  /* Recording — red (legacy `recording` scale). Urgent, cool-leaning red. */
+  --color-recording-300: #f87171;
+  --color-recording-400: #f15a5a;
+  --color-recording-500: #ef4444;
+  --color-recording-600: #dc2626;
 
-  /* Surfaces — sophisticated near-neutral with a whisper of
-     warmth (hue 70, very low chroma). Materially brighter than
-     the previous "studio monitor" palette so the app reads as
-     premium-modern rather than dim. */
-  --color-surface-0: oklch(0.175 0.005 70);
-  --color-surface-1: oklch(0.218 0.006 70);
-  --color-surface-2: oklch(0.258 0.007 70);
-  --color-surface-3: oklch(0.305 0.008 70);
-  --color-surface-4: oklch(0.360 0.009 70);
+  /* Structured mode = violet (overrides Tailwind `violet`). Cool, distinct. */
+  --color-violet-200: #ddd6fe;
+  --color-violet-300: #c4b5fd;
+  --color-violet-400: #a78bfa;
+  --color-violet-500: #8b5cf6;
+  --color-violet-600: #7c3aed;
 
-  /* Text — generous contrast, no fully-white glare. */
-  --color-text-primary:   oklch(0.970 0.004 70);
-  --color-text-secondary: oklch(0.785 0.006 70);
-  --color-text-muted:     oklch(0.580 0.008 70);
+  /* Command mode = blue (overrides Tailwind `indigo`). Distinct from violet. */
+  --color-indigo-200: #bfdbfe;
+  --color-indigo-300: #93c5fd;
+  --color-indigo-400: #60a5fa;
+  --color-indigo-500: #3b82f6;
+  --color-indigo-600: #2563eb;
 
-  /* Borders — visible enough to define cards without ringing. */
-  --color-border:        oklch(0.305 0.008 70);
-  --color-border-hover:  oklch(0.395 0.012 70);
-  --color-border-active: oklch(0.555 0.080 65);
+  /* Canonical role tokens → graphite system. */
+  --color-lava:   #f59e0b;  /* primary · dictation (amber) */
+  --color-clay:   #ef4444;  /* recording · error  */
+  --color-ochre:  #fbbf24;  /* processing · warn  */
+  --color-sage:   #4ade80;  /* success            */
+  --color-teal:   #2dd4bf;  /* spare cool accent  */
+  --color-plum:   #a78bfa;  /* structured         */
+  --color-slate:  #94a3b8;  /* spare cool tessera */
+  --color-cream:  #e4e4e7;  /* glint / highlight (cool, not cream) */
+
+  /* Surfaces — true-neutral graphite. */
+  --color-surface-0: #0a0a0b;
+  --color-surface-1: #141417;
+  --color-surface-2: #1c1c21;
+  --color-surface-3: #26262c;
+  --color-surface-4: #303036;
+
+  /* Text — cool canvas white. */
+  --color-text-primary:   #f4f4f5;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted:     #71717a;
+
+  /* Borders — neutral hairlines; active picks up amber. */
+  --color-border:        rgba(255,255,255,0.08);
+  --color-border-hover:  rgba(255,255,255,0.14);
+  --color-border-active: rgba(245,158,11,0.5);
 
   /* Semantic */
-  --color-success: oklch(0.755 0.135 155);
-  --color-error:   oklch(0.640 0.205 25);
+  --color-success: #4ade80;
+  --color-error:   #ef4444;
 
-  /* Background gradient (main content area) — extremely subtle
-     so it reads as a polished panel, not a vignette. */
-  --color-gradient-from: oklch(0.215 0.008 70);
-  --color-gradient-to:   oklch(0.175 0.005 70);
+  /* Main content background gradient — near-black, neutral. */
+  --color-gradient-from: #0c0c0d;
+  --color-gradient-to:   #000000;
 
   /* Overlay pill background (kept dark for desktop transparency) */
-  --color-pill-bg: #18181b;
+  --color-pill-bg: #14141a;
 
   /* Spacing */
   --spacing-sidebar: 4.5rem;
 
-  /* Typography */
-  --font-display: 'Archivo', system-ui, sans-serif;
-  --font-sans:    'Outfit', system-ui, sans-serif;
-  --font-mono:    'IBM Plex Mono', 'JetBrains Mono', Consolas, monospace;
+  /* Typography — Geist (Vercel) for a cooler, technical voice. */
+  --font-display: 'Geist', system-ui, sans-serif;
+  --font-sans:    'Geist', system-ui, sans-serif;
+  --font-mono:    'Geist Mono', 'IBM Plex Mono', Consolas, monospace;
 
-  /* Type scale — refined ratio (1.2) for tight, intentional hierarchy. */
+  /* Type scale — tight 1.2 ratio. */
   --text-xs:   0.75rem;     /* 12 */
   --text-sm:   0.875rem;    /* 14 */
   --text-base: 0.9375rem;   /* 15 */
@@ -88,76 +112,73 @@
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
 
-  /* Shadows — soft, layered, never harsh. */
-  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.18);
-  --shadow:     0 2px 6px -2px rgb(0 0 0 / 0.22), 0 1px 2px rgb(0 0 0 / 0.16);
-  --shadow-md:  0 8px 18px -8px rgb(0 0 0 / 0.32), 0 3px 8px -4px rgb(0 0 0 / 0.18);
-  --shadow-lg:  0 18px 38px -12px rgb(0 0 0 / 0.40), 0 6px 14px -8px rgb(0 0 0 / 0.22);
+  /* Shadows — matte: soft, neutral black, never colored. */
+  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.45);
+  --shadow:     0 2px 6px -2px rgb(0 0 0 / 0.55), 0 1px 2px rgb(0 0 0 / 0.50);
+  --shadow-md:  0 10px 28px -14px rgb(0 0 0 / 0.70), 0 3px 8px -4px rgb(0 0 0 / 0.50);
+  --shadow-lg:  0 24px 56px -24px rgb(0 0 0 / 0.80), 0 8px 18px -10px rgb(0 0 0 / 0.55);
 
-  /* Analytics — heatmap intensity ramp + chart bar fills.
-     Amber on dark surfaces; the light theme overrides these with darker,
-     more saturated ambers so the warmth stays visible on warm-paper white. */
+  /* Analytics — amber heatmap ramp + chart bars. */
   --heat-0: var(--color-surface-2);
-  --heat-1: color-mix(in oklch, var(--color-amber-500) 26%, var(--color-surface-2));
-  --heat-2: color-mix(in oklch, var(--color-amber-500) 52%, var(--color-surface-1));
-  --heat-3: color-mix(in oklch, var(--color-amber-400) 80%, var(--color-surface-1));
+  --heat-1: color-mix(in oklch, var(--color-lava) 24%, var(--color-surface-2));
+  --heat-2: color-mix(in oklch, var(--color-lava) 50%, var(--color-surface-1));
+  --heat-3: color-mix(in oklch, var(--color-amber-600) 78%, var(--color-surface-1));
   --heat-4: var(--color-amber-400);
 
   --bar-empty:       var(--color-surface-2);
-  --bar-fill:        color-mix(in oklch, var(--color-amber-500) 40%, var(--color-surface-2));
-  --bar-fill-strong: var(--color-amber-400);
+  --bar-fill:        color-mix(in oklch, var(--color-lava) 40%, var(--color-surface-2));
+  --bar-fill-strong: var(--color-lava);
 }
 
-/* ── Light Theme: Warm Paper ─────────────────────────────────
-   Anthropic-adjacent cream. Off-white, never blue-gray. */
+/* ── Light Theme: Cool Paper (graphite) ──────────────────────
+   Neutral white/zinc canvas with darkened amber so accents stay
+   legible. The overlay window pins data-theme="dark", so it never
+   sees this. */
 
 [data-theme="light"] {
-  --color-surface-0: oklch(0.985 0.005 80);
-  --color-surface-1: oklch(0.970 0.007 78);
-  --color-surface-2: oklch(0.945 0.009 75);
-  --color-surface-3: oklch(0.905 0.012 72);
-  --color-surface-4: oklch(0.860 0.014 70);
+  --color-surface-0: #ffffff;
+  --color-surface-1: #fafafa;
+  --color-surface-2: #f4f4f5;
+  --color-surface-3: #e4e4e7;
+  --color-surface-4: #d4d4d8;
 
-  /* Amber accent — the dark-theme scale's light shades (200–400) are tuned to
-     glow on dark surfaces and wash out on warm-paper white. Remap just those
-     low shades to a darker, saturated honey-gold so amber TEXT and small solid
-     accents (nav rail, dots, underlines, waveform) stay legible on cream. The
-     500–900 fill/border/primary shades are already mid/dark and kept as-is.
-     The overlay pill window pins data-theme="dark", so it never sees these. */
-  --color-amber-200: oklch(0.500 0.115 56);
-  --color-amber-300: oklch(0.525 0.122 57);
-  --color-amber-400: oklch(0.565 0.130 58);
+  /* Deepen the amber low shades so accent TEXT reads on white. */
+  --color-amber-200: #b45309;
+  --color-amber-300: #a8480a;
+  --color-amber-400: #97400b;
+  --color-amber-500: #92400e;
 
-  --color-text-primary:   oklch(0.215 0.012 65);
-  --color-text-secondary: oklch(0.410 0.014 65);
-  --color-text-muted:     oklch(0.580 0.012 65);
+  --color-violet-300: #7c3aed;
+  --color-violet-400: #6d28d9;
 
-  --color-border:        oklch(0.890 0.012 72);
-  --color-border-hover:  oklch(0.815 0.018 70);
-  --color-border-active: oklch(0.605 0.085 60);
+  --color-text-primary:   #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-muted:     #71717a;
 
-  --color-success: oklch(0.555 0.140 150);
-  --color-error:   oklch(0.520 0.200 25);
+  --color-border:        rgba(0,0,0,0.10);
+  --color-border-hover:  rgba(0,0,0,0.18);
+  --color-border-active: rgba(180,83,9,0.55);
 
-  --color-gradient-from: oklch(0.975 0.008 78);
-  --color-gradient-to:   oklch(0.990 0.005 80);
+  --color-success: #16a34a;
+  --color-error:   #dc2626;
 
-  --color-pill-bg: oklch(0.970 0.007 78);
+  --color-gradient-from: #fafafa;
+  --color-gradient-to:   #ffffff;
 
-  --shadow-sm: 0 1px 2px 0 rgb(80 60 30 / 0.06);
-  --shadow:    0 2px 6px -2px rgb(80 60 30 / 0.08), 0 1px 2px rgb(80 60 30 / 0.06);
-  --shadow-md: 0 8px 18px -8px rgb(80 60 30 / 0.14), 0 3px 8px -4px rgb(80 60 30 / 0.08);
-  --shadow-lg: 0 18px 38px -12px rgb(80 60 30 / 0.18), 0 6px 14px -8px rgb(80 60 30 / 0.10);
+  --color-pill-bg: #14141a;
 
-  /* Analytics — darker, saturated amber ramp so heatmap + bars stay legible
-     on the light surfaces (heat-0 / bar-empty inherit surface-2 from above). */
-  --heat-1: color-mix(in oklch, var(--color-amber-500) 34%, var(--color-surface-2));
-  --heat-2: color-mix(in oklch, var(--color-amber-600) 58%, var(--color-surface-2));
+  --shadow-sm: 0 1px 2px 0 rgb(24 24 27 / 0.06);
+  --shadow:    0 2px 6px -2px rgb(24 24 27 / 0.10), 0 1px 2px rgb(24 24 27 / 0.06);
+  --shadow-md: 0 8px 18px -8px rgb(24 24 27 / 0.14), 0 3px 8px -4px rgb(24 24 27 / 0.08);
+  --shadow-lg: 0 18px 38px -12px rgb(24 24 27 / 0.18), 0 6px 14px -8px rgb(24 24 27 / 0.10);
+
+  --heat-1: color-mix(in oklch, var(--color-amber-500) 30%, var(--color-surface-2));
+  --heat-2: color-mix(in oklch, var(--color-amber-500) 58%, var(--color-surface-2));
   --heat-3: color-mix(in oklch, var(--color-amber-600) 82%, var(--color-surface-1));
-  --heat-4: var(--color-amber-700);
+  --heat-4: #b45309;
 
-  --bar-fill:        color-mix(in oklch, var(--color-amber-600) 55%, var(--color-surface-2));
-  --bar-fill-strong: var(--color-amber-600);
+  --bar-fill:        color-mix(in oklch, var(--color-amber-500) 55%, var(--color-surface-2));
+  --bar-fill-strong: #b45309;
 }
 
 /* ── Keyframes ──────────────────────────────────────────────── */
@@ -173,16 +194,11 @@
   }
 }
 
+/* Soft red ripple (matte — a quiet recording indicator, not a glow). */
 @keyframes recording-ring {
-  0% {
-    box-shadow: 0 0 0 0 oklch(0.595 0.215 22 / 0.45);
-  }
-  70% {
-    box-shadow: 0 0 0 22px oklch(0.595 0.215 22 / 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 oklch(0.595 0.215 22 / 0);
-  }
+  0%   { box-shadow: 0 0 0 0 rgba(239,68,68,0.32); }
+  70%  { box-shadow: 0 0 0 20px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
 }
 
 @keyframes breathe {

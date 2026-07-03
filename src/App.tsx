@@ -6,8 +6,11 @@ import { useAppStore } from "@/stores/appStore";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { DictationPanel } from "@/features/dictation/DictationPanel";
 import { ToastContainer } from "@/components/ToastContainer";
+import { ClickPulse } from "@/components/ClickPulse";
 import { useToastStore } from "@/stores/toastStore";
 import { recentHistory, onTranscriptionResult, onRecordingError, openMicSettings } from "@/lib/tauri";
+import { useInAppDictation } from "@/hooks/useInAppDictation";
+import { useWindowHotkeyBridge } from "@/hooks/useWindowHotkeyBridge";
 
 // Lazy-load page components — they are only parsed/executed when navigated to,
 // saving ~20-50 MB of JS heap in the main WebView window.
@@ -30,6 +33,9 @@ const ContextModesPage = lazy(() =>
 );
 const NotesPage = lazy(() =>
   import("@/features/notes/NotesPage").then((m) => ({ default: m.NotesPage }))
+);
+const VoiceCommandsPage = lazy(() =>
+  import("@/features/commands/VoiceCommandsPage").then((m) => ({ default: m.VoiceCommandsPage }))
 );
 const SettingsPage = lazy(() =>
   import("@/features/settings/SettingsPage").then((m) => ({ default: m.SettingsPage }))
@@ -117,6 +123,8 @@ function PageRouter() {
             return <ContextModesPage />;
           case "notes":
             return <NotesPage />;
+          case "commands":
+            return <VoiceCommandsPage />;
           case "models":
             return <ModelsPage />;
           case "settings":
@@ -131,11 +139,14 @@ function PageRouter() {
 
 function MainApp() {
   useGlobalTranscriptionSync();
+  useInAppDictation();
+  useWindowHotkeyBridge();
 
   return (
     <div className="flex h-screen w-screen bg-surface-0 text-text-primary">
       <Sidebar />
       <main
+        data-pulse-root
         className="relative flex-1 overflow-x-hidden overflow-y-auto"
         style={{
           background:
@@ -144,6 +155,7 @@ function MainApp() {
       >
         <PageRouter />
       </main>
+      <ClickPulse />
       <ToastContainer />
     </div>
   );

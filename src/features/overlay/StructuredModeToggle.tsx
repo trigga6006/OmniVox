@@ -105,11 +105,11 @@ const styles = `
   /* Off state — latent rune: mostly dark with an amber hairline.  Thin
      inner highlight hints at depth without pulling focus. */
   background: linear-gradient(180deg,
-    rgba(40,36,32,0.78) 0%,
-    rgba(28,26,24,0.82) 100%);
-  border: 1px solid rgba(232,180,95,0.16);
+    rgba(31,25,19,0.78) 0%,
+    rgba(21,17,13,0.82) 100%);
+  border: 1px solid rgba(232,149,126,0.16);
   box-shadow:
-    inset 0 1px 0 rgba(255,235,200,0.045),
+    inset 0 1px 0 rgba(233,220,198,0.045),
     0 2px 6px -2px rgba(0,0,0,0.45);
 
   transition:
@@ -119,9 +119,9 @@ const styles = `
     transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .ley-line:hover {
-  border-color: rgba(232,180,95,0.3);
+  border-color: rgba(232,149,126,0.3);
   box-shadow:
-    inset 0 1px 0 rgba(255,235,200,0.08),
+    inset 0 1px 0 rgba(233,220,198,0.08),
     0 3px 10px -3px rgba(0,0,0,0.55);
 }
 .ley-line:active { transform: scale(0.96); }
@@ -130,29 +130,27 @@ const styles = `
 
 .ley-line--on {
   background: linear-gradient(180deg,
-    rgba(172,128,230,0.34) 0%,
-    rgba(140,100,202,0.22) 52%,
-    rgba(118,82,184,0.28) 100%);
-  border-color: rgba(210,178,246,0.55);
+    rgba(161,118,142,0.34) 0%,
+    rgba(141,102,124,0.22) 52%,
+    rgba(122,88,107,0.28) 100%);
+  border-color: rgba(161,118,142,0.55);
   /* Static glow — deliberately no breathing animation.  The button
      already reads as "on" from the violet fill, border, and dot; a
      pulsing halo was distracting in the broader UI context. */
   box-shadow:
-    inset 0 1px 0 rgba(255,245,255,0.16),
-    inset 0 -1px 0 rgba(40,20,80,0.3),
-    0 0 12px -3px rgba(188,150,236,0.42),
+    inset 0 1px 0 rgba(233,220,198,0.16),
+    inset 0 -1px 0 rgba(0,0,0,0.3),
     0 2px 10px -2px rgba(0,0,0,0.5);
 }
 .ley-line--on:hover {
   background: linear-gradient(180deg,
-    rgba(184,138,240,0.44) 0%,
-    rgba(152,108,216,0.3) 52%,
-    rgba(128,90,198,0.36) 100%);
-  border-color: rgba(224,196,252,0.68);
+    rgba(174,128,153,0.44) 0%,
+    rgba(154,112,135,0.3) 52%,
+    rgba(134,98,117,0.36) 100%);
+  border-color: rgba(174,128,153,0.68);
   box-shadow:
-    inset 0 1px 0 rgba(255,245,255,0.2),
-    inset 0 -1px 0 rgba(40,20,80,0.3),
-    0 0 16px -2px rgba(200,168,240,0.55),
+    inset 0 1px 0 rgba(233,220,198,0.2),
+    inset 0 -1px 0 rgba(0,0,0,0.3),
     0 2px 10px -2px rgba(0,0,0,0.5);
 }
 
@@ -164,15 +162,14 @@ const styles = `
   transition: opacity 280ms ease, filter 280ms ease;
 }
 .ley-line-glyph svg {
-  fill: rgba(255,235,200,0.32);
+  fill: rgba(239,233,223,0.32);
   transition: fill 320ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ley-line:hover .ley-line-glyph svg {
-  fill: rgba(255,240,210,0.6);
+  fill: rgba(239,233,223,0.6);
 }
 .ley-line--on .ley-line-glyph svg {
-  fill: rgba(245,232,255,0.96);
-  filter: drop-shadow(0 0 4px rgba(200,168,240,0.55));
+  fill: rgba(239,233,223,0.96);
 }
 
 /* --- SPINE ---------------------------------------------------- */
@@ -183,21 +180,21 @@ const styles = `
   flex: 1 1 auto;
   margin: 2px 0;
   background: linear-gradient(180deg,
-    rgba(232,180,95,0) 0%,
-    rgba(232,180,95,0.12) 35%,
-    rgba(232,180,95,0.12) 65%,
-    rgba(232,180,95,0) 100%);
+    rgba(232,149,126,0) 0%,
+    rgba(232,149,126,0.12) 35%,
+    rgba(232,149,126,0.12) 65%,
+    rgba(232,149,126,0) 100%);
   z-index: 1;
   overflow: hidden;
   transition: background 320ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ley-line--on .ley-line-spine {
   background: linear-gradient(180deg,
-    rgba(200,168,240,0) 0%,
-    rgba(218,192,248,0.55) 25%,
-    rgba(232,208,255,0.7) 50%,
-    rgba(218,192,248,0.55) 75%,
-    rgba(200,168,240,0) 100%);
+    rgba(161,118,142,0) 0%,
+    rgba(178,138,160,0.55) 25%,
+    rgba(193,156,176,0.7) 50%,
+    rgba(178,138,160,0.55) 75%,
+    rgba(161,118,142,0) 100%);
 }
 
 /* --- STATE DOT ----------------------------------------------- */
@@ -207,7 +204,7 @@ const styles = `
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255,235,200,0.18);
+  background: rgba(239,233,223,0.18);
   z-index: 2;
   transition:
     background 280ms ease,
@@ -216,9 +213,8 @@ const styles = `
 .ley-line--on .ley-line-dot {
   /* Static lit dot — no breathing.  The soft ring + halo is enough to
      read as "on" at a glance without any motion. */
-  background: rgb(210,178,246);
+  background: rgb(161,118,142);
   box-shadow:
-    0 0 0 1.5px rgba(188,150,236,0.24),
-    0 0 6px rgba(200,168,240,0.55);
+    0 0 0 1.5px rgba(161,118,142,0.24);
 }
 `;

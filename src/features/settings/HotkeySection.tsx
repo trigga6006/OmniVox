@@ -3,6 +3,7 @@ import { RotateCcw } from "lucide-react";
 import { suspendHotkey, updateHotkey, type HotkeyConfig } from "@/lib/tauri";
 import { CODE_TO_VK } from "@/lib/vk-codes";
 import { cn } from "@/lib/utils";
+import { Button, Card, Kbd } from "@/components/ui";
 
 /* ─────────────────── Hotkey Recorder Component ─────────────────── */
 
@@ -118,24 +119,24 @@ export function HotkeySection({
     currentLabels[1] === "LAlt";
 
   return (
-    <section
+    <Card
       className={cn(
-        "bg-surface-1 rounded-xl border p-5 transition-colors animate-slide-up",
+        "animate-slide-up p-5 transition-colors",
         state === "listening"
           ? "border-amber-400/45 bg-amber-500/[0.03]"
           : state === "confirming"
             ? "border-success/35 bg-success/[0.04]"
-            : "border-border hover:border-border-hover hover:bg-surface-1"
+            : "hover:border-border-hover"
       )}
       style={{ opacity: 0, animationDelay: "0.06s", animationFillMode: "forwards" }}
     >
-      <div className="mb-3">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+      <div className="mb-2.5">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
           Shortcut
         </span>
       </div>
 
-      <label className="block text-[13.5px] font-medium text-text-primary mb-2.5">
+      <label className="mb-2.5 block text-[13.5px] font-medium text-text-primary">
         Push-to-talk hotkey
       </label>
 
@@ -146,27 +147,19 @@ export function HotkeySection({
             {currentLabels.map((key, i) => (
               <div key={key} className="contents">
                 {i > 0 && (
-                  <span className="text-xs text-text-muted select-none">+</span>
+                  <span className="select-none text-xs text-text-muted">+</span>
                 )}
-                <kbd className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 font-mono text-[13px] text-text-secondary shadow-sm">
-                  {key}
-                </kbd>
+                <Kbd>{key}</Kbd>
               </div>
             ))}
           </div>
-          <button
-            onClick={handleRemap}
-            className="ml-2 rounded-md px-2 py-1 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/[0.10] hover:text-amber-200"
-          >
+          <Button size="sm" variant="ghost" onClick={handleRemap} className="ml-1 text-amber-300 hover:text-amber-200">
             Remap
-          </button>
+          </Button>
           {!isDefault && (
-            <button
-              onClick={handleReset}
-              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-            >
+            <Button size="sm" variant="ghost" onClick={handleReset} className="text-text-muted">
               Reset
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -175,9 +168,7 @@ export function HotkeySection({
       {state === "listening" && (
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-3">
-            <div
-              className="flex min-w-[160px] items-center justify-center gap-2 rounded-lg border border-amber-400/35 bg-amber-500/[0.06] px-4 py-2.5"
-            >
+            <div className="flex min-w-[160px] items-center justify-center gap-2 rounded-lg border border-amber-400/35 bg-amber-500/[0.06] px-4 py-2.5">
               {captured.length === 0 ? (
                 <span className="animate-pulse text-sm text-amber-300/80">
                   Press your keys...
@@ -185,9 +176,7 @@ export function HotkeySection({
               ) : (
                 captured.map((k, i) => (
                   <div key={k.code} className="contents">
-                    {i > 0 && (
-                      <span className="text-xs text-text-muted">+</span>
-                    )}
+                    {i > 0 && <span className="text-xs text-text-muted">+</span>}
                     <kbd className="rounded-md border border-amber-400/30 bg-amber-500/[0.14] px-2.5 py-1 font-mono text-sm text-amber-200">
                       {k.label}
                     </kbd>
@@ -195,12 +184,9 @@ export function HotkeySection({
                 ))
               )}
             </div>
-            <button
-              onClick={handleCancel}
-              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-            >
+            <Button size="sm" variant="ghost" onClick={handleCancel} className="text-text-muted">
               Cancel
-            </button>
+            </Button>
           </div>
           <p className="text-xs text-text-muted">
             Press 1 or 2 keys simultaneously, then release to confirm
@@ -215,9 +201,7 @@ export function HotkeySection({
             <div className="flex items-center gap-2">
               {captured.map((k, i) => (
                 <div key={k.code} className="contents">
-                  {i > 0 && (
-                    <span className="text-xs text-text-muted">+</span>
-                  )}
+                  {i > 0 && <span className="text-xs text-text-muted">+</span>}
                   <kbd className="rounded-lg border border-success/30 bg-success/[0.10] px-3 py-1.5 font-mono text-[13px] text-success shadow-sm">
                     {k.label}
                   </kbd>
@@ -225,31 +209,27 @@ export function HotkeySection({
               ))}
             </div>
 
-            <div className="flex items-center gap-2 ml-2">
-              <button
-                onClick={handleSave}
-                className="inline-flex items-center gap-1 rounded-md border border-amber-400/35 bg-amber-500/[0.14] px-3 py-1 text-xs font-medium text-amber-200 transition-colors hover:border-amber-400/55 hover:bg-amber-500/[0.22]"
-              >
+            <div className="ml-2 flex items-center gap-2">
+              <Button size="sm" variant="primary" onClick={handleSave}>
                 Save
-              </button>
-              <button
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
                 onClick={handleRedo}
-                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
+                icon={<RotateCcw />}
+                className="text-text-muted"
                 title="Try again"
               >
-                <RotateCcw size={12} strokeWidth={2} />
                 Redo
-              </button>
-              <button
-                onClick={handleCancel}
-                className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-              >
+              </Button>
+              <Button size="sm" variant="ghost" onClick={handleCancel} className="text-text-muted">
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       )}
-    </section>
+    </Card>
   );
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.0
+
+### Features
+
+- **Voice Command Mode.** Speak a command and OmniVox carries it out instead of typing it: launch or switch to an app ("open Spotify"), run a web search or open a site, and fire common keyboard/media/window shortcuts (copy, paste, save, play/pause, minimize, show desktop, and more). A single utterance can chain steps ("open Spotify and play it"), and low-confidence or consequential actions (a fuzzy app match, closing a window) are held behind a confirm pill you accept with Enter or dismiss with Esc.
+- **Type and send messages by voice.** Two new commands let you put text into whatever app is focused: "type ..." pastes the text and leaves it for you to review, while "tell Claude to ...", "send a message to Slack saying ...", or "ask ..." pastes the message and presses Enter to send it. Because sending presses Enter in another app, every send is routed through the confirm pill first so a message is never fired blind. Text goes in through the same clipboard-verified paste path as dictation, and your prior clipboard is restored afterward.
+- **Voice-command library page.** A new Commands page lists every supported command with per-command toggles, so you can enable or disable individual actions and see at a glance what Command Mode understands.
+
 ## v0.3.1
 
 ### Features

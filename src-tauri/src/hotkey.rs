@@ -8,12 +8,17 @@
 //! **Toggle mode** — Double-press the combo (within 400 ms) to lock recording
 //! on.  Press the combo again to stop and transcribe.
 //!
+//! There are **two** independent hotkeys sharing one hook: the dictation hotkey
+//! (default LCtrl+LAlt) and the Command-Mode hotkey (default Right Ctrl, only
+//! active when Command Mode is enabled).  Each is matched independently and
+//! routes to its own pipeline entry point.
+//!
 //! On Windows the hotkey uses a low-level keyboard hook (`WH_KEYBOARD_LL`).
 //! On macOS and Linux the hotkey uses `rdev` for global key event listening.
 //!
-//! The hotkey keys are stored in a packed `AtomicU32` so the hook callback
-//! can read them lock-free.  Call [`update_hotkey_keys`] to change the combo
-//! at runtime (e.g. after the user remaps from Settings).
+//! Each hotkey's keys are stored in a packed `AtomicU32` so the hook callback
+//! can read them lock-free.  Call [`update_hotkey_keys`] /
+//! [`update_command_hotkey_keys`] to change a combo at runtime.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,33 +43,74 @@ impl Default for HotkeyConfig {
     }
 }
 
+/// Default Command-Mode hotkey: Right Ctrl (VK_RCONTROL), a single key the user
+/// almost never *initiates* shortcuts with, leaving CapsLock and the left
+/// modifiers untouched.
+pub const COMMAND_HOTKEY_VK: u16 = 0xA3;
+
 // ── Shared state machine logic ───────────────────────────────────
 //
 // Both the Windows and rdev backends use the same atomic state machine.
-// This avoids duplicating the hold/toggle logic.
+// This avoids duplicating the hold/toggle logic, and now drives two
+// independent hotkeys (dictation + command).
 
 mod state_machine {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
     use std::sync::OnceLock;
     use std::time::Instant;
 
+    use tauri::Manager;
+
     /// Time window for a double-press to count as "toggle" mode.
     const DOUBLE_TAP_MS: u64 = 400;
 
-    /// Packed hotkey: low u16 = key1 code, high u16 = key2 code (0 if single-key).
-    pub static HOTKEY_PACKED: AtomicU32 = AtomicU32::new(0);
-    /// Bitmask of which configured keys are currently held.
-    /// bit 0 = key1 down, bit 1 = key2 down.
-    pub static KEYS_DOWN: AtomicU8 = AtomicU8::new(0);
     /// When true the hook passes all keys through without processing.
     pub static HOTKEY_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
-    // ── Recording state machine ──────────────────────────────────
-    static RECORDING: AtomicBool = AtomicBool::new(false);
-    static TOGGLE_LOCKED: AtomicBool = AtomicBool::new(false);
-    static LAST_ACTIVATE_MS: AtomicU64 = AtomicU64::new(0);
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    /// Which capture path a hotkey drives.
+    #[derive(Clone, Copy)]
+    enum Action {
+        Dictation,
+        Command,
+    }
 
+    /// Per-hotkey atomic state.
+    struct Hk {
+        /// Packed combo: low u16 = key1 code, high u16 = key2 code (0 if single-key).
+        packed: AtomicU32,
+        /// Bitmask of which configured keys are currently held (bit0=key1, bit1=key2).
+        keys_down: AtomicU8,
+        /// Bitmask of combo keys whose activating key-DOWN we swallowed, so we
+        /// can swallow the matching key-UP too.  Without this, the release of
+        /// the hotkey modifier leaks to the foreground app — a lone `Alt`-up
+        /// pops the Windows menu/ribbon KeyTips overlay, and any leaked
+        /// modifier release can disturb the focused control.  Tracking it
+        /// per-key keeps the swallow balanced: keys whose down we passed
+        /// through (e.g. the first modifier, which may be the start of a real
+        /// Ctrl+C / Alt+Tab) still get their up passed through.
+        swallowed_down: AtomicU8,
+        recording: AtomicBool,
+        toggle_locked: AtomicBool,
+        last_activate_ms: AtomicU64,
+    }
+
+    impl Hk {
+        const fn new() -> Self {
+            Self {
+                packed: AtomicU32::new(0),
+                keys_down: AtomicU8::new(0),
+                swallowed_down: AtomicU8::new(0),
+                recording: AtomicBool::new(false),
+                toggle_locked: AtomicBool::new(false),
+                last_activate_ms: AtomicU64::new(0),
+            }
+        }
+    }
+
+    static DICTATION: Hk = Hk::new();
+    static COMMAND: Hk = Hk::new();
+
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
     pub static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
     fn now_ms() -> u64 {
@@ -76,77 +122,123 @@ mod state_machine {
         let _ = EPOCH.get_or_init(Instant::now);
     }
 
-    fn fire_start() {
-        if let Some(handle) = APP_HANDLE.get() {
-            let h = handle.clone();
-            tauri::async_runtime::spawn(async move {
-                crate::pipeline::start_if_idle(&h).await;
-            });
+    fn action_mode(action: Action) -> crate::state::CaptureMode {
+        match action {
+            Action::Dictation => crate::state::CaptureMode::Dictation,
+            Action::Command => crate::state::CaptureMode::Command,
         }
     }
 
-    fn fire_stop() {
-        if let Some(handle) = APP_HANDLE.get() {
-            let h = handle.clone();
-            tauri::async_runtime::spawn(async move {
-                crate::pipeline::stop_if_recording(&h).await;
-            });
+    fn fire_start(action: Action) {
+        let Some(handle) = APP_HANDLE.get() else {
+            return;
+        };
+        let h = handle.clone();
+        // Claim ownership SYNCHRONOUSLY on this serialized hook thread, before
+        // spawning the worker — so the matching release (fire_stop, later on the
+        // same thread) can never be processed before the claim happens.
+        let claimed = crate::pipeline::try_claim_capture(&h, action_mode(action));
+        crate::llm::diaglog::log(&format!(
+            "hotkey: fire_start action={:?} claimed={claimed}",
+            action_mode(action)
+        ));
+        if !claimed {
+            return;
         }
+        tauri::async_runtime::spawn(async move {
+            match action {
+                Action::Dictation => {
+                    let st = h.state::<crate::state::AppState>();
+                    crate::pipeline::start_recording_inner(&h, &st);
+                }
+                Action::Command => {
+                    crate::pipeline::start_command_inner(&h).await;
+                }
+            }
+        });
     }
 
-    /// Update the hotkey keys at runtime.
+    fn fire_stop(action: Action) {
+        let Some(handle) = APP_HANDLE.get() else {
+            return;
+        };
+        let h = handle.clone();
+        // Decide the stop SYNCHRONOUSLY (records a deferred stop if the capture
+        // is still starting); only spawn the worker for an immediate stop.
+        if !crate::pipeline::should_stop_now(&h, action_mode(action)) {
+            return;
+        }
+        tauri::async_runtime::spawn(async move {
+            let st = h.state::<crate::state::AppState>();
+            match action {
+                Action::Dictation => crate::pipeline::stop_and_transcribe(&h, &st).await,
+                Action::Command => crate::pipeline::stop_and_run_command(&h, &st).await,
+            }
+        });
+    }
+
+    fn reset(hk: &Hk) {
+        hk.keys_down.store(0, Ordering::Release);
+        hk.swallowed_down.store(0, Ordering::Release);
+        hk.recording.store(false, Ordering::Release);
+        hk.toggle_locked.store(false, Ordering::Release);
+    }
+
+    /// Update the dictation hotkey keys at runtime.
     ///
-    /// Called from the tauri command thread / startup thread.  Release
-    /// ordering on HOTKEY_PACKED synchronizes with the Acquire load at the
-    /// top of `process_key_event` — so the hook thread, after observing the
-    /// new packed value, also sees the reset KEYS_DOWN / RECORDING /
-    /// TOGGLE_LOCKED that accompany a hotkey change.
+    /// Release ordering on `packed` synchronizes with the Acquire load in
+    /// `process_one` — so the hook thread, after observing the new packed value,
+    /// also sees the reset latches that accompany the change.
     pub fn update_hotkey_keys(key1: u16, key2: u16) {
         let packed = (key2 as u32) << 16 | (key1 as u32);
-        // Release these first so they're visible once PACKED is acquired.
-        KEYS_DOWN.store(0, Ordering::Release);
-        RECORDING.store(false, Ordering::Release);
-        TOGGLE_LOCKED.store(false, Ordering::Release);
-        HOTKEY_PACKED.store(packed, Ordering::Release);
+        reset(&DICTATION);
+        DICTATION.packed.store(packed, Ordering::Release);
     }
 
-    /// Suspend or resume the hotkey hook.
-    ///
-    /// When suspending, also clear the latching state (`KEYS_DOWN`,
-    /// `RECORDING`, `TOGGLE_LOCKED`) so that on resume we don't wake up in a
-    /// stuck "already recording" state.  Without this, if the hotkey was
-    /// active at suspend-time, the next key-combo press would be a no-op
-    /// (hit the `recording && !locked` branch and do nothing) until the user
-    /// happens to release the keys — which they may never do with the new
-    /// combo.  Pipeline-level recording state is tracked separately via
-    /// `AppState.audio.is_recording()`, so this reset is purely for the
-    /// state machine inside the hook.
+    /// Update (or disable, with key1=0) the Command-Mode hotkey at runtime.
+    pub fn update_command_hotkey_keys(key1: u16, key2: u16) {
+        let packed = (key2 as u32) << 16 | (key1 as u32);
+        reset(&COMMAND);
+        COMMAND.packed.store(packed, Ordering::Release);
+    }
+
+    pub fn dictation_packed() -> u32 {
+        DICTATION.packed.load(Ordering::Acquire)
+    }
+
+    /// Suspend or resume the hook, clearing latch state so a suspended-while-
+    /// active hotkey doesn't wake up stuck "already recording".
     pub fn set_suspended(suspended: bool) {
         HOTKEY_SUSPENDED.store(suspended, Ordering::Release);
         if suspended {
-            KEYS_DOWN.store(0, Ordering::Release);
-            RECORDING.store(false, Ordering::Release);
-            TOGGLE_LOCKED.store(false, Ordering::Release);
+            reset(&DICTATION);
+            reset(&COMMAND);
         }
     }
 
-    /// Process a key event. Returns true if the event should be swallowed.
-    ///
-    /// `vk` is the virtual key code, `is_down` / `is_up` indicate the event type.
-    ///
-    /// Ordering rationale: this runs on the WH_KEYBOARD_LL hook thread on a
-    /// per-keypress hot path.  We use Acquire loads for the two atomics that
-    /// could be updated cross-thread (SUSPENDED from tauri, PACKED from
-    /// startup/tauri); once we've observed their latest value we can use
-    /// Relaxed for the remaining counters which are logically owned by this
-    /// thread (the matching Release stores in `update_hotkey_keys` /
-    /// `set_suspended` synchronize through the Acquire above).
+    /// Process a key event against both hotkeys. Returns true if the event
+    /// should be swallowed.
     pub fn process_key_event(vk: u16, is_down: bool, is_up: bool) -> bool {
         if HOTKEY_SUSPENDED.load(Ordering::Acquire) {
+            // Log only the keys that belong to a configured combo, so we can
+            // tell a "suspended swallowed my hotkey" case from ordinary typing.
+            let d = DICTATION.packed.load(Ordering::Acquire);
+            if d != 0 && (vk == (d & 0xFFFF) as u16 || vk == ((d >> 16) & 0xFFFF) as u16) {
+                crate::llm::diaglog::log(&format!(
+                    "hotkey: SUSPENDED — passing through combo key vk={vk:#06x} down={is_down}"
+                ));
+            }
             return false;
         }
+        // Check both; swallow if either consumed the event. (The default combos
+        // share no keys, so at most one fires per event.)
+        let d = process_one(&DICTATION, Action::Dictation, vk, is_down, is_up);
+        let c = process_one(&COMMAND, Action::Command, vk, is_down, is_up);
+        d || c
+    }
 
-        let packed = HOTKEY_PACKED.load(Ordering::Acquire);
+    fn process_one(hk: &Hk, action: Action, vk: u16, is_down: bool, is_up: bool) -> bool {
+        let packed = hk.packed.load(Ordering::Acquire);
         if packed == 0 {
             return false;
         }
@@ -160,54 +252,88 @@ mod state_machine {
 
         if matches_key1 || matches_key2 {
             let bit: u8 = if matches_key1 { 0x01 } else { 0x02 };
-
             if is_down {
-                KEYS_DOWN.fetch_or(bit, Ordering::Relaxed);
+                hk.keys_down.fetch_or(bit, Ordering::Relaxed);
             } else if is_up {
-                KEYS_DOWN.fetch_and(!bit, Ordering::Relaxed);
+                hk.keys_down.fetch_and(!bit, Ordering::Relaxed);
             }
         }
 
-        let keys_down = KEYS_DOWN.load(Ordering::Relaxed);
+        let keys_down = hk.keys_down.load(Ordering::Relaxed);
         let all_down = if is_two_key {
             keys_down == 0x03
         } else {
             keys_down == 0x01
         };
 
-        let recording = RECORDING.load(Ordering::Relaxed);
-        let locked = TOGGLE_LOCKED.load(Ordering::Relaxed);
+        let recording = hk.recording.load(Ordering::Relaxed);
+        let locked = hk.toggle_locked.load(Ordering::Relaxed);
+
+        // The combo-key bit for the CURRENT event (used to balance the
+        // swallowed-down / swallowed-up bookkeeping below).
+        let bit: u8 = if matches_key1 { 0x01 } else { 0x02 };
 
         // ── Both/all keys just pressed ───────────────────────
         if all_down && is_down {
             if !recording {
                 let now = now_ms();
-                let last = LAST_ACTIVATE_MS.swap(now, Ordering::Relaxed);
-                // `now >= last` always (swap semantics, monotonic clock), so
-                // the subtraction never underflows.  First activation: last=0
-                // so the diff is large → is_double_tap = false (correct).
+                let last = hk.last_activate_ms.swap(now, Ordering::Relaxed);
                 let is_double_tap = (now - last) <= DOUBLE_TAP_MS;
 
-                RECORDING.store(true, Ordering::Relaxed);
-                TOGGLE_LOCKED.store(is_double_tap, Ordering::Relaxed);
-                fire_start();
+                hk.recording.store(true, Ordering::Relaxed);
+                hk.toggle_locked.store(is_double_tap, Ordering::Relaxed);
+                // Remember we swallowed this key's press so we also swallow its
+                // release — otherwise the lone modifier-up leaks to the app.
+                hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
+                fire_start(action);
 
                 return true; // swallow
             } else if locked {
                 // Toggle-off
-                RECORDING.store(false, Ordering::Relaxed);
-                TOGGLE_LOCKED.store(false, Ordering::Relaxed);
-                LAST_ACTIVATE_MS.store(0, Ordering::Relaxed);
-                fire_stop();
+                hk.recording.store(false, Ordering::Relaxed);
+                hk.toggle_locked.store(false, Ordering::Relaxed);
+                hk.last_activate_ms.store(0, Ordering::Relaxed);
+                hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
+                fire_stop(action);
 
                 return true; // swallow
             }
         }
 
+        // ── Swallow auto-repeat key-downs while held ──────────
+        //    Holding a hotkey makes Windows stream WM_KEYDOWN repeats.  If we
+        //    swallowed a key's activating press we must swallow its repeats too —
+        //    otherwise a held single-key hotkey (Right Ctrl for Command Mode)
+        //    leaks a flood of Ctrl-DOWN repeats to the foreground app while its
+        //    key-UP is swallowed below, leaving the modifier stuck "down" with no
+        //    release (only a reboot clears it).  Balanced per-key: a key whose
+        //    down we passed through (the first modifier of a combo, e.g. LCtrl in
+        //    LCtrl+LAlt) is NOT in `swallowed_down`, so its repeats still pass —
+        //    keeping real Ctrl+C / Alt+Tab intact.
+        if is_down && (matches_key1 || matches_key2) {
+            if hk.swallowed_down.load(Ordering::Relaxed) & bit != 0 {
+                return true; // swallow the repeat
+            }
+        }
+
         // ── Key released while hold-recording (non-locked) ──
         if recording && !locked && is_up && (matches_key1 || matches_key2) {
-            RECORDING.store(false, Ordering::Relaxed);
-            fire_stop();
+            hk.recording.store(false, Ordering::Relaxed);
+            fire_stop(action);
+        }
+
+        // ── Swallow the release of any combo key whose activating press we
+        //    swallowed, so the foreground app never sees a lone modifier
+        //    release.  A leaked `Alt`-up pops the Windows menu/ribbon KeyTips
+        //    overlay (the "letters across the top" the user hits in Notes);
+        //    other leaked modifier releases can disturb the focused control.
+        //    Balanced per-key: a modifier whose down we passed through (the
+        //    first key of the combo, or a real Ctrl+C / Alt+Tab) is NOT in
+        //    `swallowed_down`, so its up still passes — keeping those intact.
+        if is_up && (matches_key1 || matches_key2) {
+            if hk.swallowed_down.fetch_and(!bit, Ordering::Relaxed) & bit != 0 {
+                return true; // swallow the balancing release
+            }
         }
 
         false
@@ -248,8 +374,10 @@ mod win {
         let _ = state_machine::APP_HANDLE.set(app_handle);
         state_machine::init_epoch();
 
-        // If no hotkey was loaded from settings yet, use the default (Ctrl+LAlt).
-        if state_machine::HOTKEY_PACKED.load(std::sync::atomic::Ordering::Acquire) == 0 {
+        // If no dictation hotkey was loaded from settings yet, use the default
+        // (Ctrl+LAlt).  The command hotkey is governed by Command Mode being
+        // enabled (set via apply_persisted_settings), so it is NOT defaulted here.
+        if state_machine::dictation_packed() == 0 {
             state_machine::update_hotkey_keys(0xA2, 0xA4); // VK_LCONTROL, VK_LMENU
         }
 
@@ -378,8 +506,8 @@ mod rdev_impl {
         let _ = state_machine::APP_HANDLE.set(app_handle);
         state_machine::init_epoch();
 
-        // If no hotkey was loaded from settings yet, use the default (Ctrl+LAlt).
-        if state_machine::HOTKEY_PACKED.load(std::sync::atomic::Ordering::Acquire) == 0 {
+        // If no dictation hotkey was loaded from settings yet, use the default.
+        if state_machine::dictation_packed() == 0 {
             state_machine::update_hotkey_keys(0xA2, 0xA4); // LControl + LAlt
         }
 
@@ -409,12 +537,41 @@ pub fn install(app_handle: tauri::AppHandle) {
     rdev_impl::start(app_handle);
 }
 
-/// Update the hotkey keys at runtime.
+/// Update the dictation hotkey keys at runtime.
 pub fn update_hotkey_keys(key1: u16, key2: u16) {
     state_machine::update_hotkey_keys(key1, key2);
+}
+
+/// Update the Command-Mode hotkey keys at runtime. Pass `key1 = 0` to disable.
+pub fn update_command_hotkey_keys(key1: u16, key2: u16) {
+    state_machine::update_command_hotkey_keys(key1, key2);
+}
+
+/// Enable or disable the Command-Mode hotkey (Right Ctrl) based on whether
+/// Command Mode is on.  Disabling sets the combo to 0 so Right Ctrl passes
+/// through untouched.
+pub fn set_command_mode_enabled(enabled: bool) {
+    if enabled {
+        update_command_hotkey_keys(COMMAND_HOTKEY_VK, 0);
+    } else {
+        update_command_hotkey_keys(0, 0);
+    }
 }
 
 /// Suspend or resume the hook.
 pub fn set_suspended(suspended: bool) {
     state_machine::set_suspended(suspended);
+}
+
+/// Feed a key event from the frontend (WebView) into the hotkey state machine.
+///
+/// When one of OmniVox's own windows has focus, the global OS keyboard hook
+/// receives no key events — the WebView2 consumes them first — so dictation and
+/// command hotkeys would never fire while the user is inside the app.  The
+/// frontend listens for the relevant modifier keys and forwards them here so the
+/// same hold/toggle state machine drives both paths.  The two are mutually
+/// exclusive by focus (OS hook when another app is forward, this when ours is),
+/// and the state machine's latches make an occasional overlapping event safe.
+pub fn feed_key_event(vk: u16, is_down: bool) {
+    let _ = state_machine::process_key_event(vk, is_down, !is_down);
 }

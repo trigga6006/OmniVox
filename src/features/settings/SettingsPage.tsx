@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, X, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
@@ -15,6 +15,7 @@ import {
   type PlatformInfo,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import { Button, Card, Toggle, Segmented, Badge, Modal } from "@/components/ui";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
 import { HotkeySection } from "./HotkeySection";
@@ -51,61 +52,7 @@ const writingStyles = [
 
 type WritingStyleId = (typeof writingStyles)[number]["id"];
 
-/* ─────────────────── Reusable settings primitives ─────────────── */
-
-function Toggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "relative inline-flex h-[22px] w-10 shrink-0 items-center rounded-full transition-colors",
-        on ? "bg-amber-500" : "bg-surface-3",
-        disabled && "opacity-60"
-      )}
-    >
-      <span
-        className={cn(
-          "inline-block h-[16px] w-[16px] rounded-full bg-white shadow-sm transition-transform duration-200",
-          on ? "translate-x-[21px]" : "translate-x-[3px]"
-        )}
-      />
-    </button>
-  );
-}
-
-function Segmented<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: readonly { id: T; label: string; icon?: typeof Mic | null }[];
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div className="inline-flex gap-0.5 rounded-lg border border-border bg-surface-2/70 p-0.5">
-      {options.map(({ id, label, icon: Icon }) => {
-        const active = id === value;
-        return (
-          <button
-            key={id}
-            onClick={() => onChange(id)}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-sm font-medium transition-all duration-150",
-              active
-                ? "bg-amber-500/[0.14] text-amber-200 shadow-sm ring-1 ring-amber-400/25"
-                : "text-text-muted hover:bg-surface-1 hover:text-text-secondary"
-            )}
-          >
-            {Icon && <Icon size={14} strokeWidth={1.75} />}
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+/* ─────────────────── Settings layout helpers ─────────────────── */
 
 function GroupCard({
   title,
@@ -117,17 +64,17 @@ function GroupCard({
   children: React.ReactNode;
 }) {
   return (
-    <section
-      className="mb-4 break-inside-avoid animate-slide-up rounded-xl border border-border bg-surface-1/85 p-5 transition-colors hover:border-border-hover"
+    <Card
+      className="mb-4 break-inside-avoid animate-slide-up p-5 transition-colors hover:border-border-hover"
       style={{ opacity: 0, animationDelay: `${delay}s`, animationFillMode: "forwards" }}
     >
       <div className="mb-2.5">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
           {title}
         </span>
       </div>
       <div className="divide-y divide-border/50">{children}</div>
-    </section>
+    </Card>
   );
 }
 
@@ -328,7 +275,7 @@ export function SettingsPage() {
         className="animate-slide-up"
         style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
       >
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] text-text-primary">
           Settings
         </h1>
         <p className="mt-1 text-sm text-text-muted">
@@ -358,14 +305,29 @@ export function SettingsPage() {
             title="Transcription delivery"
             description={outputModes.find((m) => m.id === activeMode)?.description}
           >
-            <Segmented options={outputModes} value={activeMode} onChange={handleModeChange} />
+            <Segmented
+              options={outputModes.map((m) => {
+                const Icon = m.icon;
+                return {
+                  value: m.id,
+                  label: m.label,
+                  icon: Icon ? <Icon size={14} strokeWidth={1.75} /> : undefined,
+                };
+              })}
+              value={activeMode}
+              onChange={handleModeChange}
+            />
           </Row>
           <Row
             icon={PenLine}
             title="Writing style"
             description="Default capitalization and punctuation. Context modes can override this."
           >
-            <Segmented options={writingStyles} value={activeStyle} onChange={handleStyleChange} />
+            <Segmented
+              options={writingStyles.map((s) => ({ value: s.id, label: s.label }))}
+              value={activeStyle}
+              onChange={handleStyleChange}
+            />
           </Row>
         </GroupCard>
 
@@ -375,7 +337,7 @@ export function SettingsPage() {
             <div className="relative">
               <button
                 onClick={() => setDeviceMenuOpen((p) => !p)}
-                className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface-2/80 px-3 py-2 text-left transition-colors hover:border-border-hover hover:bg-surface-2"
+                className="flex w-full items-center gap-2 rounded-[9px] border border-border-hover bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"
               >
                 <Volume2 size={14} strokeWidth={1.75} className="shrink-0 text-text-muted" />
                 <span className="flex-1 truncate text-sm text-text-primary">{selectedDevice}</span>
@@ -384,7 +346,7 @@ export function SettingsPage() {
                 </svg>
               </button>
               {deviceMenuOpen && audioDevices.length > 0 && (
-                <div className="absolute left-0 right-0 z-10 mt-1.5 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-lg backdrop-blur-sm">
+                <div className="absolute left-0 right-0 z-10 mt-1.5 overflow-hidden rounded-[10px] border border-border-hover bg-surface-1 shadow-lg">
                   {audioDevices.map((device) => {
                     const isActive = device.id === selectedDeviceId;
                     return (
@@ -397,7 +359,7 @@ export function SettingsPage() {
                         }}
                         className={cn(
                           "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
-                          isActive ? "bg-amber-500/[0.10] text-amber-300" : "text-text-primary hover:bg-surface-2/80"
+                          isActive ? "bg-amber-500/[0.10] text-amber-300" : "text-text-primary hover:bg-surface-2"
                         )}
                       >
                         <Volume2 size={13} strokeWidth={1.75} className={isActive ? "text-amber-300" : "text-text-muted"} />
@@ -417,14 +379,14 @@ export function SettingsPage() {
             icon={ShieldCheck}
             title="Noise reduction"
             description="Filter fan noise, keyboard clicks, and other non-speech sounds with RNNoise before transcription."
-            control={<Toggle on={!!settings?.noise_reduction} onClick={handleNoiseReductionToggle} />}
+            control={<Toggle checked={!!settings?.noise_reduction} onChange={handleNoiseReductionToggle} aria-label="Noise reduction" />}
           />
 
           <Row
             icon={VolumeX}
             title="Audio ducking"
             description="Lower system volume while dictating so other audio doesn't compete with your mic. Restored when recording stops."
-            control={<Toggle on={!!settings?.audio_ducking} onClick={handleAudioDuckingToggle} />}
+            control={<Toggle checked={!!settings?.audio_ducking} onChange={handleAudioDuckingToggle} aria-label="Audio ducking" />}
           >
             {settings?.audio_ducking && (
               <div>
@@ -455,22 +417,24 @@ export function SettingsPage() {
           {platformInfo?.os === "macos" && (
             <Row title="System permissions" description="macOS requires explicit access for the mic and global hotkeys.">
               <div className="flex gap-2">
-                <button
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<Mic />}
                   onClick={() => openMicSettings().catch(console.error)}
-                  className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:border-border-hover hover:bg-surface-1 hover:text-text-primary"
                 >
-                  <Mic size={12} />
                   Microphone
-                  <ExternalLink size={10} className="opacity-50" />
-                </button>
-                <button
+                  <ExternalLink className="opacity-50" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<Keyboard />}
                   onClick={() => openAccessibilitySettings().catch(console.error)}
-                  className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:border-border-hover hover:bg-surface-1 hover:text-text-primary"
                 >
-                  <Keyboard size={12} />
                   Accessibility
-                  <ExternalLink size={10} className="opacity-50" />
-                </button>
+                  <ExternalLink className="opacity-50" />
+                </Button>
               </div>
             </Row>
           )}
@@ -482,18 +446,20 @@ export function SettingsPage() {
             icon={ScanText}
             title="Screen context"
             description="Read visible text in the focused app to transcribe file paths, identifiers, and commands verbatim. Local only — never leaves your device."
-            control={<Toggle on={!!settings?.use_screen_context} onClick={handleScreenContextToggle} />}
+            control={<Toggle checked={!!settings?.use_screen_context} onChange={handleScreenContextToggle} aria-label="Screen context" />}
           >
             {settings?.use_screen_context && settings?.structured_mode && (
-              <div className="rounded-lg border border-border/60 bg-surface-2/40 p-3">
+              <div className="rounded-[10px] border border-border bg-surface-2/40 p-3">
                 <p className="mb-2.5 text-xs leading-relaxed text-text-muted">
                   Also pass screen-context tokens into Structured Mode so the LLM substitutes
                   phonetic guesses with verbatim screen text.
                 </p>
                 <div className="flex items-center gap-3">
                   <Toggle
-                    on={!!settings?.structured_use_screen_context}
-                    onClick={handleStructuredScreenContextToggle}
+                    accent="violet"
+                    checked={!!settings?.structured_use_screen_context}
+                    onChange={handleStructuredScreenContextToggle}
+                    aria-label="Use screen context in Structured Mode"
                   />
                   <span className="text-xs text-text-secondary">
                     {settings?.structured_use_screen_context ? "Used in Structured Mode" : "Whisper only"}
@@ -513,25 +479,27 @@ export function SettingsPage() {
                 recording.
               </>
             }
-            control={<Toggle on={!!settings?.live_preview} onClick={handleLivePreviewToggle} />}
+            control={<Toggle checked={!!settings?.live_preview} onChange={handleLivePreviewToggle} aria-label="Live preview" />}
           />
 
           <Row
             icon={Mic}
             title="Voice commands"
             description={'Say "new line", "new paragraph", or "delete last word" while dictating.'}
-            control={<Toggle on={!!settings?.voice_commands} onClick={handleVoiceCommandsToggle} />}
+            control={<Toggle checked={!!settings?.voice_commands} onChange={handleVoiceCommandsToggle} aria-label="Voice commands" />}
           >
             {settings?.voice_commands && (
               <div className="flex flex-col gap-3">
-                <button
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<Info />}
+                  className="self-start"
                   onClick={() => setShowVoiceCommands(true)}
-                  className="flex items-center gap-1.5 self-start rounded-md px-2 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2/70 hover:text-text-secondary"
                 >
-                  <Info size={12} />
                   View all commands
-                </button>
-                <div className="rounded-lg border border-border/60 bg-surface-2/40 p-3">
+                </Button>
+                <div className="rounded-[10px] border border-border bg-surface-2/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5">
                     <Send size={12} strokeWidth={2} className="text-text-muted" />
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
@@ -542,7 +510,7 @@ export function SettingsPage() {
                     Say "send" at the end of your dictation to press Enter and send the message.
                   </p>
                   <div className="flex items-center gap-3">
-                    <Toggle on={!!settings?.command_send} onClick={handleCommandSendToggle} />
+                    <Toggle checked={!!settings?.command_send} onChange={handleCommandSendToggle} aria-label="Command send" />
                     <span className="text-xs text-text-secondary">
                       {settings?.command_send ? "Enabled" : "Disabled"}
                     </span>
@@ -559,16 +527,14 @@ export function SettingsPage() {
             icon={Layers}
             title="Auto context switching"
             description="Switch context mode based on the focused app when recording starts. Bind apps to modes in the Context Modes editor."
-            control={<Toggle on={!!settings?.auto_switch_modes} onClick={handleAutoSwitchToggle} />}
+            control={<Toggle checked={!!settings?.auto_switch_modes} onChange={handleAutoSwitchToggle} aria-label="Auto context switching" />}
           />
           <Row
             icon={Rocket}
             title={
               <span className="inline-flex items-center gap-2">
                 Ship Mode
-                <span className="rounded-md border border-amber-400/30 bg-amber-500/[0.12] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-amber-200">
-                  Beta
-                </span>
+                <Badge tone="amber">Beta</Badge>
               </span>
             }
             description={
@@ -578,7 +544,7 @@ export function SettingsPage() {
                 <span className="block text-amber-300/80"> Sends immediately, with no chance to edit.</span>
               </>
             }
-            control={<Toggle on={!!settings?.ship_mode} onClick={handleShipModeToggle} />}
+            control={<Toggle checked={!!settings?.ship_mode} onChange={handleShipModeToggle} aria-label="Ship Mode" />}
           />
         </GroupCard>
 
@@ -587,9 +553,9 @@ export function SettingsPage() {
           <Row title="Theme">
             <Segmented
               options={[
-                { id: "dark", label: "Dark", icon: Moon },
-                { id: "light", label: "Light", icon: Sun },
-              ] as const}
+                { value: "dark", label: "Dark", icon: <Moon size={14} strokeWidth={1.75} /> },
+                { value: "light", label: "Light", icon: <Sun size={14} strokeWidth={1.75} /> },
+              ]}
               value={currentTheme === "light" ? "light" : "dark"}
               onChange={handleThemeChange}
             />
@@ -610,14 +576,14 @@ export function SettingsPage() {
                   <path d="M 101.61,1.66 C 66.27,0.61 42.09,15.71 23.04,39.79 C 11.81,54.74 6.31,70.73 6.31,91.81 C 6.31,132.79 41.91,166.39 80.12,166.39 C 114.61,166.39 147.41,141.01 147.41,103.03 L 147.16,103.16 C 145.97,126.15 126.06,146.93 98.36,147.34 C 71.71,147.74 52.39,125.51 52.39,100.59 C 52.39,70.05 76.18,33.75 119.02,33.75 C 157.19,33.75 193.37,65.79 193.37,110.08 C 193.37,126.01 187.32,142.79 178.19,157.01 C 190.72,140.14 196.52,123.08 196.52,100.01 C 196.52,47.58 155.51,3.16 101.61,1.66 Z" fill="url(#oi-grad-2)" />
                   <defs>
                     <linearGradient id="oi-grad-1" x1="10.0251" y1="18.7862" x2="183.632" y2="181.489" gradientUnits="userSpaceOnUse">
-                      <stop stopColor="#3269C7" />
-                      <stop offset="0.49" stopColor="#244BC6" />
-                      <stop offset="1" stopColor="#56B6E7" />
+                      <stop stopColor="#6e809b" />
+                      <stop offset="0.49" stopColor="#6e809b" />
+                      <stop offset="1" stopColor="#5e948c" />
                     </linearGradient>
                     <linearGradient id="oi-grad-2" x1="10.0251" y1="18.7862" x2="183.632" y2="181.489" gradientUnits="userSpaceOnUse">
-                      <stop stopColor="#3269C7" />
-                      <stop offset="0.49" stopColor="#4493D5" />
-                      <stop offset="1" stopColor="#56B6E7" />
+                      <stop stopColor="#6e809b" />
+                      <stop offset="0.49" stopColor="#5e948c" />
+                      <stop offset="1" stopColor="#5e948c" />
                     </linearGradient>
                   </defs>
                 </svg>
@@ -628,52 +594,35 @@ export function SettingsPage() {
         </GroupCard>
       </div>
 
-      {/* ── Voice Commands Reference Popup ── */}
-      {showVoiceCommands && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-md animate-fade-in"
-          onClick={() => setShowVoiceCommands(false)}
-        >
-          <div
-            className="w-full max-w-sm rounded-2xl border border-border bg-surface-1 p-6 shadow-lg animate-scale-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-5 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Mic size={16} strokeWidth={2} className="text-amber-300" />
-                <h3 className="text-[14px] font-semibold text-text-primary">Voice Commands</h3>
+      {/* ── Voice Commands Reference ── */}
+      <Modal
+        open={showVoiceCommands}
+        onClose={() => setShowVoiceCommands(false)}
+        title="Voice Commands"
+        className="max-w-sm"
+      >
+        <div className="space-y-2">
+          {[
+            { phrase: "new line", desc: "Insert a line break" },
+            { phrase: "new paragraph", desc: "Insert a paragraph break" },
+            { phrase: "delete last word", desc: "Remove the previous word" },
+            { phrase: "send", desc: "Press Enter to send (must be last word)" },
+          ].map((cmd) => (
+            <div
+              key={cmd.phrase}
+              className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-2/55 px-3 py-2.5"
+            >
+              <div>
+                <span className="font-mono text-xs font-medium text-amber-300">"{cmd.phrase}"</span>
+                <p className="mt-0.5 text-xs text-text-muted">{cmd.desc}</p>
               </div>
-              <button
-                onClick={() => setShowVoiceCommands(false)}
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-              >
-                <X size={14} />
-              </button>
             </div>
-            <div className="space-y-2">
-              {[
-                { phrase: "new line", desc: "Insert a line break" },
-                { phrase: "new paragraph", desc: "Insert a paragraph break" },
-                { phrase: "delete last word", desc: "Remove the previous word" },
-                { phrase: "send", desc: "Press Enter to send (must be last word)" },
-              ].map((cmd) => (
-                <div
-                  key={cmd.phrase}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-2/55 px-3 py-2.5"
-                >
-                  <div>
-                    <span className="font-mono text-xs font-medium text-amber-300">"{cmd.phrase}"</span>
-                    <p className="mt-0.5 text-xs text-text-muted">{cmd.desc}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <p className="mt-5 text-center text-[10.5px] text-text-muted">
-              Speak these phrases naturally during dictation
-            </p>
-          </div>
+          ))}
         </div>
-      )}
+        <p className="mt-5 text-center text-[10.5px] text-text-muted">
+          Speak these phrases naturally during dictation
+        </p>
+      </Modal>
     </div>
   );
 }

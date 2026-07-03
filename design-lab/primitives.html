@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OmniVox · Primitives</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0a0a0b; --s1: #141417; --s2: #1c1c21; --s3: #26262c; --s4: #303036;
+        --t1: #f4f4f5; --t2: #a1a1aa; --t3: #71717a;
+        --line: rgba(255,255,255,.08); --line2: rgba(255,255,255,.14);
+        --amber: #f59e0b; --amber4: #f9ad28; --amber3: #fcc34d;
+        --violet: #8b5cf6; --violet3: #c4b5fd;
+        --blue: #3b82f6; --blue3: #93c5fd;
+        --red: #ef4444; --red4: #f15a5a; --green: #4ade80; --error: #ef4444;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--t1);
+        font-family: "Geist", system-ui, sans-serif; letter-spacing: -.01em;
+        -webkit-font-smoothing: antialiased; padding: 44px 48px 80px;
+      }
+      .mono { font-family: "Geist Mono", monospace; letter-spacing: 0; }
+      h1 { font-size: 26px; font-weight: 600; letter-spacing: -.025em; margin: 0 0 4px; }
+      .lead { color: var(--t2); font-size: 14px; margin: 0 0 40px; }
+      section { margin-bottom: 38px; }
+      .eyebrow {
+        font: 600 10.5px "Geist Mono", monospace; letter-spacing: .22em; text-transform: uppercase;
+        color: var(--t3); margin-bottom: 16px; padding-bottom: 9px; border-bottom: 1px solid var(--line);
+      }
+      .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+      .stack { display: flex; flex-direction: column; gap: 10px; max-width: 420px; }
+
+      /* Button */
+      .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        height: 36px; padding: 0 16px; border-radius: 10px; border: 1px solid transparent;
+        font: 500 14px "Geist"; cursor: pointer; white-space: nowrap; }
+      .btn svg { width: 15px; height: 15px; }
+      .btn-sm { height: 32px; padding: 0 12px; border-radius: 9px; font-size: 13px; gap: 6px; }
+      .btn-primary { background: var(--amber); color: #1a1206; font-weight: 600; }
+      .btn-secondary { background: var(--s2); color: var(--t1); border-color: var(--line2); }
+      .btn-ghost { background: transparent; color: var(--t2); }
+      .btn-danger { background: var(--error); color: #fff; }
+      .btn[disabled] { opacity: .5; pointer-events: none; }
+
+      /* Input */
+      .input { height: 36px; border-radius: 9px; border: 1px solid var(--line2); background: var(--s2);
+        padding: 0 12px; color: var(--t1); font: 400 14px "Geist"; width: 240px; }
+      .input::placeholder { color: var(--t3); }
+      .input.focus { border-color: var(--amber); box-shadow: 0 0 0 3px rgba(245,158,11,.15); outline: none; }
+
+      /* Toggle */
+      .tg { position: relative; width: 38px; height: 22px; border-radius: 999px; border: 1px solid var(--line2);
+        background: var(--s3); cursor: pointer; }
+      .tg .knob { position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%;
+        background: #fff; transition: transform .2s cubic-bezier(.4,0,.2,1); }
+      .tg.on { background: var(--amber); border-color: transparent; }
+      .tg.on.violet { background: var(--violet); }
+      .tg.on .knob { transform: translateX(16px); }
+
+      /* Segmented */
+      .seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 9px; border: 1px solid var(--line); background: var(--s2); }
+      .seg button { border: 0; background: transparent; color: var(--t3); font: 500 12px "Geist";
+        padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+      .seg button.on { background: var(--s3); color: var(--t1); box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+
+      /* Badge */
+      .badge { display: inline-flex; align-items: center; border-radius: 6px; padding: 3px 7px;
+        font: 600 10px "Geist Mono"; letter-spacing: .04em; text-transform: uppercase; }
+      .b-amber { color: var(--amber3); background: rgba(245,158,11,.14); }
+      .b-violet { color: var(--violet3); background: rgba(139,92,246,.14); }
+      .b-blue { color: var(--blue3); background: rgba(59,130,246,.14); }
+      .b-red { color: var(--red4); background: rgba(239,68,68,.14); }
+      .b-green { color: var(--green); background: rgba(74,222,128,.14); }
+      .b-neutral { color: var(--t2); background: var(--s3); }
+
+      /* Kbd */
+      kbd { display: inline-flex; align-items: center; border: 1px solid var(--line2); border-bottom-width: 2px;
+        border-radius: 6px; background: var(--s2); padding: 2px 6px; font: 500 11px "Geist Mono"; color: var(--t2); }
+
+      /* Card */
+      .card { border: 1px solid var(--line); background: var(--s1); border-radius: 16px; width: 340px; }
+      .card-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; }
+      .card-title { font-size: 14px; font-weight: 600; }
+      .card-body { padding: 0 20px 20px; color: var(--t2); font-size: 13px; line-height: 1.6; }
+      .field { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+      .field:last-child { border-bottom: 0; }
+      .field .l { font-size: 13px; color: var(--t1); }
+      .field .h { font-size: 11.5px; color: var(--t3); margin-top: 2px; }
+
+      /* Empty state */
+      .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center;
+        padding: 44px 24px; border: 1px dashed var(--line2); border-radius: 16px; width: 340px; }
+      .empty .ico { width: 44px; height: 44px; border-radius: 50%; background: var(--s2); color: var(--t3);
+        display: grid; place-items: center; }
+      .empty .ico svg { width: 20px; height: 20px; }
+      .empty .et { font-size: 14px; font-weight: 500; }
+      .empty .ed { font-size: 12px; color: var(--t3); max-width: 240px; }
+
+      /* Modal */
+      .modal-wrap { position: relative; width: 340px; height: 220px; border-radius: 16px; overflow: hidden;
+        border: 1px solid var(--line); background:
+        radial-gradient(120% 90% at 50% 0%, #161616, #0a0a0b); display: grid; place-items: center; }
+      .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
+      .modal { position: relative; width: 280px; border: 1px solid var(--line2); background: var(--s1);
+        border-radius: 16px; padding: 18px; box-shadow: 0 24px 56px -24px rgba(0,0,0,.8); }
+      .modal h3 { margin: 0 0 5px; font-size: 15px; font-weight: 600; }
+      .modal p { margin: 0 0 16px; color: var(--t2); font-size: 12.5px; line-height: 1.55; }
+      .modal .actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .grid { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+      .copy-svg { stroke: currentColor; stroke-width: 2; fill: none; }
+    </style>
+  </head>
+  <body>
+    <h1>OmniVox — Primitives</h1>
+    <p class="lead">The shared <span class="mono">@/components/ui</span> kit. Graphite·Amber. Every page is rebuilt from these.</p>
+
+    <section>
+      <div class="eyebrow">Button</div>
+      <div class="row">
+        <button class="btn btn-primary"><svg viewBox="0 0 24 24" class="copy-svg"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Primary</button>
+        <button class="btn btn-secondary">Secondary</button>
+        <button class="btn btn-ghost">Ghost</button>
+        <button class="btn btn-danger">Delete</button>
+        <button class="btn btn-secondary" disabled>Disabled</button>
+        <button class="btn btn-primary btn-sm">Small</button>
+        <button class="btn btn-secondary btn-sm">Small</button>
+      </div>
+    </section>
+
+    <section>
+      <div class="eyebrow">Input · Toggle · Segmented</div>
+      <div class="row" style="gap:24px;">
+        <input class="input" placeholder="Placeholder text" />
+        <input class="input focus" value="hey omnivox" />
+        <div class="row" style="gap:10px;">
+          <div class="tg"><div class="knob"></div></div>
+          <div class="tg on"><div class="knob"></div></div>
+          <div class="tg on violet"><div class="knob"></div></div>
+        </div>
+        <div class="seg"><button class="on">Paste</button><button>Clipboard</button><button>Both</button></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="eyebrow">Badge · Kbd</div>
+      <div class="row">
+        <span class="badge b-amber">Dictation</span>
+        <span class="badge b-violet">Structured</span>
+        <span class="badge b-blue">Command</span>
+        <span class="badge b-red">Recording</span>
+        <span class="badge b-green">Active</span>
+        <span class="badge b-neutral">Draft</span>
+        <span style="width:18px"></span>
+        <kbd>L-Ctrl</kbd><kbd>L-Alt</kbd><kbd>⌘K</kbd>
+      </div>
+    </section>
+
+    <section>
+      <div class="eyebrow">Card · Field · EmptyState · Modal</div>
+      <div class="grid">
+        <div class="card">
+          <div class="card-head"><div class="card-title">Capture settings</div><span class="badge b-violet">LLM</span></div>
+          <div class="card-body" style="padding-top:0;">
+            <div class="field"><div><div class="l">Structured Mode</div><div class="h">LLM cleanup after each capture</div></div><div class="tg on violet"><div class="knob"></div></div></div>
+            <div class="field"><div class="l">Output target</div><div class="seg"><button class="on">Paste</button><button>Clip</button></div></div>
+            <div class="field"><div class="l">Trigger</div><input class="input" style="width:130px" value="hey omnivox"/></div>
+          </div>
+        </div>
+
+        <div class="empty">
+          <div class="ico"><svg viewBox="0 0 24 24" class="copy-svg"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg></div>
+          <div class="et">No transcriptions yet</div>
+          <div class="ed">Press your hotkey anywhere to capture your first dictation.</div>
+          <button class="btn btn-secondary btn-sm">Open settings</button>
+        </div>
+
+        <div class="modal-wrap">
+          <div class="scrim"></div>
+          <div class="modal">
+            <h3>Delete this transcription?</h3>
+            <p>This permanently removes the capture from local history. Can't be undone.</p>
+            <div class="actions"><button class="btn btn-ghost btn-sm">Cancel</button><button class="btn btn-danger btn-sm">Delete</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

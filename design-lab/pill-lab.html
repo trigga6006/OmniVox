@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OmniVox · Pill Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --pill-bg: #050506;
+        --amber: #f59e0b; --amber3: #fcc34d;
+        --blue: #60a5fa; --blue3: #93c5fd;
+        --red: #ef4444; --green: #4ade80; --violet: #a78bfa;
+        --t1: #f4f4f5; --t2: #a1a1aa; --t3: #71717a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh;
+        /* faux dark-desktop backdrop so the near-black pill reads in context */
+        background:
+          radial-gradient(120% 80% at 50% 0%, #2b2b30 0%, #1a1a1d 45%, #121214 100%);
+        font-family: "Geist", system-ui, sans-serif; color: var(--t1);
+        padding: 30px 40px 60px;
+      }
+      .lab { max-width: 880px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
+      .row { display: flex; align-items: center; gap: 22px; }
+      .label { font: 600 10px "Geist Mono"; letter-spacing: .18em; text-transform: uppercase; color: var(--t3); width: 120px; flex: none; }
+      .stage { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
+      .cap { font: 400 10px "Geist Mono"; color: var(--t3); margin-top: 6px; text-align: center; }
+      .col { display: flex; flex-direction: column; align-items: center; }
+      .mono { font-family: "Geist Mono", monospace; }
+
+      /* ─────────── PILL base ─────────── */
+      .pill {
+        position: relative; display: flex; align-items: center; overflow: hidden;
+        border-radius: 999px; background: var(--pill-bg); border: 1px solid transparent;
+        box-shadow: 0 8px 24px -10px rgba(0,0,0,.7);
+      }
+
+      /* IDLE slit — totally black */
+      .idle-a { width: 42px; height: 14px; border-color: rgba(255,255,255,.10); }
+      .base-slit { width: 196px; height: 14px; border-color: rgba(255,255,255,.10); }
+      .idle-b { width: 42px; height: 13px; border-color: rgba(255,255,255,.07); justify-content: center; }
+      .idle-b .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--amber); opacity: .5; }
+      .idle-c { width: 46px; height: 11px; border-color: rgba(255,255,255,.06); justify-content: center; }
+      .idle-c .bar { width: 12px; height: 2px; border-radius: 2px; background: rgba(245,158,11,.4); }
+      .idle-d { width: 40px; height: 14px; border-color: rgba(255,255,255,.08); justify-content: center; gap: 2px; }
+      .idle-d i { width: 2px; height: 4px; border-radius: 2px; background: rgba(245,158,11,.45); }
+      .idle-d i:nth-child(2){ height: 7px; } .idle-d i:nth-child(3){ height: 5px; }
+
+      /* ACTIVE recording pill */
+      .active {
+        height: 32px; padding: 0 11px; gap: 8px; border-color: rgba(239,68,68,.32);
+      }
+      .active .timer { font: 500 11px "Geist Mono"; color: rgba(248,113,113,.85); letter-spacing: .02em; flex: none; }
+      .wave { display: flex; align-items: center; gap: 2px; height: 16px; flex: none; }
+      .wave i { width: 2px; border-radius: 2px; display: block; }
+      .rec-dot { position: relative; width: 6px; height: 6px; flex: none; display:flex; align-items:center; justify-content:center; }
+      .rec-dot .d { width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
+      .rec-dot .halo { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: rgba(239,68,68,.15); }
+      .active--wide { width: 200px; } /* old, for compare */
+      .active--wide .mid { flex: 1; display: flex; justify-content: center; }
+      .active--tight { } /* width auto/snug */
+      .active--tight .mid { display: flex; }
+
+      /* COMMAND pill */
+      .cmd {
+        height: 34px; padding: 0 13px; gap: 9px; border-color: rgba(96,165,250,.42);
+        width: 240px;
+      }
+      .cmd canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .55; }
+      .cmd .z { position: relative; z-index: 2; display: flex; align-items: center; gap: 9px; width: 100%; }
+      .cmd .glyph { color: var(--blue); flex: none; display: flex; }
+      .cmd .klabel { font: 600 9px "Geist"; letter-spacing: .16em; text-transform: uppercase; color: var(--blue); opacity: .9; flex: none; }
+      .cmd .cdot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); margin-left: auto; flex: none; box-shadow: 0 0 6px var(--blue); }
+
+      /* ─────────── MODE SELECTOR (premium graphite) ─────────── */
+      .menu {
+        position: relative; width: 196px; border-radius: 13px; overflow: hidden; isolation: isolate;
+        background: linear-gradient(180deg, #17171b 0%, #100f12 100%);
+        border: 1px solid rgba(255,255,255,.08);
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.05),
+          0 1px 2px rgba(0,0,0,.5),
+          0 10px 24px -8px rgba(0,0,0,.7),
+          0 24px 48px -16px rgba(0,0,0,.85);
+      }
+      .menu .ring { position:absolute; top:0; left:0; right:0; height:1px; z-index:2;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,.10) 50%, transparent); }
+      .menu-head { display: flex; align-items: center; gap: 7px; padding: 10px 12px 7px; }
+      .menu-ind { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
+      .menu-kicker { font: 600 9px "Geist Mono"; letter-spacing: .2em; text-transform: uppercase; color: var(--t2); }
+      .menu-items { padding: 0 5px 4px; display: flex; flex-direction: column; gap: 1px; }
+      .mi { position: relative; display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 9px;
+        border-radius: 8px; border: 0; background: transparent; cursor: pointer; text-align: left; }
+      .mi:hover { background: rgba(255,255,255,.04); }
+      .mi.on { background: rgba(255,255,255,.05); }
+      .mi.on::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 2px; border-radius: 2px; background: var(--amber); }
+      .mi-ico { flex: none; width: 13px; height: 13px; }
+      .mi-name { flex: 1; font: 500 11px "Geist"; color: rgba(244,244,245,.78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .mi.on .mi-name { color: var(--t1); }
+      .mi-check { color: var(--amber); flex: none; }
+      .menu-div { height: 1px; margin: 3px 12px; background: linear-gradient(90deg, transparent, rgba(255,255,255,.09) 50%, transparent); }
+      .menu-foot { padding: 3px 5px 6px; }
+      .menu-open { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 9px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+      .menu-open:hover { background: rgba(255,255,255,.04); }
+      .menu-open-label { font: 500 10px "Geist"; color: var(--t3); }
+      svg.ic { stroke: currentColor; fill: none; stroke-width: 2; }
+
+      /* Ship / Voice-Command right-click popup */
+      .popup { width: 168px; border-radius: 10px; overflow: hidden; align-self: flex-start;
+        background: linear-gradient(180deg, rgba(23,23,27,.97), rgba(16,15,18,.97));
+        border: 1px solid rgba(255,255,255,.08);
+        box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.5); }
+      .popup-c { padding: 9px 11px 10px; }
+      .popup-h { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+      .popup-kicker { font: 700 9px "Geist"; letter-spacing:.2em; text-transform:uppercase; color:#e4e4e7; }
+      .popup-desc { margin:0 0 9px; font:400 9.5px "Geist"; line-height:1.4; color:rgba(255,255,255,.42); }
+      .popup-row { display:flex; align-items:center; gap:8px; }
+      .popup-switch { width:26px; height:14px; border-radius:999px; background:var(--amber); position:relative; }
+      .popup-knob { position:absolute; top:2px; left:2px; width:10px; height:10px; border-radius:50%; background:#fff; transform:translateX(12px); }
+      .popup-state { font:500 10px "Geist"; color:rgba(255,255,255,.62); }
+
+      /* Quick-toggle + custom tooltip */
+      .qt { position:relative; width:26px; height:26px; border-radius:999px; display:grid; place-items:center;
+        background: linear-gradient(180deg, rgba(245,158,11,.92), rgba(217,119,6,.85)); border:1px solid rgba(245,158,11,.4); }
+      .qt .ic { width:13px; height:13px; color:#fff; }
+      .qt.off { background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)); border-color: transparent; opacity:.6; }
+      .qt.off .ic { color: rgba(255,255,255,.9); }
+      .tip { position:absolute; left:calc(100% + 9px); top:50%; transform:translateY(-50%);
+        white-space:nowrap; font:500 10px "Geist"; color:rgba(228,228,231,.92);
+        background:linear-gradient(180deg, rgba(23,23,27,.98), rgba(16,15,18,.98));
+        border:1px solid rgba(255,255,255,.08); border-radius:7px; padding:5px 8px;
+        box-shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.5); }
+    </style>
+  </head>
+  <body>
+    <div class="lab">
+      <div class="row">
+        <div class="label">Idle slit</div>
+        <div class="stage">
+          <div class="col"><div class="pill idle-a"></div><div class="cap">42×14 · totally black</div></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label">Active</div>
+        <div class="stage">
+          <div class="col">
+            <div class="pill active active--wide">
+              <span class="timer">0:07</span>
+              <div class="mid"><div class="wave" id="waveOld"></div></div>
+              <span class="rec-dot"><span class="halo"></span><span class="d"></span></span>
+            </div>
+            <div class="cap">OLD · 200px, centered</div>
+          </div>
+          <div class="col">
+            <div class="pill active active--tight">
+              <span class="timer">0:07</span>
+              <div class="mid"><div class="wave" id="waveNew"></div></div>
+              <span class="rec-dot"><span class="halo"></span><span class="d"></span></span>
+            </div>
+            <div class="cap">NEW · snug</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label">Command</div>
+        <div class="stage">
+          <div class="col">
+            <div class="pill cmd">
+              <canvas id="cmdDither"></canvas>
+              <div class="z">
+                <span class="glyph"><svg width="13" height="13" viewBox="0 0 24 24" class="ic" fill="var(--blue)"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+                <span class="klabel">Command</span>
+                <div class="wave" id="waveCmd"></div>
+                <span class="cdot"></span>
+              </div>
+            </div>
+            <div class="cap">listening · ambient dither</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label">Tooltip</div>
+        <div class="stage" style="gap:40px; padding-left:6px;">
+          <div class="qt"><svg viewBox="0 0 24 24" class="ic"><path d="M12 2L4 6v6c0 5 8 8 8 8s8-3 8-8V6z"/></svg><span class="tip">Suppress background noise</span></div>
+          <div class="qt off"><svg viewBox="0 0 24 24" class="ic"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg><span class="tip">Show words live as you speak</span></div>
+          <div class="qt off"><svg viewBox="0 0 24 24" class="ic"><path d="M9 10a3 3 0 1 1 6 0c0 2-3 2-3 5"/><path d="M12 19h.01"/></svg><span class="tip">Hide the pill until you summon it</span></div>
+        </div>
+      </div>
+
+      <div class="row" style="align-items: flex-start;">
+        <div class="label">Right-click menu</div>
+        <div class="stage">
+         <div class="col" style="gap:4px; align-items:center;">
+          <div class="menu">
+            <div class="ring"></div>
+            <div class="menu-head"><span class="menu-ind"></span><span class="menu-kicker">Context Mode</span></div>
+            <div class="menu-items">
+              <button class="mi on">
+                <svg class="mi-ico ic" viewBox="0 0 24 24" style="color:var(--amber)"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/></svg>
+                <span class="mi-name">Default</span>
+                <svg width="11" height="11" viewBox="0 0 16 16" class="mi-check ic" stroke-width="2.6"><polyline points="3 8.5 6.5 12 13 4"/></svg>
+              </button>
+              <button class="mi">
+                <svg class="mi-ico ic" viewBox="0 0 24 24" style="color:var(--blue)"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                <span class="mi-name">Code</span>
+              </button>
+              <button class="mi">
+                <svg class="mi-ico ic" viewBox="0 0 24 24" style="color:var(--green)"><path d="M4 4h16v16H4z"/><path d="m22 6-10 7L2 6"/></svg>
+                <span class="mi-name">Email</span>
+              </button>
+              <button class="mi">
+                <svg class="mi-ico ic" viewBox="0 0 24 24" style="color:var(--violet)"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                <span class="mi-name">Legal Brief</span>
+              </button>
+            </div>
+            <div class="menu-div"></div>
+            <div class="menu-foot">
+              <button class="menu-open">
+                <span style="width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,var(--amber3),var(--amber));opacity:.55;display:inline-block"></span>
+                <span class="menu-open-label">Open OmniVox</span>
+              </button>
+            </div>
+          </div>
+          <div class="pill base-slit"></div>
+         </div>
+         <div class="popup"><div class="popup-c">
+           <div class="popup-h"><svg width="10" height="10" viewBox="0 0 24 24" class="ic" style="color:var(--amber)"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg><span class="popup-kicker">Command Send</span></div>
+           <p class="popup-desc">Say "send" to submit instead of auto-sending everything</p>
+           <div class="popup-row"><span class="popup-switch"><span class="popup-knob"></span></span><span class="popup-state">On</span></div>
+         </div></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // static waveform bars
+      function fillWave(el, color, heights) {
+        el.innerHTML = heights.map((h) => `<i style="height:${h}px;background:${color}"></i>`).join("");
+      }
+      const H = [4, 7, 10, 13, 15, 14, 11, 8, 12, 9, 6, 4];
+      fillWave(document.getElementById("waveOld"), "rgba(245,158,11,.8)", H);
+      fillWave(document.getElementById("waveNew"), "rgba(245,158,11,.8)", H);
+      fillWave(document.getElementById("waveCmd"), "rgba(96,165,250,.85)", [4,8,12,15,13,9,11,6,4]);
+
+      // ── Command ambient dither ─────────────────────────────────────────
+      // A charged static field across the pill, command-blue, low opacity.
+      const cv = document.getElementById("cmdDither");
+      const ctx = cv.getContext("2d");
+      const BLUE = ["#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe"];
+      const DOT = 2;
+      function resize() {
+        const r = cv.getBoundingClientRect();
+        cv.width = r.width; cv.height = r.height;
+      }
+      let t = 0;
+      function frame() {
+        resize();
+        const W = cv.width, Hh = cv.height;
+        ctx.clearRect(0, 0, W, Hh);
+        t += 0.03;
+        // a soft moving "charge" band + flickering dither
+        for (let x = 0; x < W; x += DOT) {
+          // horizontal intensity wave that drifts
+          const band = 0.5 + 0.5 * Math.sin(x * 0.05 - t * 2);
+          for (let y = 0; y < Hh; y += DOT) {
+            const vfall = 1 - Math.abs(y - Hh / 2) / (Hh / 2); // brighter mid-height
+            const inten = band * vfall;
+            if (Math.random() > inten * 0.5) continue;
+            const bright = Math.random() < 0.12;
+            ctx.fillStyle = BLUE[bright ? (2 + ((Math.random() * 2) | 0)) : ((Math.random() * 2) | 0)];
+            ctx.globalAlpha = Math.min(1, (0.18 + inten * 0.55) * (bright ? 1 : 0.7));
+            ctx.fillRect(x, y, DOT, DOT);
+          }
+        }
+        ctx.globalAlpha = 1;
+        requestAnimationFrame(frame);
+      }
+      frame();
+    </script>
+  </body>
+</html>

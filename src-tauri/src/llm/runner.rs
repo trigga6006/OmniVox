@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::oneshot;
 
+use crate::actions::CommandIntent;
 use crate::error::{AppError, AppResult};
 use crate::llm::engine::LlmEngine;
 use crate::llm::schema::SlotExtraction;
@@ -32,11 +33,19 @@ pub struct LlmRunner {
     _worker: WorkerHandle,
 }
 
-struct LlmRequest {
-    text: String,
-    screen_tokens: Vec<String>,
-    source_app: Option<String>,
-    reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
+enum LlmRequest {
+    /// Structured Mode slot extraction (uses the warmed KV-cache session).
+    Extract {
+        text: String,
+        screen_tokens: Vec<String>,
+        source_app: Option<String>,
+        reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
+    },
+    /// Command Mode free-form classification (one-off throwaway context).
+    Classify {
+        utterance: String,
+        reply_tx: oneshot::Sender<AppResult<Vec<CommandIntent>>>,
+    },
 }
 
 /// RAII: dropping the handle drops the sender, which lets the worker exit
@@ -123,26 +132,41 @@ impl LlmRunner {
                     };
 
                     let _busy_reset = BusyReset(Arc::clone(&worker_busy));
-                    // Rebuild the session if it was idle-dropped (or failed
-                    // at init).  The request then pays one full warm-up —
-                    // same cost as the old always-stateless path.
-                    if session.is_none() {
-                        session = engine.new_session().ok();
+                    match req {
+                        LlmRequest::Extract {
+                            text,
+                            screen_tokens,
+                            source_app,
+                            reply_tx,
+                        } => {
+                            // Rebuild the session if it was idle-dropped (or
+                            // failed at init).  The request then pays one full
+                            // warm-up — same cost as the old stateless path.
+                            if session.is_none() {
+                                session = engine.new_session().ok();
+                            }
+                            let result = match session.as_mut() {
+                                Some(s) => s.extract_slots_with_context(
+                                    &text,
+                                    &screen_tokens,
+                                    source_app.as_deref(),
+                                ),
+                                None => engine.extract_slots_with_context(
+                                    &text,
+                                    &screen_tokens,
+                                    source_app.as_deref(),
+                                ),
+                            };
+                            // Receiver may have been dropped by a timeout — ignore.
+                            let _ = reply_tx.send(result);
+                        }
+                        LlmRequest::Classify { utterance, reply_tx } => {
+                            // Runs on a throwaway context inside `classify_command`
+                            // so the warmed extraction session is left intact.
+                            let result = engine.classify_command(&utterance);
+                            let _ = reply_tx.send(result);
+                        }
                     }
-                    let result = match session.as_mut() {
-                        Some(s) => s.extract_slots_with_context(
-                            &req.text,
-                            &req.screen_tokens,
-                            req.source_app.as_deref(),
-                        ),
-                        None => engine.extract_slots_with_context(
-                            &req.text,
-                            &req.screen_tokens,
-                            req.source_app.as_deref(),
-                        ),
-                    };
-                    // Receiver may have been dropped by a timeout — ignore.
-                    let _ = req.reply_tx.send(result);
                     worker_last_used.store(now_ns(), Ordering::Relaxed);
                 }
             })
@@ -174,6 +198,46 @@ impl LlmRunner {
             .await
     }
 
+    /// Shared dispatch protocol for every request kind: acquire the single
+    /// busy slot, enqueue, and await the reply with a timeout.  On a send
+    /// failure the busy slot is released here; on success the worker's
+    /// `BusyReset` releases it (so a timed-out request still can't pile work
+    /// up — the slot stays held until the native decode finishes).  `op` only
+    /// flavors the error text ("extraction" / "classify").
+    async fn submit<T>(
+        &self,
+        req: LlmRequest,
+        reply_rx: oneshot::Receiver<AppResult<T>>,
+        timeout: Duration,
+        op: &str,
+    ) -> AppResult<T> {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(AppError::Llm(format!("LLM busy — another {op} in flight")));
+        }
+
+        match self.tx.try_send(req) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.busy.store(false, Ordering::Release);
+                return Err(AppError::Llm(format!("LLM busy — another {op} in flight")));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.busy.store(false, Ordering::Release);
+                return Err(AppError::Llm("LLM worker has stopped".into()));
+            }
+        }
+
+        match tokio::time::timeout(timeout, reply_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(AppError::Llm("LLM worker dropped reply".into())),
+            Err(_) => Err(AppError::Llm(format!("LLM {op} timed out after {timeout:?}"))),
+        }
+    }
+
     /// Submit a request with optional screen-context tokens and await the
     /// response with a timeout.  Behaviour identical to `extract_with_timeout`
     /// when `screen_tokens` is empty (Phase 2 caller gates on a setting).
@@ -185,45 +249,27 @@ impl LlmRunner {
         timeout: Duration,
     ) -> AppResult<SlotExtraction> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(AppError::Llm(
-                "LLM busy — another extraction in flight".into(),
-            ));
-        }
-
-        let req = LlmRequest {
+        let req = LlmRequest::Extract {
             text,
             screen_tokens,
             source_app,
             reply_tx,
         };
+        self.submit(req, reply_rx, timeout, "extraction").await
+    }
 
-        match self.tx.try_send(req) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                self.busy.store(false, Ordering::Release);
-                return Err(AppError::Llm(
-                    "LLM busy — another extraction in flight".into(),
-                ));
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                self.busy.store(false, Ordering::Release);
-                return Err(AppError::Llm("LLM worker has stopped".into()));
-            }
-        }
-
-        match tokio::time::timeout(timeout, reply_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(AppError::Llm("LLM worker dropped reply".into())),
-            Err(_) => Err(AppError::Llm(format!(
-                "LLM extraction timed out after {:?}",
-                timeout
-            ))),
-        }
+    /// Classify a free-form Command-Mode utterance into an ordered sequence of
+    /// `CommandIntent`s (multi-step chains supported).  Same busy-guard + timeout
+    /// discipline as extraction; returns an empty Vec when the model decides the
+    /// input isn't a recognizable command.
+    pub async fn classify_command_with_timeout(
+        &self,
+        utterance: String,
+        timeout: Duration,
+    ) -> AppResult<Vec<CommandIntent>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let req = LlmRequest::Classify { utterance, reply_tx };
+        self.submit(req, reply_rx, timeout, "classify").await
     }
 
     /// Unix timestamp in nanoseconds when the worker last finished a job.

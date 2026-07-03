@@ -1,0 +1,960 @@
+<!doctype html>
+<html lang="en" data-variant="soft" data-theme="cosmic">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OmniVox — Design Lab · cosmic · sharp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+/* ════════════════════════════════════════════════════════════════
+   OmniVox — DESIGN LAB
+   Direction: dark · cosmic multi-accent · sharp 90° · Vercel-premium
+   Everything here is a TOKEN so it ports 1:1 to Tailwind v4 @theme.
+   ════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Corner radius — softened for a comfier, customer-facing feel.
+     Controls are rounded-rect; toggles + status pills are fully round. ── */
+  --r-sm: 9px;     /* inputs, kbd, nav tiles, list actions */
+  --r: 13px;       /* buttons, cards, panels */
+  --r-lg: 18px;    /* large bezels / frames */
+  --r-full: 999px; /* toggles, slider thumb, badges, the capture pill */
+
+  /* ── Surfaces — cool near-black (whisper of blue, very low chroma).
+     A clean break from the old warm hue-70 brown. ── */
+  --surface-0: #000000;   /* page — jet black */
+  --surface-1: #0b0a08;   /* cards / panels — barely lifted, slight brown warmth */
+  --surface-2: #15110d;   /* inputs / raised */
+  --surface-3: #1f1913;   /* hover */
+  --surface-4: #2a2219;   /* lightest */
+
+  /* ── Text ── */
+  --text-primary:   #efe9df;   /* warm canvas white */
+  --text-secondary: #ada395;
+  --text-muted:     #756b6029;
+  --text-muted-c:   #756b60;
+  --text-faint:     #4a443b;
+
+  /* ── Hairlines (light-on-dark) ── */
+  --line:        rgba(240,232,222,.08);
+  --line-strong: rgba(240,232,222,.14);
+  --line-faint:  rgba(240,232,222,.04);
+
+  /* ── PAINTERLY PALETTE — oil-paint / mosaic accents on jet black.
+     Salmon leads; the rest are a muted "tesserae" set, used precisely
+     and sparingly. Each binds to a product role. ── */
+  --salmon: #e8957e;  --salmon-soft: rgba(232,149,126,.14);  /* primary · dictation */
+  --clay:   #c76a4c;  --clay-soft:   rgba(199,106,76,.15);   /* recording · error */
+  --ochre:  #d2a24e;  --ochre-soft:  rgba(210,162,78,.15);   /* processing · warning */
+  --sage:   #9ba97b;  --sage-soft:   rgba(155,169,123,.15);  /* success */
+  --teal:   #5e948c;  --teal-soft:   rgba(94,148,140,.15);   /* command */
+  --plum:   #a1768e;  --plum-soft:   rgba(161,118,142,.15);  /* structured */
+  --slate:  #6e809b;  --slate-soft:  rgba(110,128,155,.15);  /* extra tessera */
+  --cream:  #e9dcc6;                                          /* warm light / glint */
+
+  /* Legacy role aliases → painterly, so all component CSS recolors here.
+     (Clean up at port: rename usages to the painterly tokens above.) */
+  --cyan: var(--salmon);   --cyan-soft: var(--salmon-soft);
+  --rose: var(--clay);     --rose-soft: var(--clay-soft);
+  --amber: var(--ochre);   --amber-soft: var(--ochre-soft);
+  --mint: var(--sage);     --mint-soft: var(--sage-soft);
+  --violet: var(--plum);   --violet-soft: var(--plum-soft);
+  --fuchsia: var(--teal);  --fuchsia-soft: var(--teal-soft);
+  --ice: var(--cream);
+  --cyan-glow: transparent; --rose-glow: transparent; --amber-glow: transparent;
+  --mint-glow: transparent; --violet-glow: transparent; --fuchsia-glow: transparent;
+
+  /* MAIN ACCENT = salmon, used SOLID — no gradients, no glow (matte). */
+  --accent: var(--salmon);
+  --accent-soft: var(--salmon-soft);
+  --accent-glow: transparent;
+  --accent-grad: var(--salmon);        /* solid; kept as a var so fills stay one-line */
+  --accent-grad-soft: var(--salmon-soft);
+
+  /* ── Type ── */
+  --sans: 'Geist', system-ui, -apple-system, sans-serif;
+  --mono: 'Geist Mono', 'IBM Plex Mono', ui-monospace, monospace;
+
+  --t-eyebrow: 10px;
+  --t-xs: 11px;  --t-sm: 12.5px;  --t-base: 14px;  --t-md: 16px;
+  --t-lg: 20px;  --t-xl: 27px;    --t-2xl: 36px;   --t-3xl: 48px;
+
+  /* ── Motion ── */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 200ms;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { background: var(--surface-0); }
+
+body {
+  font-family: var(--sans);
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-size: var(--t-base);
+  line-height: 1.55;
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+/* ── Ambient cosmic field + film grain (fixed, non-interactive) ── */
+/* Matte: flat background — no ambient color glow. Grain only. */
+.bg-field { display: none; }
+/* ── Dither decor — sparing "artist's touch": page corners + dividers ── */
+.page-corner { position: fixed; bottom: 0; width: 270px; height: 200px; z-index: 1; pointer-events: none; opacity: .6; }
+.page-corner--l { left: 0; }
+.page-corner--r { right: 0; }
+.ddiv { height: 16px; margin: 10px 0; }
+.dither-divider { width: 100%; height: 100%; display: block; }
+.bg-grain {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: .025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ── Layout shell ── */
+.wrap { position: relative; z-index: 2; max-width: 1120px; margin: 0 auto; padding: 0 28px 140px; }
+
+/* Terminal-style top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px;
+  margin: 0 -28px 0; padding: 14px 28px;
+  background: color-mix(in srgb, var(--surface-0) 72%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .dot { width: 7px; height: 7px; border-radius: var(--r-full); background: var(--accent); box-shadow: none; }
+.topbar b { font-weight: 600; letter-spacing: -0.02em; font-size: var(--t-sm); }
+.topbar .meta { font-family: var(--mono); font-size: var(--t-xs); color: var(--text-muted-c); letter-spacing: .04em; }
+.topbar .spacer { flex: 1; }
+.topbar .tag { font-family: var(--mono); font-size: var(--t-xs); color: var(--text-secondary);
+  border: 1px solid var(--line-strong); padding: 4px 9px; letter-spacing: .08em; text-transform: uppercase; }
+
+/* Section scaffolding */
+section { padding-top: 76px; }
+.eyebrow {
+  font-family: var(--mono); font-size: var(--t-eyebrow); font-weight: 500;
+  text-transform: uppercase; letter-spacing: .26em; color: var(--text-muted-c);
+  display: inline-flex; align-items: center; gap: 9px;
+}
+.eyebrow::before { content: ""; width: 18px; height: 1px; background: var(--accent); }
+.h2 { font-size: var(--t-2xl); font-weight: 600; letter-spacing: -0.025em; margin: 16px 0 6px; }
+.lede { color: var(--text-secondary); font-size: var(--t-md); max-width: 60ch; }
+.note { color: var(--text-muted-c); font-size: var(--t-sm); max-width: 64ch; }
+.sub { font-family: var(--mono); font-size: var(--t-xs); color: var(--text-muted-c);
+  text-transform: uppercase; letter-spacing: .18em; margin-bottom: 14px; display: block; }
+
+.grid { display: grid; gap: 14px; }
+.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+
+/* ════════════════ DOUBLE-BEZEL (sharp) — machined-panel card ════════════════ */
+.bezel {
+  background: var(--line-faint);
+  border: 1px solid var(--line);
+  padding: 6px;
+  border-radius: var(--r-lg);
+}
+.bezel > .core {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 20px;
+}
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 18px;
+}
+.card-pad { padding: 18px; }
+
+/* swatches */
+.swatch { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.swatch .chip { height: 56px; }
+.swatch .lab { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; background: var(--surface-1); }
+.swatch .lab b { font-weight: 500; font-size: var(--t-sm); }
+.swatch .lab span { font-family: var(--mono); font-size: var(--t-xs); color: var(--text-muted-c); }
+
+/* ════════════════ BUTTONS (sharp) ════════════════ */
+.btn {
+  position: relative; display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--sans); font-size: var(--t-sm); font-weight: 500; letter-spacing: -0.01em;
+  color: var(--text-primary); background: var(--surface-2);
+  border: 1px solid var(--line-strong); border-radius: var(--r);
+  padding: 9px 14px; cursor: pointer;
+  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease),
+              border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.btn:hover { background: var(--surface-3); border-color: var(--line-strong); transform: translateY(-1px); }
+.btn:active { transform: translateY(0) scale(.99); }
+.btn--primary {
+  background: var(--accent-grad); background-size: 140% 140%; background-position: 0% 50%;
+  color: #0a0b14; border-color: transparent; font-weight: 600;
+  transition: transform var(--dur) var(--ease), background-position 600ms var(--ease);
+}
+.btn--primary:hover { transform: translateY(-1px); background-position: 100% 50%; }
+.btn--ghost { background: transparent; border-color: var(--line); color: var(--text-secondary); }
+.btn--ghost:hover { background: var(--surface-2); color: var(--text-primary); }
+.btn--danger { background: var(--rose-soft); border-color: color-mix(in srgb, var(--rose) 40%, transparent); color: var(--rose); }
+.btn--danger:hover { background: color-mix(in srgb, var(--rose) 20%, transparent); }
+.btn--sm { padding: 6px 10px; font-size: var(--t-xs); }
+.btn--icon { padding: 9px; width: 36px; height: 36px; justify-content: center; }
+/* Button-in-button trailing enclosure (sharp square) */
+.btn .encl {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin: -4px -7px -4px 2px;
+  background: rgba(0,0,0,.18); border-radius: var(--r);
+  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.btn--primary .encl { background: rgba(0,0,0,.16); }
+.btn:hover .encl { transform: translateX(2px); }
+.ic { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+.ic--sm { width: 13px; height: 13px; }
+
+/* ════════════════ INPUTS (sharp) ════════════════ */
+.field { display: flex; flex-direction: column; gap: 7px; }
+.field label { font-size: var(--t-xs); color: var(--text-secondary); font-weight: 500; }
+.input, .textarea, .select {
+  font-family: var(--sans); font-size: var(--t-sm); color: var(--text-primary);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 10px 12px; width: 100%;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.input::placeholder, .textarea::placeholder { color: var(--text-faint); }
+.input:focus, .textarea:focus, .select:focus {
+  outline: none; border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3), 0 0 0 3px var(--accent-soft);
+}
+.input-search { position: relative; }
+.input-search .ic { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); stroke: var(--text-muted-c); }
+.input-search .input { padding-left: 34px; }
+.textarea { resize: none; min-height: 84px; line-height: 1.5; }
+
+/* ════════════════ TOGGLE / CHECKBOX / RADIO (sharp) ════════════════ */
+.toggle { position: relative; width: 42px; height: 22px; background: var(--surface-3);
+  border: 1px solid var(--line-strong); border-radius: var(--r-full); cursor: pointer; transition: all var(--dur) var(--ease); flex: none; }
+.toggle .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: var(--text-secondary);
+  border-radius: var(--r-full); transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); }
+.toggle.on { background: var(--accent-grad-soft); border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+.toggle.on .knob { transform: translateX(20px); background: var(--accent-grad); box-shadow: none; }
+.check { width: 18px; height: 18px; border: 1px solid var(--line-strong); background: var(--surface-2);
+  border-radius: var(--r-sm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all var(--dur) var(--ease); flex: none; }
+.check.on { background: var(--accent-grad); border-color: transparent; }
+.check.on .ic { stroke: #0a0b14; stroke-width: 2.4; width: 12px; height: 12px; }
+.check .ic { opacity: 0; }
+.check.on .ic { opacity: 1; }
+
+/* ════════════════ SEGMENTED / TABS (sharp) ════════════════ */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-1); }
+.seg button { font-family: var(--sans); font-size: var(--t-xs); font-weight: 500; color: var(--text-muted-c);
+  background: transparent; border: none; border-right: 1px solid var(--line); padding: 8px 14px; cursor: pointer; position: relative; transition: color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.seg button:last-child { border-right: none; }
+.seg button.on { color: var(--text-primary); background: var(--surface-3); }
+.seg button.on::before { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: var(--accent-grad); box-shadow: none; }
+
+.tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--line); }
+.tabs button { font-family: var(--sans); font-size: var(--t-sm); font-weight: 500; color: var(--text-muted-c);
+  background: none; border: none; padding: 10px 0; cursor: pointer; position: relative; transition: color var(--dur) var(--ease); }
+.tabs button.on { color: var(--text-primary); }
+.tabs button.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent-grad); box-shadow: none; }
+
+/* ════════════════ SLIDER ════════════════ */
+.slider { position: relative; height: 22px; display: flex; align-items: center; }
+.slider .track { height: 3px; width: 100%; background: var(--surface-3); border-radius: var(--r-full); }
+.slider .fill { position: absolute; height: 3px; background: var(--accent-grad); box-shadow: none; }
+.slider .thumb { position: absolute; width: 13px; height: 13px; background: var(--accent); border: 1px solid #0a0b14; border-radius: var(--r-full);
+  transform: translateX(-50%); }
+
+/* ════════════════ BADGES / KBD / STATUS ════════════════ */
+.badge { font-family: var(--mono); font-size: var(--t-xs); letter-spacing: .04em; padding: 3px 8px;
+  border: 1px solid var(--line-strong); color: var(--text-secondary); border-radius: var(--r-full); display: inline-flex; align-items: center; gap: 6px; }
+.badge .pip { width: 6px; height: 6px; border-radius: var(--r-full); }
+.badge--cyan { color: var(--cyan); border-color: color-mix(in srgb,var(--cyan) 35%,transparent); background: var(--cyan-soft); }
+.badge--violet { color: var(--violet); border-color: color-mix(in srgb,var(--violet) 35%,transparent); background: var(--violet-soft); }
+.badge--fuchsia { color: var(--fuchsia); border-color: color-mix(in srgb,var(--fuchsia) 35%,transparent); background: var(--fuchsia-soft); }
+.badge--rose { color: var(--rose); border-color: color-mix(in srgb,var(--rose) 35%,transparent); background: var(--rose-soft); }
+.badge--mint { color: var(--mint); border-color: color-mix(in srgb,var(--mint) 35%,transparent); background: var(--mint-soft); }
+.badge--amber { color: var(--amber); border-color: color-mix(in srgb,var(--amber) 35%,transparent); background: var(--amber-soft); }
+.kbd { font-family: var(--mono); font-size: var(--t-xs); color: var(--text-secondary);
+  background: var(--surface-2); border: 1px solid var(--line-strong); border-bottom-width: 2px; padding: 2px 7px; border-radius: var(--r-sm); }
+.eyebrow-tag { font-family: var(--mono); font-size: var(--t-eyebrow); text-transform: uppercase; letter-spacing: .22em;
+  color: var(--accent); border: 1px solid color-mix(in srgb,var(--accent) 30%,transparent); background: var(--accent-soft);
+  padding: 4px 11px; border-radius: var(--r-full); display: inline-block; }
+
+/* ════════════════ PROGRESS ════════════════ */
+.meter { height: 4px; background: var(--surface-3); border-radius: var(--r-full); overflow: hidden; }
+.meter .bar { height: 100%; background: var(--accent-grad); box-shadow: none; }
+
+/* ════════════════ STAT / LIST / TABLE ════════════════ */
+.stat .k { font-family: var(--mono); font-size: var(--t-eyebrow); text-transform: uppercase; letter-spacing: .2em; color: var(--text-muted-c); }
+.stat .v { font-size: var(--t-2xl); font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin-top: 6px; }
+.stat .d { font-size: var(--t-xs); font-family: var(--mono); margin-top: 4px; }
+.up { color: var(--mint); } .down { color: var(--rose); }
+
+.list { display: flex; flex-direction: column; }
+.list .item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line);
+  transition: background var(--dur) var(--ease); cursor: default; }
+.list .item:last-child { border-bottom: none; }
+.list .item:hover { background: var(--surface-2); }
+.list .item .ico { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); flex: none; }
+.list .item .ico .ic { stroke: var(--text-secondary); }
+.list .item .txt { flex: 1; min-width: 0; }
+.list .item .txt b { font-weight: 500; font-size: var(--t-sm); display: block; }
+.list .item .txt span { font-size: var(--t-xs); color: var(--text-muted-c); }
+.list .item .meta { font-family: var(--mono); font-size: var(--t-xs); color: var(--text-faint); }
+.list .item .acts { display: flex; gap: 6px; opacity: 0; transition: opacity var(--dur) var(--ease); }
+.list .item:hover .acts { opacity: 1; }
+.iconbtn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--r-sm); cursor: pointer; transition: all var(--dur) var(--ease); }
+.iconbtn:hover { border-color: var(--line-strong); color: var(--text-primary); }
+.iconbtn .ic { stroke: var(--text-muted-c); }
+.iconbtn:hover .ic { stroke: var(--text-primary); }
+.iconbtn--danger:hover { border-color: color-mix(in srgb,var(--rose) 50%,transparent); background: var(--rose-soft); }
+.iconbtn--danger:hover .ic { stroke: var(--rose); }
+
+table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+th { text-align: left; font-family: var(--mono); font-size: var(--t-eyebrow); text-transform: uppercase; letter-spacing: .18em;
+  color: var(--text-muted-c); font-weight: 500; padding: 10px 14px; border-bottom: 1px solid var(--line-strong); }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); color: var(--text-secondary); }
+tr:last-child td { border-bottom: none; }
+tbody tr { transition: background var(--dur) var(--ease); }
+tbody tr:hover td { background: var(--surface-2); color: var(--text-primary); }
+
+/* ════════════════ TOAST / TOOLTIP / MODAL / EMPTY ════════════════ */
+.toast { display: flex; gap: 11px; align-items: flex-start; padding: 13px 14px; background: var(--surface-1);
+  border: 1px solid var(--line-strong); border-radius: var(--r); max-width: 380px; }
+.toast .ic { stroke: var(--accent); flex: none; margin-top: 1px; }
+.toast b { font-weight: 500; font-size: var(--t-sm); }
+.toast p { font-size: var(--t-xs); color: var(--text-muted-c); margin-top: 2px; }
+.toast--rose .ic { stroke: var(--rose); }
+.toast--mint .ic { stroke: var(--mint); }
+
+.tip { display: inline-flex; align-items: center; font-family: var(--sans); font-size: var(--t-xs); color: var(--text-primary);
+  background: var(--surface-3); border: 1px solid var(--line-strong); padding: 6px 9px; border-radius: var(--r);
+  box-shadow: 0 8px 20px -8px rgba(0,0,0,.6); }
+
+.modal-demo { position: relative; height: 240px; overflow: hidden; border-radius: var(--r); border: 1px solid var(--line); }
+.modal-demo .scrim { position: absolute; inset: 0; background: rgba(4,5,8,.66); backdrop-filter: blur(3px); }
+.modal-demo .dialog { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 320px;
+  background: var(--surface-1); border: 1px solid var(--line-strong); border-radius: var(--r);
+  box-shadow: 0 24px 60px -34px rgba(0,0,0,.7); padding: 20px; }
+
+.empty { text-align: center; padding: 44px 20px; }
+.empty .orb { width: 56px; height: 56px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--r-full); }
+.empty .orb .ic { stroke: var(--accent); width: 22px; height: 22px; }
+.empty b { font-size: var(--t-md); font-weight: 600; display: block; }
+.empty p { color: var(--text-muted-c); font-size: var(--t-sm); margin: 6px auto 16px; max-width: 38ch; }
+
+/* ════════════════ OMNIVOX SURFACES (applied) ════════════════ */
+.demo-frame { position: relative; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+  background: var(--surface-0); display: flex; }
+
+/* Nav rail */
+.rail { width: 64px; flex: none; border-right: 1px solid var(--line); background: var(--surface-0);
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 0; }
+.rail .logo { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-sm);
+  background: var(--accent-grad); color: #0a0b14; font-weight: 700; font-family: var(--mono); font-size: 14px; }
+.rail .sep { width: 26px; height: 1px; background: var(--line); margin: 8px 0; }
+.rail .nav { width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; border-radius: var(--r-sm); transition: all var(--dur) var(--ease); }
+.rail .nav .ic { stroke: var(--text-faint); }
+.rail .nav:hover .ic { stroke: var(--text-secondary); }
+.rail .nav:hover { background: var(--surface-2); }
+.rail .nav.on .ic { stroke: var(--accent); }
+.rail .nav.on { background: var(--accent-soft); }
+.rail .nav.on::before { content: ""; position: absolute; left: -1px; top: 9px; bottom: 9px; width: 2px; border-radius: var(--r-full); background: var(--accent-grad); box-shadow: none; }
+.rail .grow { flex: 1; }
+
+/* Dictation hero */
+.dictation { flex: 1; padding: 40px 28px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; text-align: center; }
+.dictation .state { font-size: var(--t-eyebrow); font-family: var(--mono); text-transform: uppercase; letter-spacing: .26em; color: var(--accent); }
+.dictation h3 { font-size: var(--t-2xl); font-weight: 600; letter-spacing: -0.03em; }
+.dictation .hint { color: var(--text-muted-c); font-size: var(--t-sm); }
+.recbtn { width: 88px; height: 88px; display: flex; align-items: center; justify-content: center;
+  background: var(--surface-2); border: 1px solid color-mix(in srgb,var(--accent) 45%,transparent);
+  border-radius: var(--r-full);
+  cursor: pointer; transition: transform var(--dur) var(--ease), border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.recbtn:hover { transform: scale(1.03); border-color: var(--accent); background: var(--surface-3); }
+.recbtn .ic { width: 30px; height: 30px; stroke: var(--accent); }
+
+/* Floating pill → SHARP "capture bar". State variants. */
+.pillrow { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.pill { display: inline-flex; align-items: center; gap: 10px; height: 34px; padding: 0 14px;
+  background: #050506; border: 1px solid var(--line-strong); border-radius: var(--r-full); font-size: var(--t-xs); }
+.pill .pwave { display: block; }
+.pill .lbl { font-family: var(--mono); text-transform: uppercase; letter-spacing: .18em; font-size: 9px; }
+.pill .time { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--rose); font-size: var(--t-xs); }
+.pill .livedot { width: 7px; height: 7px; background: var(--rose); border-radius: var(--r-full); }
+.pill--idle { height: 26px; padding: 0 9px; }
+.pill--rec { border-color: color-mix(in srgb,var(--rose) 40%,transparent); }
+.pill--rec .lbl { color: var(--rose); }
+.pill--proc { border-color: color-mix(in srgb,var(--amber) 35%,transparent); }
+.pill--proc .lbl { color: var(--amber); }
+.pill--struct { border-color: color-mix(in srgb,var(--violet) 40%,transparent); }
+.pill--struct .lbl { color: var(--violet); }
+.pill--cmd { border-color: color-mix(in srgb,var(--fuchsia) 45%,transparent); }
+.pill--cmd .lbl { color: var(--fuchsia); }
+.mini-wave { display: inline-flex; align-items: center; gap: 2px; height: 16px; }
+.mini-wave i { width: 2px; background: currentColor; opacity: .8; animation: bounce 1s var(--ease) infinite; }
+@keyframes bounce { 0%,100%{height:4px} 50%{height:14px} }
+.spin { width: 13px; height: 13px; border: 1.6px solid var(--amber-soft); border-top-color: var(--amber); border-radius: var(--r); animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Heatmap */
+.heat { display: grid; grid-template-columns: repeat(26, 1fr); gap: 3px; }
+.heat i { aspect-ratio: 1; border-radius: var(--r); background: var(--surface-2); }
+
+/* ascii */
+.ascii-hero { position: relative; height: 280px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: #030304; }
+.ascii-hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.ascii-hero .veil { position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, #030304 0%, transparent 22%, transparent 70%, #030304 100%); }
+.ascii-hero .copy { position: absolute; left: 24px; bottom: 22px; pointer-events: none; }
+.ascii-hero .copy h3 { font-size: var(--t-xl); font-weight: 600; letter-spacing: -0.03em; }
+.ascii-hero .copy p { color: var(--text-secondary); font-size: var(--t-sm); max-width: 42ch; }
+.wave-box { position: relative; height: 140px; background: #040405; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.wave-box canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.wave-tag { position: absolute; top: 10px; left: 12px; font-family: var(--mono); font-size: var(--t-eyebrow);
+  text-transform: uppercase; letter-spacing: .2em; color: var(--text-muted-c); z-index: 2; }
+
+.foot { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--text-faint);
+  font-family: var(--mono); font-size: var(--t-xs); letter-spacing: .04em; }
+
+@media (max-width: 820px) {
+  .cols-2,.cols-3,.cols-4 { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="bg-field"></div>
+<div class="bg-grain"></div>
+<canvas class="page-corner page-corner--l" data-corner data-cx="0" data-cy="1"></canvas>
+<canvas class="page-corner page-corner--r" data-corner data-cx="1" data-cy="1"></canvas>
+
+<div class="wrap">
+  <div class="topbar">
+    <span class="dot"></span>
+    <b>OMNIVOX</b>
+    <span class="meta">design-lab</span>
+    <span class="spacer"></span>
+    <span class="tag">painterly</span>
+    <span class="tag">matte</span>
+    <span class="tag">jet black</span>
+  </div>
+
+  <!-- ░░ HERO ░░ -->
+  <section style="padding-top:56px">
+    <span class="eyebrow-tag">Foundation · v0</span>
+    <h1 style="font-size:var(--t-3xl);font-weight:600;letter-spacing:-0.035em;margin:18px 0 10px;max-width:18ch;line-height:1.04">
+      Oil-paint accents on a jet-black canvas.
+    </h1>
+    <p class="lede">
+      A pitch-black, matte surface with a muted painterly palette — salmon, clay, ochre, sage,
+      teal, plum — placed precisely and sparingly, like pigment on canvas. One token system,
+      Geist type, and ASCII as an occasional mosaic texture. The foundation we lock before
+      touching OmniVox.
+    </p>
+    <div class="row" style="margin-top:22px">
+      <button class="btn btn--primary">Start dictation <span class="encl"><svg class="ic ic--sm" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></button>
+      <button class="btn">View tokens</button>
+      <span class="kbd">Ctrl</span><span style="color:var(--text-faint)">+</span><span class="kbd">Alt</span>
+    </div>
+  </section>
+
+  <!-- ░░ ASCII / DITHER ░░ -->
+  <section>
+    <span class="eyebrow">Texture</span>
+    <h2 class="h2">ASCII as mosaic — used sparingly</h2>
+    <p class="note" style="margin-bottom:20px">
+      One occasional flourish: an ASCII field in the painterly palette, like a mosaic of glyphs. The real Memselon
+      <code style="font-family:var(--mono);color:var(--salmon)">AsciiMatrixImage</code> drops into the hero slot; the canvas below approximates it. The pill itself uses a plain volume waveform, not ASCII.
+    </p>
+
+    <div class="ascii-hero">
+      <canvas id="asciiHero"></canvas>
+      <div class="veil"></div>
+      <div class="copy">
+        <h3>Mosaic field</h3>
+        <p>ASCII glyphs in the painterly palette — hover to scatter pigment through the tesserae.</p>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:14px">
+      <div class="wave-box"><span class="wave-tag">Volume waveform · pill</span><canvas id="waveVolume"></canvas></div>
+      <div class="wave-box"><span class="wave-tag">ASCII · mosaic (decorative)</span><canvas id="waveAscii"></canvas></div>
+    </div>
+    <p class="note" style="margin-top:10px">
+      The pill uses a clean <b style="color:var(--text-secondary)">volume waveform</b> — solid salmon bars, the way a normal audio meter reads. ASCII stays an occasional decorative texture (the hero field), in the painterly mosaic colors.
+    </p>
+  </section>
+
+  <!-- ░░ COLOR ░░ -->
+  <section>
+    <span class="eyebrow">Foundation</span>
+    <h2 class="h2">Palette — oil-paint accents on jet black</h2>
+    <p class="note" style="margin-bottom:20px">A jet-black, matte canvas. Color enters only through a muted painterly "mosaic" — salmon leads, with clay, ochre, sage, teal, and plum as supporting tesserae. Each binds to a product role; used precisely and sparingly.</p>
+
+    <span class="sub">Surfaces</span>
+    <div class="grid cols-4" style="margin-bottom:22px">
+      <div class="swatch"><div class="chip" style="background:var(--surface-0)"></div><div class="lab"><b>surface-0</b><span>#000000</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--surface-1)"></div><div class="lab"><b>surface-1</b><span>#08080a</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--surface-2)"></div><div class="lab"><b>surface-2</b><span>#0f0f12</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--surface-3)"></div><div class="lab"><b>surface-3</b><span>#17171b</span></div></div>
+    </div>
+
+    <span class="sub">Painterly accents → roles</span>
+    <div class="grid cols-4">
+      <div class="swatch"><div class="chip" style="background:var(--salmon)"></div><div class="lab"><b>salmon</b><span>primary · dictation</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--clay)"></div><div class="lab"><b>clay</b><span>recording</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--ochre)"></div><div class="lab"><b>ochre</b><span>processing</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--sage)"></div><div class="lab"><b>sage</b><span>success</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--teal)"></div><div class="lab"><b>teal</b><span>command</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--plum)"></div><div class="lab"><b>plum</b><span>structured</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--cream)"></div><div class="lab"><b>cream</b><span>glint</span></div></div>
+      <div class="swatch"><div class="chip" style="background:linear-gradient(120deg,var(--salmon),var(--clay),var(--ochre),var(--sage),var(--teal),var(--plum))"></div><div class="lab"><b>mosaic</b><span>data-viz</span></div></div>
+    </div>
+  </section>
+
+  <!-- ░░ TYPE ░░ -->
+  <section>
+    <span class="eyebrow">Foundation</span>
+    <h2 class="h2">Type — Geist + Geist Mono</h2>
+    <div class="card" style="margin-top:18px">
+      <div style="font-size:var(--t-3xl);font-weight:600;letter-spacing:-0.035em">Display 48 · tight</div>
+      <div style="font-size:var(--t-2xl);font-weight:600;letter-spacing:-0.03em;margin-top:6px">Heading 36 semibold</div>
+      <div style="font-size:var(--t-lg);font-weight:500;margin-top:6px">Subhead 20 medium</div>
+      <div style="font-size:var(--t-base);color:var(--text-secondary);margin-top:8px">Body 14 — the readable baseline. Outfit is gone; Geist carries everything with a cooler, more technical voice that suits a precision tool.</div>
+      <div style="font-family:var(--mono);font-size:var(--t-sm);color:var(--cyan);margin-top:10px">mono 13 · 00:42 · 1,284 words · tabular-nums</div>
+      <div class="eyebrow" style="margin-top:12px">Eyebrow · mono · 0.26em</div>
+    </div>
+  </section>
+
+  <div class="ddiv"><canvas class="dither-divider"></canvas></div>
+
+  <!-- ░░ PRIMITIVES ░░ -->
+  <section>
+    <span class="eyebrow">Primitives</span>
+    <h2 class="h2">Controls</h2>
+
+    <div class="grid cols-2" style="margin-top:18px">
+      <div class="card">
+        <span class="sub">Buttons</span>
+        <div class="row" style="margin-bottom:12px">
+          <button class="btn btn--primary">Primary <span class="encl"><svg class="ic ic--sm" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></button>
+          <button class="btn">Secondary</button>
+          <button class="btn btn--ghost">Ghost</button>
+        </div>
+        <div class="row">
+          <button class="btn btn--danger">Delete</button>
+          <button class="btn btn--sm">Small</button>
+          <button class="btn btn--icon"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        </div>
+      </div>
+
+      <div class="card">
+        <span class="sub">Inputs</span>
+        <div class="stack">
+          <div class="input-search">
+            <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+            <input class="input" placeholder="Search transcriptions…" />
+          </div>
+          <input class="input" placeholder="Vocabulary term" />
+          <textarea class="textarea" placeholder="Snippet expansion…"></textarea>
+        </div>
+      </div>
+
+      <div class="card">
+        <span class="sub">Toggles · checks · slider</span>
+        <div class="stack">
+          <div class="row" style="justify-content:space-between"><span style="font-size:var(--t-sm)">Live preview</span><div class="toggle on" data-toggle><span class="knob"></span></div></div>
+          <div class="row" style="justify-content:space-between"><span style="font-size:var(--t-sm)">Noise reduction</span><div class="toggle" data-toggle><span class="knob"></span></div></div>
+          <div class="row"><div class="check on" data-check><svg class="ic" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg></div><span style="font-size:var(--t-sm)">Auto-switch modes</span></div>
+          <div class="slider" data-slider><div class="track"></div><div class="fill" style="width:62%"></div><div class="thumb" style="left:62%"></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <span class="sub">Segmented · tabs · badges</span>
+        <div class="stack">
+          <div class="seg"><button class="on">Vocabulary</button><button>Words</button><button>Snippets</button></div>
+          <div class="tabs"><button class="on">Speech</button><button>LLM</button></div>
+          <div class="row">
+            <span class="badge badge--cyan"><span class="pip" style="background:var(--cyan)"></span>Dictation</span>
+            <span class="badge badge--violet"><span class="pip" style="background:var(--violet)"></span>Structured</span>
+            <span class="badge badge--fuchsia"><span class="pip" style="background:var(--fuchsia)"></span>Command</span>
+            <span class="badge badge--mint">Active</span>
+          </div>
+          <div class="meter"><div class="bar" style="width:48%"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ░░ COMPOSITES ░░ -->
+  <section>
+    <span class="eyebrow">Composites</span>
+    <h2 class="h2">Surfaces</h2>
+
+    <div class="grid cols-3" style="margin-top:18px">
+      <div class="card stat"><div class="k">Total words</div><div class="v">128,402</div><div class="d up">▲ 4,210 this week</div></div>
+      <div class="card stat"><div class="k">Avg WPM</div><div class="v">163</div><div class="d up">▲ 6 vs last</div></div>
+      <div class="card stat"><div class="k">Accuracy</div><div class="v">98.4<span style="font-size:var(--t-lg);color:var(--text-muted-c)">%</span></div><div class="d down">▼ 0.2</div></div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:14px">
+      <div class="bezel"><div class="core" style="padding:0">
+        <div class="list">
+          <div class="item"><div class="ico"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2v10M9 5l3-3 3 3"/><rect x="5" y="12" width="14" height="9"/></svg></div><div class="txt"><b>Meeting recap — Q3 roadmap</b><span>2 min ago · 214 words</span></div><div class="meta">14:22</div><div class="acts"><button class="iconbtn"><svg class="ic ic--sm" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11"/><path d="M5 15V5h10"/></svg></button><button class="iconbtn iconbtn--danger"><svg class="ic ic--sm" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button></div></div>
+          <div class="item"><div class="ico"><svg class="ic" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M4 9h16"/></svg></div><div class="txt"><b>Reply to Sarah re: launch</b><span>1 hr ago · 88 words</span></div><div class="meta">13:06</div><div class="acts"><button class="iconbtn"><svg class="ic ic--sm" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11"/><path d="M5 15V5h10"/></svg></button><button class="iconbtn iconbtn--danger"><svg class="ic ic--sm" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button></div></div>
+          <div class="item"><div class="ico"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div class="txt"><b>Journal — morning pages</b><span>Yesterday · 612 words</span></div><div class="meta">08:41</div><div class="acts"><button class="iconbtn"><svg class="ic ic--sm" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11"/><path d="M5 15V5h10"/></svg></button><button class="iconbtn iconbtn--danger"><svg class="ic ic--sm" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button></div></div>
+        </div>
+      </div></div>
+
+      <div class="stack">
+        <div class="toast"><svg class="ic" viewBox="0 0 24 24"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg><div><b>Live preview enabled</b><p>Words now appear as you speak.</p></div></div>
+        <div class="toast toast--rose"><svg class="ic" viewBox="0 0 24 24"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg><div><b>Microphone access denied</b><p>Grant permission in System Settings to record.</p></div></div>
+        <div class="row" style="gap:14px">
+          <span class="tip">Auto context switch: on</span>
+          <span class="badge badge--amber">GPU · Vulkan</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:14px">
+      <div class="bezel"><div class="core" style="padding:0;overflow:hidden">
+        <table>
+          <thead><tr><th>Model</th><th>Size</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td style="color:var(--text-primary)">whisper-large-v3</td><td>1.5 GB</td><td><span class="badge badge--mint">Active</span></td></tr>
+            <tr><td style="color:var(--text-primary)">whisper-medium</td><td>769 MB</td><td><span class="badge">Installed</span></td></tr>
+            <tr><td style="color:var(--text-primary)">parakeet-tdt</td><td>2.4 GB</td><td><button class="btn btn--sm">Download</button></td></tr>
+          </tbody>
+        </table>
+      </div></div>
+
+      <div class="modal-demo">
+        <div class="card-pad" style="padding:18px;color:var(--text-muted-c);font-size:var(--t-sm)">Background content…</div>
+        <div class="scrim"></div>
+        <div class="dialog">
+          <span class="eyebrow">Confirm</span>
+          <div style="font-size:var(--t-md);font-weight:600;margin:10px 0 6px">Delete transcription?</div>
+          <p style="color:var(--text-muted-c);font-size:var(--t-sm)">This permanently removes it from history.</p>
+          <div class="row" style="margin-top:16px;justify-content:flex-end">
+            <button class="btn btn--ghost btn--sm">Cancel</button>
+            <button class="btn btn--danger btn--sm">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="empty">
+        <div class="orb"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3v18M7 8v8M17 8v8M3 11v2M21 11v2"/></svg></div>
+        <b>No transcriptions yet</b>
+        <p>Press your hotkey anywhere to start dictating. Everything stays on this machine.</p>
+        <button class="btn btn--primary">Start dictation <span class="encl"><svg class="ic ic--sm" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></button>
+      </div>
+    </div>
+  </section>
+
+  <div class="ddiv"><canvas class="dither-divider"></canvas></div>
+
+  <!-- ░░ OMNIVOX APPLIED ░░ -->
+  <section>
+    <span class="eyebrow">Applied</span>
+    <h2 class="h2">OmniVox surfaces</h2>
+    <p class="note" style="margin-bottom:18px">The language on the actual product chrome — nav rail, dictation view, and the capture bar (the old "pill", now a sharp HUD chit) across every state.</p>
+
+    <div class="demo-frame" style="height:340px">
+      <div class="rail">
+        <div class="logo">O</div>
+        <div class="sep"></div>
+        <div class="nav on"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+        <div class="nav"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+        <div class="nav"><svg class="ic" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 5v14"/></svg></div>
+        <div class="nav"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></div>
+        <div class="grow"></div>
+        <div class="nav"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div>
+      </div>
+      <div class="dictation">
+        <div class="state">● Ready</div>
+        <h3>Ready to listen</h3>
+        <div class="recbtn"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+        <div class="hint">Press <span class="kbd">Ctrl</span> + <span class="kbd">Alt</span> to begin</div>
+      </div>
+    </div>
+
+    <span class="sub" style="margin-top:24px">Capture bar — every state</span>
+    <div class="pillrow">
+      <div class="pill pill--idle"><canvas class="pwave" data-pill="vol-idle" style="width:56px;height:16px"></canvas></div>
+      <div class="pill pill--rec"><span class="time">00:14</span><canvas class="pwave" data-pill="vol" style="width:112px;height:20px"></canvas><span class="livedot"></span></div>
+      <div class="pill pill--proc"><span class="spin"></span><span class="lbl">Transcribing</span></div>
+      <div class="pill pill--struct"><svg class="ic ic--sm" viewBox="0 0 24 24" style="stroke:var(--violet)"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/></svg><span class="lbl">Structuring</span></div>
+      <div class="pill pill--cmd"><svg class="ic ic--sm" viewBox="0 0 24 24" style="stroke:var(--fuchsia);fill:var(--fuchsia)"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg><span class="lbl">Command</span></div>
+    </div>
+    <p class="note" style="margin-top:11px">A clean <b style="color:var(--text-secondary)">volume waveform</b> in salmon — idle ambient, then live recording, then processing · structuring · command.</p>
+
+    <span class="sub" style="margin-top:24px">Analytics — cosmic heatmap</span>
+    <div class="card"><div class="heat" id="heat"></div></div>
+  </section>
+
+  <div class="foot">
+    OMNIVOX · DESIGN-LAB · painterly · jet-black + matte · tokens map 1:1 → tailwind @theme · ascii approximates the Memselon AsciiMatrixImage component
+  </div>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   Live canvases — approximate the Memselon ASCII look + the two
+   waveform treatments. Vanilla, dependency-free, rAF-throttled.
+   ════════════════════════════════════════════════════════════════ */
+(function () {
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var SALMON = '#e8957e';
+  var COSMIC = ['#e8957e', '#d2a24e', '#9ba97b', '#5e948c', '#a1768e']; // painterly mosaic ramp
+  var TRAIL = ['#e8957e', '#d2a24e', '#9ba97b', '#5e948c', '#a1768e', '#e9dcc6'];
+  var RAMP = ' .·:-=+*oxX#%@';
+  var DPR = Math.min(window.devicePixelRatio || 1, 2);
+  var now = function(){ return (typeof performance !== 'undefined' ? performance.now() : 0); };
+
+  function hexToRgb(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+  function lerp(a,b,t){ return a+(b-a)*t; }
+  function rampColor(t){ // t 0..1 across COSMIC stops
+    t=Math.max(0,Math.min(0.9999,t)); var seg=t*(COSMIC.length-1); var i=Math.floor(seg); var f=seg-i;
+    var a=hexToRgb(COSMIC[i]), b=hexToRgb(COSMIC[i+1]);
+    return 'rgb('+Math.round(lerp(a[0],b[0],f))+','+Math.round(lerp(a[1],b[1],f))+','+Math.round(lerp(a[2],b[2],f))+')';
+  }
+  function amp(x, t){ // shared synthetic audio amplitude 0..1
+    return 0.5 + 0.5*( 0.55*Math.sin(x*3.1 + t*2.1) + 0.28*Math.sin(x*7.7 - t*1.3) + 0.17*Math.sin(x*15.3 + t*3.4) );
+  }
+
+  /* Generic canvas driver. Sizes via ResizeObserver + a zero-width guard,
+     paints ONE synchronous frame the moment real dimensions arrive (so the
+     canvas is never blank even if rAF is paused / the tab is backgrounded),
+     then runs a single throttled rAF loop unless reduced-motion is set. */
+  function drive(canvas, onSize, draw){
+    var ctx = canvas.getContext('2d'); var W=0, H=0, last=0, looping=false;
+    function size(){
+      var r = canvas.getBoundingClientRect();
+      if(r.width<2 || r.height<2) return false;
+      W=r.width; H=r.height; canvas.width=Math.round(W*DPR); canvas.height=Math.round(H*DPR);
+      ctx.setTransform(DPR,0,0,DPR,0,0); onSize(ctx, W, H); return true;
+    }
+    function paint(){ if(W<2) return; ctx.clearRect(0,0,W,H); draw(ctx, W, H, now()*0.001); }
+    function loop(ts){ if(ts-last>=55){ last=ts; paint(); } requestAnimationFrame(loop); }
+    function ensure(){ paint(); if(!reduce && !looping){ looping=true; requestAnimationFrame(loop); } }
+    if(window.ResizeObserver){ new ResizeObserver(function(){ if(size()) ensure(); }).observe(canvas); }
+    window.addEventListener('resize', function(){ if(size()) paint(); });
+    if(size()) ensure();
+  }
+
+  /* ── Dithered volume meter ──────────────────────────────────────────
+     A precise mirrored BAR waveform (like a real audio level meter) whose
+     fill is an ordered Bayer dither: solid core, dithered body, crisp tip
+     cap. The shape reads cleanly; the dither is texture, not noise. ── */
+  function ditherWave(canvas, opts){
+    opts = opts || {};
+    var barW = opts.barW || 4, gap = opts.gap || 2, dot = opts.dot || 2, speed = opts.speed || 1;
+    var pitch = barW + gap, BAYER = [ [0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5] ];
+    var H = 0, bars = 1;
+    drive(canvas,
+      function(ctx, w, h){ H = h; bars = Math.max(1, Math.floor((w + gap) / pitch)); },
+      function(ctx, w, h, t){
+        var mid = H / 2, maxH = (H / 2) - 1; t *= speed;
+        for(var i = 0; i < bars; i++){
+          var u = bars > 1 ? i / (bars - 1) : 0;
+          var a = amp(u * 6.28, t); a = a * a * (3 - 2 * a);   // smoothstep → clean envelope
+          var bh = a * maxH; if(bh < dot) bh = dot;            // baseline seed so the meter line never vanishes
+          var x0 = i * pitch, col = rampColor(u);
+          for(var px = 0; px < barW; px += dot){
+            for(var dy = 0; dy <= bh; dy += dot){
+              var inten = 1 - dy / bh;                          // 1 at centre line → 0 at tip
+              var gxi = ((x0 + px) / dot) | 0, gyi = (dy / dot) | 0;
+              var thr = (BAYER[gyi & 3][gxi & 3] + 0.5) / 16;
+              // dither the body, keep the core solid, always cap the tip → crisp envelope
+              if(!(inten > thr || inten > 0.6 || dy + dot > bh)) continue;
+              ctx.fillStyle = col; ctx.globalAlpha = Math.min(1, 0.55 + inten * 0.45);
+              ctx.fillRect(x0 + px, mid + dy, dot, dot);
+              ctx.fillRect(x0 + px, mid - dy - dot, dot, dot);
+            }
+          }
+        }
+        ctx.globalAlpha = 1;
+      });
+  }
+
+  /* ── Regular volume waveform — clean mirrored solid bars (no dither). ── */
+  function volumeWave(canvas, opts){
+    opts = opts || {};
+    var barW = opts.barW || 3, gap = opts.gap || 2, speed = opts.speed || 1, scale = opts.scale || 1, color = opts.color || SALMON;
+    var pitch = barW + gap, H = 0, bars = 1;
+    drive(canvas,
+      function(ctx, w, h){ H = h; bars = Math.max(1, Math.floor((w + gap) / pitch)); },
+      function(ctx, w, h, t){
+        var mid = H / 2, maxH = (H / 2) - 1; t *= speed; ctx.fillStyle = color;
+        for(var i = 0; i < bars; i++){
+          var u = bars > 1 ? i / (bars - 1) : 0;
+          var a = amp(u * 6.28, t) * scale; a = a * a * (3 - 2 * a);
+          var bh = Math.max(1, a * maxH);
+          ctx.globalAlpha = 0.5 + 0.45 * a;
+          ctx.fillRect(i * pitch, mid - bh, barW, bh * 2);
+        }
+        ctx.globalAlpha = 1;
+      });
+  }
+
+  /* ── Static canvas helper (no rAF loop) — for decorative dither art. ── */
+  function staticCanvas(canvas, render){
+    var ctx = canvas.getContext('2d'), W = 0, H = 0;
+    function size(){ var r = canvas.getBoundingClientRect(); if(r.width < 2 || r.height < 2) return false;
+      W = r.width; H = r.height; canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR); ctx.setTransform(DPR,0,0,DPR,0,0); return true; }
+    function paint(){ if(W < 2) return; ctx.clearRect(0,0,W,H); render(ctx, W, H); }
+    if(window.ResizeObserver) new ResizeObserver(function(){ if(size()) paint(); }).observe(canvas);
+    window.addEventListener('resize', function(){ if(size()) paint(); });
+    if(size()) paint();
+  }
+  var BAYER4 = [ [0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5] ];
+
+  /* Dithered divider — a faint salmon rule that thins to nothing at the ends. */
+  function ditherDivider(canvas){
+    var dot = 2;
+    staticCanvas(canvas, function(ctx, W, H){
+      var midY = H / 2;
+      for(var x = 0; x < W; x += dot){
+        var fx = Math.sin(Math.PI * (x / W));            // 0 at ends → 1 centre
+        for(var y = 0; y < H; y += dot){
+          var dy = Math.abs(y - midY) / (H / 2);          // 0 centre → 1 edge
+          var inten = fx * (1 - dy);
+          var gx = (x / dot) | 0, gy = (y / dot) | 0;
+          if(inten < (BAYER4[gy & 3][gx & 3] + 0.5) / 16) continue;
+          ctx.fillStyle = SALMON; ctx.globalAlpha = 0.38 * inten; ctx.fillRect(x, y, dot, dot);
+        }
+      }
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  /* Dithered corner — a painterly pigment that blooms from a corner and
+     dissolves into the black; tesserae cycle through the mosaic palette. */
+  function ditherCorner(canvas, opts){
+    opts = opts || {}; var dot = 2, cx = opts.cx === undefined ? 1 : opts.cx, cy = opts.cy === undefined ? 1 : opts.cy;
+    var COLORS = ['#e8957e', '#c76a4c', '#d2a24e', '#a1768e'];   // salmon · clay · ochre · plum
+    staticCanvas(canvas, function(ctx, W, H){
+      var px = cx * W, py = cy * H, maxD = Math.sqrt(W * W + H * H);
+      for(var x = 0; x < W; x += dot){
+        for(var y = 0; y < H; y += dot){
+          var d = Math.sqrt((x - px) * (x - px) + (y - py) * (y - py)) / maxD;
+          var inten = Math.pow(Math.max(0, 1 - d * 1.35), 1.7);
+          var gx = (x / dot) | 0, gy = (y / dot) | 0;
+          if(inten < (BAYER4[gy & 3][gx & 3] + 0.5) / 16) continue;
+          ctx.fillStyle = COLORS[(gx + gy * 2) % COLORS.length];
+          ctx.globalAlpha = 0.55 * inten; ctx.fillRect(x, y, dot, dot);
+        }
+      }
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  /* ── ASCII hero field (procedural mosaic orb + glitch + hover trail) ── */
+  function setupHero(canvas){
+    var cell=9, lineH=14, cols=0, rows=0, base=null, col=null, mouse={x:-1e4,y:-1e4};
+    canvas.addEventListener('mousemove', function(e){ var r=canvas.getBoundingClientRect(); mouse.x=e.clientX-r.left; mouse.y=e.clientY-r.top; });
+    canvas.addEventListener('mouseleave', function(){ mouse.x=-1e4; mouse.y=-1e4; });
+    drive(canvas,
+      function(ctx,W,H){
+        ctx.font='600 '+(cell*1.45)+'px "Geist Mono", monospace'; ctx.textBaseline='top';
+        cols=Math.ceil(W/cell); rows=Math.ceil(H/lineH);
+        base=new Float32Array(cols*rows); col=new Array(cols*rows);
+        var cx=cols*0.5, cy=rows*0.52;
+        for(var y=0;y<rows;y++) for(var x=0;x<cols;x++){
+          var nx=(x-cx)/(cols*0.46), ny=(y-cy)/(rows*0.46), d=Math.sqrt(nx*nx+ny*ny);
+          var b=Math.max(0,1-d*0.92); b=Math.pow(b,1.5);
+          b += 0.10*Math.sin(nx*5.0+ny*2.2) + 0.06*Math.cos(ny*6.0-nx*1.5); b=Math.max(0,Math.min(1,b));
+          base[y*cols+x]=b;
+          var ang=(Math.atan2(ny,nx)+Math.PI)/(2*Math.PI);
+          col[y*cols+x]=rampColor(ang*0.7 + b*0.3);
+        }
+      },
+      function(ctx,W,H,t){
+        if(!base) return;
+        for(var y=0;y<rows;y++) for(var x=0;x<cols;x++){
+          var i=y*cols+x, b=base[i], px=x*cell, py=y*lineH, color=col[i];
+          if(!reduce){
+            b += 0.05*Math.sin(t*1.4 + x*0.3 + y*0.2);
+            var dx=px-mouse.x, dy=py-mouse.y, dist=Math.sqrt(dx*dx+dy*dy);
+            if(dist<120){ b += (1-dist/120)*0.8; color=TRAIL[(Math.random()*TRAIL.length)|0]; }
+            if(Math.random()<0.05){ b += Math.random()*0.5; if(Math.random()<0.4) color='#e8f6ff'; }
+          }
+          if(b<=0.06) continue;
+          var gi=Math.min(RAMP.length-1, Math.floor(b*RAMP.length)); var g=RAMP.charAt(gi); if(g===' ') continue;
+          ctx.globalAlpha=Math.min(1, 0.25+b*0.85); ctx.fillStyle=color; ctx.fillText(g, px, py);
+        }
+        ctx.globalAlpha=1;
+      });
+  }
+
+  /* ── Waveform · ASCII glyph columns ── */
+  function setupWaveAscii(canvas){
+    var cell=8, lineH=11, cols=0, rows=0;
+    drive(canvas,
+      function(ctx,W,H){ ctx.font='600 '+(cell*1.4)+'px "Geist Mono", monospace'; ctx.textBaseline='middle'; cols=Math.ceil(W/cell); rows=Math.ceil(H/lineH); },
+      function(ctx,W,H,t){
+        var midR=rows/2;
+        for(var x=0;x<cols;x++){ var a=amp(x/cols*6.28, t), half=a*midR*0.92;
+          for(var y=0;y<rows;y++){ var dy=Math.abs(y-midR); if(dy>half) continue;
+            var inten=1-(dy/Math.max(1,half)); var gi=Math.min(RAMP.length-1,Math.floor((inten*0.9+0.1)*RAMP.length)); var g=RAMP.charAt(gi); if(g===' ')continue;
+            ctx.globalAlpha=Math.min(1,0.2+inten*0.9); ctx.fillStyle=rampColor(x/cols); ctx.fillText(g, x*cell, y*lineH+lineH/2);
+          } }
+        ctx.globalAlpha=1;
+      });
+  }
+
+  /* ── Waveform · ordered (Bayer) dither — shared precise bar renderer ── */
+  function setupWaveDither(canvas){ ditherWave(canvas, { barW:5, gap:3, dot:2, speed:1 }); }
+
+  /* ── Capture-pill micro waveform — a clean volume meter (solid salmon). ── */
+  function setupPill(canvas, mode){
+    if(mode === 'vol-idle') return volumeWave(canvas, { barW:3, gap:2, speed:0.9, scale:0.4 });
+    return volumeWave(canvas, { barW:3, gap:2, speed:1.2, scale:1 });
+  }
+
+  /* heatmap fill */
+  function fillHeat(){
+    var el=document.getElementById('heat'); if(!el) return;
+    var ramp=['#131110','rgba(232,149,126,.22)','rgba(232,149,126,.5)','rgba(199,106,76,.82)','#d2a24e'];
+    for(var i=0;i<26*7;i++){ var c=document.createElement('i'); var v=Math.random(); var idx=v<0.45?0:v<0.6?1:v<0.78?2:v<0.92?3:4;
+      c.style.background=ramp[idx]; el.appendChild(c); }
+  }
+
+  /* interactive primitives */
+  document.querySelectorAll('[data-toggle]').forEach(function(t){ t.addEventListener('click',function(){ t.classList.toggle('on'); }); });
+  document.querySelectorAll('[data-check]').forEach(function(t){ t.addEventListener('click',function(){ t.classList.toggle('on'); }); });
+  document.querySelectorAll('[data-slider]').forEach(function(s){ s.addEventListener('click',function(e){ var r=s.getBoundingClientRect(); var p=Math.max(0,Math.min(100,(e.clientX-r.left)/r.width*100)); s.querySelector('.fill').style.width=p+'%'; s.querySelector('.thumb').style.left=p+'%'; }); });
+
+  function boot(){
+    var h=document.getElementById('asciiHero'); if(h) setupHero(h);
+    var wa=document.getElementById('waveAscii'); if(wa) setupWaveAscii(wa);
+    var wv=document.getElementById('waveVolume'); if(wv) volumeWave(wv, { barW:5, gap:3, speed:1 });
+    document.querySelectorAll('canvas.pwave').forEach(function(c){ setupPill(c, c.getAttribute('data-pill')); });
+    document.querySelectorAll('.dither-divider').forEach(ditherDivider);
+    document.querySelectorAll('canvas[data-corner]').forEach(function(c){ ditherCorner(c, { cx:+c.getAttribute('data-cx'), cy:+c.getAttribute('data-cy') }); });
+    fillHeat();
+  }
+  if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded', boot);
+})();
+</script>
+</body>
+</html>

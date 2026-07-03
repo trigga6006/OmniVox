@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Command dither — particle size (ordered dither)</title>
+<style>
+  :root { --font-mono: 'Geist Mono', 'IBM Plex Mono', Consolas, monospace; }
+  html, body { margin: 0; padding: 0; }
+  body { background:#08080a; min-height:100vh; display:flex; flex-direction:column;
+         align-items:center; gap:18px; padding:30px 22px 40px; font-family:var(--font-mono); color:#cdd3da; }
+  .title { font-size:11px; letter-spacing:.06em; text-transform:uppercase; opacity:.6; }
+  .row { display:flex; align-items:center; gap:16px; }
+  .lab { width:70px; text-align:right; font-size:11px; color:#93c5fd; }
+  .lab small { display:block; color:#6b7280; font-size:9px; margin-top:2px; }
+  /* true on-pill size: 260×34 */
+  .pill { position:relative; width:260px; height:34px; border-radius:999px; background:#050506;
+          border:1px solid rgba(96,165,250,0.40); overflow:hidden; display:flex; align-items:center;
+          padding:0 14px; box-shadow:0 6px 18px -8px rgba(0,0,0,.65); }
+  .pill canvas { position:absolute; inset:0; width:100%; height:100%; opacity:.5; pointer-events:none; }
+  .content { position:relative; z-index:1; display:flex; align-items:center; gap:9px; width:100%; }
+  .zap { color:#60a5fa; font-size:12px; }
+  .cmd { font-size:8.5px; font-weight:600; text-transform:uppercase; letter-spacing:.16em; color:#60a5fa; opacity:.85; }
+  .dot { width:5px; height:5px; border-radius:999px; background:#60a5fa; box-shadow:0 0 6px #60a5fa; margin-left:auto; }
+</style>
+</head>
+<body>
+  <div class="title">Command dither · ordered (Bayer) water · particle size</div>
+  <div class="row" data-dot="2"><div class="lab">DOT 2<small>current</small></div><div class="pill"><canvas></canvas><div class="content"><span class="zap">⚡</span><span class="cmd">Command</span><span class="dot"></span></div></div></div>
+  <div class="row" data-dot="3"><div class="lab">DOT 3<small>proposed</small></div><div class="pill"><canvas></canvas><div class="content"><span class="zap">⚡</span><span class="cmd">Command</span><span class="dot"></span></div></div></div>
+  <div class="row" data-dot="4"><div class="lab">DOT 4<small>chunkiest</small></div><div class="pill"><canvas></canvas><div class="content"><span class="zap">⚡</span><span class="cmd">Command</span><span class="dot"></span></div></div></div>
+
+<script>
+const BLUE = ["#3b82f6","#60a5fa","#93c5fd","#bfdbfe"];
+// 4×4 Bayer ordered-dither thresholds (0..1)
+const BAYER = [[0.5,8.5,2.5,10.5],[12.5,4.5,14.5,6.5],[3.5,11.5,1.5,9.5],[15.5,7.5,13.5,5.5]].map(r=>r.map(v=>v/16));
+const hash = (a,b)=>{const s=Math.sin(a*12.9898+b*78.233)*43758.5453;return s-Math.floor(s);};
+
+function water(ctx, W, H, t, DOT, bubbles) {
+  ctx.clearRect(0,0,W,H);
+  const cols=Math.ceil(W/DOT), rows=Math.ceil(H/DOT);
+  const cx=W/2, base=H*0.52;
+  const tilt=Math.sin(t*1.05)*H*0.16, heave=Math.sin(t*0.6+1.3)*H*0.05;
+  const surfAt=x=>base+tilt*((x-cx)/cx)+heave+Math.sin(x*0.05+t*2.1)*1.7+Math.sin(x*0.12-t*1.5)*1.0;
+  for(let ix=0; ix<cols; ix++){
+    const x=ix*DOT, surf=surfAt(x+DOT/2);
+    for(let iy=0; iy<rows; iy++){
+      const y=iy*DOT;
+      if(y+DOT<surf) continue;                                   // above waterline → empty
+      const depth=Math.max(0,Math.min(1,(y-surf)/(H-surf+0.001)));
+      const shimmer=0.10*Math.sin(t*1.6+ix*0.6-iy*0.4);          // slow organized life (not dust)
+      const inten=0.30+depth*0.72+shimmer;
+      if(inten<BAYER[iy&3][ix&3]) continue;                      // ordered-dither cull
+      const h=hash(ix,iy);
+      const foam=(y-surf)<DOT*1.6;
+      let tier;
+      if(foam && h<0.5) tier = h<0.18?3:2;                       // bright foam at surface
+      else if(h<0.08) tier=2;                                    // sparse highlights
+      else tier = depth>0.6?1:0;                                 // deep mid-blue / shallow base
+      ctx.fillStyle=BLUE[tier];
+      ctx.globalAlpha=Math.min(1,0.32+depth*0.5+(tier>=2?0.12:0));
+      ctx.fillRect(x,y,DOT,DOT);
+    }
+  }
+  if(Math.random()<0.12) bubbles.push({x:Math.random()*W,y:H,v:0.25+Math.random()*0.4,bright:Math.random()<0.4});
+  for(let i=bubbles.length-1;i>=0;i--){
+    const b=bubbles[i]; b.y-=b.v+0.15; b.x+=Math.sin(t*3+b.y*0.1)*0.3;
+    if(b.y<surfAt(b.x)-2){bubbles.splice(i,1);continue;}
+    ctx.fillStyle=BLUE[b.bright?3:2]; ctx.globalAlpha=0.55;
+    ctx.fillRect(Math.round(b.x/DOT)*DOT, Math.round(b.y/DOT)*DOT, DOT, DOT);   // grid-snapped
+  }
+  ctx.globalAlpha=1;
+}
+
+const dpr = Math.min(window.devicePixelRatio||1, 2);
+const cells = [...document.querySelectorAll('.row')].map(row=>{
+  const c=row.querySelector('canvas'), ctx=c.getContext('2d'), r=c.getBoundingClientRect();
+  c.width=Math.round(r.width*dpr); c.height=Math.round(r.height*dpr); ctx.setTransform(dpr,0,0,dpr,0,0);
+  return { ctx, W:r.width, H:r.height, DOT:+row.dataset.dot, bubbles:[] };
+});
+let t=0;
+function frame(){ t+=0.03; cells.forEach(c=>water(c.ctx,c.W,c.H,t,c.DOT,c.bubbles)); requestAnimationFrame(frame); }
+cells.forEach(c=>water(c.ctx,c.W,c.H,6,c.DOT,c.bubbles));
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

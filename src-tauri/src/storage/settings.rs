@@ -88,6 +88,11 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .map(|v| v == "true")
         .unwrap_or(defaults.command_send);
 
+    let command_mode = map
+        .get("command_mode")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.command_mode);
+
     let ship_mode = map
         .get("ship_mode")
         .map(|v| v == "true")
@@ -164,6 +169,7 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         auto_switch_modes,
         voice_commands,
         command_send,
+        command_mode,
         ship_mode,
         ghost_mode,
         writing_style,
@@ -213,7 +219,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     let llm_timeout_str = settings.llm_timeout_secs.to_string();
     let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 26] = [
+    let pairs: [(&str, &str); 27] = [
         ("theme", settings.theme.as_str()),
         ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
@@ -231,6 +237,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("auto_switch_modes", b(settings.auto_switch_modes)),
         ("voice_commands", b(settings.voice_commands)),
         ("command_send", b(settings.command_send)),
+        ("command_mode", b(settings.command_mode)),
         ("ship_mode", b(settings.ship_mode)),
         ("ghost_mode", b(settings.ghost_mode)),
         ("writing_style", settings.writing_style.as_str()),
