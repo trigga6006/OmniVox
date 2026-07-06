@@ -24,3 +24,7 @@ jobs:
       # Windows-only Rust workflow never sees.
       - name: Typecheck and build
         run: npm run build
+
+      # vitest — pure-logic frontend tests (analytics compute, overlay sizing)
+      - name: Unit tests
+        run: npm test
