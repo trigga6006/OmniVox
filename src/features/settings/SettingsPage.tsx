@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button, Card, Toggle, Segmented, Badge } from "@/components/ui";
 import { useAppStore } from "@/stores/appStore";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { useThemeStore } from "@/stores/themeStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
 import { HotkeySection } from "./HotkeySection";
 import { GpuAccelerationSection } from "./GpuAccelerationSection";
@@ -269,7 +269,7 @@ export function SettingsPage() {
   const handleThemeChange = useCallback(
     (theme: string) => {
       patchSettings({ theme }).catch(console.error);
-      useSettingsStore.getState().setSettings({ theme });
+      useThemeStore.getState().setTheme(theme);
     },
     [patchSettings]
   );
