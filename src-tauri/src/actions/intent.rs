@@ -108,6 +108,42 @@ pub enum CommandIntent {
     TypeText { text: String, submit: bool },
 }
 
+/// The canonical LLM action vocabulary — SINGLE SOURCE OF TRUTH for the
+/// name set that is otherwise triplicated across `from_llm` below, the
+/// GBNF grammar (`resources/grammars/command_intent_v1.gbnf`), and the
+/// prompt's ACTIONS section (`llm::prompt::COMMAND_SYSTEM_PROMPT`).
+/// Tests in this module assert all three stay in sync — adding a verb
+/// without updating every surface fails the build's test step.
+pub const ACTION_NAMES: &[&str] = &[
+    "open_app",
+    "focus_app",
+    "web_search",
+    "open_url",
+    "type_text",
+    "send_message",
+    "copy",
+    "paste",
+    "cut",
+    "undo",
+    "redo",
+    "select_all",
+    "save",
+    "new_tab",
+    "close_tab",
+    "screenshot",
+    "show_desktop",
+    "play_pause",
+    "next_track",
+    "prev_track",
+    "mute",
+    "volume_up",
+    "volume_down",
+    "minimize",
+    "maximize",
+    "close_window",
+    "none",
+];
+
 impl CommandIntent {
     /// Map the LLM fallback's `{action, target}` output (snake_case action enum
     /// from `command_intent_v1.gbnf`) into a `CommandIntent`. Returns `None` for
@@ -289,6 +325,64 @@ mod tests {
         // rejects the WHOLE utterance rather than silently running a partial.
         let json = r#"[{"action":"open_app","target":"Spotify"},{"action":"none","target":""}]"#;
         assert!(CommandIntent::from_llm_list(json).is_empty());
+    }
+
+    /// Extract the quoted action names from the grammar's `action ::=` rule.
+    fn grammar_action_names() -> Vec<String> {
+        let gbnf = include_str!("../../resources/grammars/command_intent_v1.gbnf");
+        let line = gbnf
+            .lines()
+            .find(|l| l.trim_start().starts_with("action ::="))
+            .expect("grammar has an action rule");
+        // Alternatives look like  "\"open_app\""  — pull the inner name.
+        line.split('|')
+            .filter_map(|alt| {
+                let alt = alt.trim().trim_start_matches("action ::=").trim();
+                alt.strip_prefix("\"\\\"")
+                    .and_then(|s| s.strip_suffix("\\\"\""))
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grammar_matches_canonical_action_table() {
+        let mut grammar: Vec<String> = grammar_action_names();
+        let mut canonical: Vec<String> = ACTION_NAMES.iter().map(|s| s.to_string()).collect();
+        grammar.sort();
+        canonical.sort();
+        assert_eq!(
+            grammar, canonical,
+            "command_intent_v1.gbnf action set drifted from intent::ACTION_NAMES"
+        );
+    }
+
+    #[test]
+    fn from_llm_accepts_exactly_the_canonical_table() {
+        for name in ACTION_NAMES {
+            if *name == "none" {
+                assert_eq!(CommandIntent::from_llm(name, "x"), None);
+                continue;
+            }
+            // A non-empty target satisfies the actions that require one and is
+            // ignored by the rest.
+            assert!(
+                CommandIntent::from_llm(name, "some target").is_some(),
+                "canonical action '{name}' is not handled by from_llm"
+            );
+        }
+        assert_eq!(CommandIntent::from_llm("not_an_action", "x"), None);
+    }
+
+    #[test]
+    fn prompt_documents_every_canonical_action() {
+        let prompt = crate::llm::prompt::COMMAND_SYSTEM_PROMPT;
+        for name in ACTION_NAMES {
+            assert!(
+                prompt.contains(name),
+                "COMMAND_SYSTEM_PROMPT does not mention action '{name}'"
+            );
+        }
     }
 
     #[test]
