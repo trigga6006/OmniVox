@@ -77,17 +77,21 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     // mount-time resize to the same idle size is then a no-op.
     let pill_width = OVERLAY_IDLE_WIN_W;
     let pill_height = OVERLAY_IDLE_WIN_H;
-    let taskbar_height = 48.0_f64;
     let margin = 12.0_f64;
 
+    // Bottom-center of the primary monitor's WORK AREA (screen minus
+    // taskbar/appbars) — no hardcoded taskbar height, so side-docked,
+    // scaled, and auto-hide taskbars all position correctly.
     let (x, y) = if let Some(monitor) = app.primary_monitor()? {
-        let size = monitor.size();
         let scale = monitor.scale_factor();
-        let screen_w = size.width as f64 / scale;
-        let screen_h = size.height as f64 / scale;
+        let wa = monitor.work_area();
+        let wa_x = wa.position.x as f64 / scale;
+        let wa_y = wa.position.y as f64 / scale;
+        let wa_w = wa.size.width as f64 / scale;
+        let wa_h = wa.size.height as f64 / scale;
         (
-            (screen_w - pill_width) / 2.0,
-            screen_h - taskbar_height - pill_height - margin,
+            wa_x + (wa_w - pill_width) / 2.0,
+            wa_y + wa_h - pill_height - margin,
         )
     } else {
         (400.0, 800.0) // fallback
@@ -618,7 +622,7 @@ pub fn run() {
             commands::list_app_bindings,
             commands::add_app_binding,
             commands::delete_app_binding,
-            // LLM / Structured Mode commands (7)
+            // LLM / Structured Mode commands (8)
             commands::list_llm_models,
             commands::download_llm_model,
             commands::delete_llm_model,
@@ -626,6 +630,7 @@ pub fn run() {
             commands::set_active_llm_model,
             commands::llm_test_extract,
             commands::paste_structured_output,
+            commands::get_llm_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

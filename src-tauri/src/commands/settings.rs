@@ -5,7 +5,8 @@ use crate::state::AppState;
 use crate::storage::types::AppSettings;
 use tauri::{Emitter, Manager, State};
 
-const TASKBAR_H: f64 = 48.0;
+// Gap between the pill and the bottom of the monitor's WORK AREA (the
+// screen minus taskbar/appbars, from the OS) — no taskbar-height guessing.
 const MARGIN: f64 = 12.0;
 
 /// Find which monitor currently contains the mouse cursor.
@@ -87,17 +88,17 @@ pub async fn resize_overlay(app: tauri::AppHandle, width: f64, height: f64) -> R
         .ok_or("no monitor")?;
 
     let scale = target.scale_factor();
-    let mon_pos = target.position();
-    let mon_size = target.size();
+    let wa = target.work_area();
 
-    // Calculate position in physical pixels, centered at the bottom of the target monitor
+    // Calculate position in physical pixels, centered at the bottom of the
+    // target monitor's work area (excludes the taskbar wherever it is —
+    // bottom, side, scaled, or auto-hidden).
     let phys_w = width * scale;
     let phys_h = height * scale;
-    let taskbar_phys = TASKBAR_H * scale;
     let margin_phys = MARGIN * scale;
 
-    let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
-    let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
+    let x = wa.position.x as f64 + (wa.size.width as f64 - phys_w) / 2.0;
+    let y = wa.position.y as f64 + wa.size.height as f64 - phys_h - margin_phys;
     let xi = x as i32;
     let yi = y.max(0.0) as i32;
 
@@ -357,19 +358,17 @@ pub async fn recover_overlay(
         .ok_or("no primary monitor")?;
 
     let scale = target.scale_factor();
-    let mon_pos = target.position();
-    let mon_size = target.size();
+    let wa = target.work_area();
 
     // Idle window size — shared const, matches useOverlaySizing.ts IDLE_WIN_W/H.
     let pill_w_logical = crate::OVERLAY_IDLE_WIN_W;
     let pill_h_logical = crate::OVERLAY_IDLE_WIN_H;
     let phys_w = pill_w_logical * scale;
     let phys_h = pill_h_logical * scale;
-    let taskbar_phys = TASKBAR_H * scale;
     let margin_phys = MARGIN * scale;
 
-    let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
-    let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
+    let x = wa.position.x as f64 + (wa.size.width as f64 - phys_w) / 2.0;
+    let y = wa.position.y as f64 + wa.size.height as f64 - phys_h - margin_phys;
     let xi = x as i32;
     let yi = y.max(0.0) as i32;
 
