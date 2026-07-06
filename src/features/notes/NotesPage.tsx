@@ -6,6 +6,8 @@ import {
   addNote,
   updateNote,
   deleteNote,
+  getSettings,
+  onSettingsChanged,
   onTranscriptionResult,
   type Note,
 } from "@/lib/tauri";
@@ -88,10 +90,34 @@ export function NotesPage() {
     };
   }, [editTitle, editContent]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When in editor, append transcription results directly into the note
+  // Track the output mode so the append listener below can tell whether the
+  // output router already pasted the dictation into this window.
+  const outputModeRef = useRef<string>("clipboard");
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        outputModeRef.current = s.output_mode;
+      })
+      .catch(() => {});
+    const unlisten = onSettingsChanged((s) => {
+      outputModeRef.current = s.output_mode;
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // When in editor, append transcription results directly into the note —
+  // UNLESS the paste path already delivered them here.  In type/both output
+  // modes the router pastes into the focused element; when that focused
+  // element is this very editor (user dictating into OmniVox), appending too
+  // would duplicate the dictation.  Clipboard mode never pastes, and with
+  // another app focused the paste went elsewhere — append in both cases.
   useEffect(() => {
     if (view !== "editor") return;
     const unlisten = onTranscriptionResult((text) => {
+      const pastedHere = outputModeRef.current !== "clipboard" && document.hasFocus();
+      if (pastedHere) return;
       setEditContent((prev) => {
         const separator = prev.length > 0 && !prev.endsWith("\n") && !prev.endsWith(" ") ? " " : "";
         return prev + separator + text;
