@@ -161,6 +161,11 @@ impl LlmRunner {
                                     source_app.as_deref(),
                                 ),
                             };
+                            // Release the busy slot BEFORE delivering the
+                            // reply: the native decode is done, and a caller
+                            // that observes the result must never race a
+                            // still-set busy flag (spurious rejections).
+                            drop(_busy_reset);
                             // Receiver may have been dropped by a timeout — ignore.
                             let _ = reply_tx.send(result);
                         }
@@ -168,6 +173,7 @@ impl LlmRunner {
                             // Runs on a throwaway context inside `classify_command`
                             // so the warmed extraction session is left intact.
                             let result = engine.classify_command(&utterance);
+                            drop(_busy_reset);
                             let _ = reply_tx.send(result);
                         }
                         LlmRequest::Prewarm => {
