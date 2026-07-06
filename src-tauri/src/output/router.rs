@@ -19,6 +19,12 @@ const DELETE_WORD_MODIFIER: Key = Key::Control;
 
 const CLIPBOARD_VERIFY_TIMEOUT_MS: u64 = 750;
 const CLIPBOARD_VERIFY_INTERVAL_MS: u64 = 10;
+// Audited 2026-07-06: this guard does double duty — clipboard stability for
+// deferred-read apps AND a paste-before-next-keystroke ordering barrier
+// (dropping it between a Text and a following Command segment can land the
+// keystroke before the app processed Ctrl+V).  Since resolve_list_segments
+// merges adjacent text segments, plain dictations pay it once; don't shrink
+// it per-segment without testing slow targets (Word, browser textareas).
 const POST_PASTE_GUARD_MS: u64 = 250;
 
 use crate::error::{AppError, AppResult};

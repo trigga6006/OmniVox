@@ -546,8 +546,17 @@ async fn wait_for_preview_worker(state: &AppState) {
         .and_then(|mut guard| guard.take());
 
     if let Some(rx) = rx {
+        // Instrumented (audit 2026-07-06): the v0.3.1 abort callback should
+        // make the real drain far shorter than the 1500ms ceiling — log the
+        // measured wait so the timeout can be tightened on evidence.
+        let t0 = std::time::Instant::now();
         match tokio::time::timeout(Duration::from_millis(1500), rx).await {
-            Ok(Ok(())) | Ok(Err(_)) => {}
+            Ok(Ok(())) | Ok(Err(_)) => {
+                crate::llm::diaglog::log(&format!(
+                    "pipeline: preview worker drained in {}ms",
+                    t0.elapsed().as_millis()
+                ));
+            }
             Err(_) => eprintln!(
                 "Preview worker still releasing decode buffers; continuing with final transcription"
             ),
@@ -1102,8 +1111,13 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         )
     {
         let _ = tokio::task::spawn_blocking(|| {
-            // Wait for all keystrokes to land in the target app.
-            std::thread::sleep(std::time::Duration::from_millis(1500));
+            // The router's send/send_segments are synchronous and already
+            // include the 250ms post-paste guard, so by this point the paste
+            // keystroke has been delivered and the clipboard held stable.
+            // This settle only covers the target app *processing* its Ctrl+V
+            // before Enter arrives — 300ms is a conservative floor for slow
+            // apps (was a blind 1500ms on top of the guard).
+            std::thread::sleep(std::time::Duration::from_millis(300));
             if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
                 let _ =
                     enigo::Keyboard::key(&mut enigo, enigo::Key::Return, enigo::Direction::Click);
