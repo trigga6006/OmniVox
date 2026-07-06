@@ -49,6 +49,9 @@ const ACTION_LABELS: Record<string, string> = {
   PressTab: "Tab",
   PressEscape: "Escape",
   PressEnter: "Enter",
+  BulletItem: "Bullet list item",
+  NumberedItem: "Numbered list item",
+  EndList: "End list",
 };
 
 /** Friendly labels for the mouse action encodings (`mouse:click`, …). */

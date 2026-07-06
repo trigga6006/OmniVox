@@ -414,6 +414,17 @@ pub fn run() {
             // Load persisted settings (output mode, etc.) into in-memory state
             apply_persisted_settings(&state);
 
+            // Startup repair: drop vocabulary rows whose mode no longer
+            // exists (possible in DBs predating FK enforcement). Orphans by
+            // definition reference IDs that no longer exist, so running
+            // before mode seeding is safe — builtin modes persist in the
+            // table across restarts.
+            match crate::storage::context_modes::purge_orphaned_vocabulary(&state.db) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("Purged {n} orphaned mode-scoped vocabulary entries"),
+                Err(e) => eprintln!("Orphaned-vocabulary purge failed: {e}"),
+            }
+
             // Seed the default "General" context mode and load the active mode
             if let Ok(general_id) = crate::storage::context_modes::seed_general_mode(&state.db) {
                 // Load the persisted active mode, or default to General

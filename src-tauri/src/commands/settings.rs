@@ -195,6 +195,8 @@ pub async fn update_settings(
 
     // Structured Mode just turned on AND a model is chosen but not loaded →
     // load it eagerly so the first dictation doesn't eat the load time.
+    // The multi-second GGUF load runs on a blocking thread so the settings
+    // command (and the toggle in the UI) returns immediately.
     if !prev_structured && settings.structured_mode {
         if let Some(model_id) = settings.active_llm_model_id.clone() {
             if let Ok(mut guard) = state.active_llm_model_id.lock() {
@@ -207,11 +209,13 @@ pub async fn update_settings(
                 .map(|g| g.is_some())
                 .unwrap_or(false);
             if !runner_loaded {
-                let state_inner = state.inner();
-                if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, state_inner)
-                {
-                    eprintln!("Eager LLM load on toggle failed: {e}");
-                }
+                let app_for_load = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let st = app_for_load.state::<AppState>();
+                    if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, &st) {
+                        eprintln!("Eager LLM load on toggle failed: {e}");
+                    }
+                });
             }
         }
     }
@@ -227,9 +231,10 @@ pub async fn update_settings(
         cfg.ship_mode = settings.ship_mode;
     }
 
-    // Sync writing style to the processor chain
+    // Sync writing style + filler removal to the processor chain
     if let Ok(mut proc) = state.processor.lock() {
         proc.set_style(WritingStyle::from_str(&settings.writing_style));
+        proc.set_filler_removal(settings.filler_removal);
     }
 
     // Sync hotkey to the live hook

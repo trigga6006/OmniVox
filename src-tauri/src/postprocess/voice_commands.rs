@@ -75,6 +75,15 @@ pub enum VoiceCommand {
     /// Launch a program by command line (program + args, run directly with no
     /// shell). The string is tokenized with [`tokenize_command_line`].
     LaunchApp(String),
+    /// Start a bullet list item (`- `). Resolved to literal text by
+    /// [`resolve_list_segments`] before segments reach the output router.
+    BulletItem,
+    /// Start a numbered list item (`1. `, `2. `, …). Numbering state lives in
+    /// [`resolve_list_segments`]; reset by [`VoiceCommand::EndList`].
+    NumberedItem,
+    /// End the current list: resets numbering and breaks to a fresh line
+    /// before any following prose.
+    EndList,
 }
 
 /// When a command phrase is allowed to fire within an utterance.
@@ -112,6 +121,13 @@ pub fn default_command_table() -> Vec<CommandDef> {
         CommandDef { phrase: "press tab".into(), command: PressTab, scope: Anywhere },
         CommandDef { phrase: "press escape".into(), command: PressEscape, scope: Anywhere },
         CommandDef { phrase: "press enter".into(), command: PressEnter, scope: Anywhere },
+        CommandDef { phrase: "bullet point".into(), command: BulletItem, scope: Anywhere },
+        CommandDef { phrase: "next bullet".into(), command: BulletItem, scope: Anywhere },
+        CommandDef { phrase: "number item".into(), command: NumberedItem, scope: Anywhere },
+        CommandDef { phrase: "numbered item".into(), command: NumberedItem, scope: Anywhere },
+        CommandDef { phrase: "next number".into(), command: NumberedItem, scope: Anywhere },
+        CommandDef { phrase: "end list".into(), command: EndList, scope: Anywhere },
+        CommandDef { phrase: "end of list".into(), command: EndList, scope: Anywhere },
         CommandDef { phrase: "send".into(), command: Send, scope: EndOfUtterance },
     ]
 }
@@ -206,6 +222,9 @@ pub fn action_to_command(action: &str) -> Option<VoiceCommand> {
         "PressTab" => Some(VoiceCommand::PressTab),
         "PressEscape" => Some(VoiceCommand::PressEscape),
         "PressEnter" => Some(VoiceCommand::PressEnter),
+        "BulletItem" => Some(VoiceCommand::BulletItem),
+        "NumberedItem" => Some(VoiceCommand::NumberedItem),
+        "EndList" => Some(VoiceCommand::EndList),
         "mouse:click" => Some(VoiceCommand::MouseClick),
         "mouse:right_click" => Some(VoiceCommand::MouseRightClick),
         "mouse:double_click" => Some(VoiceCommand::MouseDoubleClick),
@@ -235,6 +254,9 @@ pub fn command_to_action(cmd: &VoiceCommand) -> String {
         VoiceCommand::PressTab => "PressTab".into(),
         VoiceCommand::PressEscape => "PressEscape".into(),
         VoiceCommand::PressEnter => "PressEnter".into(),
+        VoiceCommand::BulletItem => "BulletItem".into(),
+        VoiceCommand::NumberedItem => "NumberedItem".into(),
+        VoiceCommand::EndList => "EndList".into(),
         VoiceCommand::KeyCombo { modifiers, key } => encode_key_combo(modifiers, key),
         VoiceCommand::MouseClick => "mouse:click".into(),
         VoiceCommand::MouseRightClick => "mouse:right_click".into(),
@@ -541,6 +563,133 @@ fn apply_end_of_utterance(segments: &mut Vec<OutputSegment>, eou: &[&CommandDef]
     }
 }
 
+/// Resolve list-marker commands (`BulletItem`, `NumberedItem`, `EndList`)
+/// into literal text and merge the result into as few `Text` segments as
+/// possible.
+///
+/// Markers become `\n- ` / `\n{n}. ` prefixes on the item text that follows,
+/// so a dictated list leaves the router as ONE atomic paste instead of many
+/// segments (each segment paste costs a clipboard round-trip + guard sleep).
+/// Numbering counts up per `NumberedItem` and resets on `EndList`, which also
+/// breaks to a fresh line before any following prose.  A marker that never
+/// receives item text ("bullet point" at the very end) is dropped rather than
+/// pasted dangling.  Trailing `,`/`;` separators on the previous item are
+/// trimmed, and when `capitalize_items` is set the first letter of each item
+/// is uppercased ("bullet point buy milk" → `- Buy milk`).
+///
+/// Non-list command segments pass through untouched; when the input contains
+/// no list markers the segments are returned unchanged.
+pub fn resolve_list_segments(
+    segments: Vec<OutputSegment>,
+    capitalize_items: bool,
+) -> Vec<OutputSegment> {
+    use VoiceCommand::{BulletItem, EndList, NumberedItem};
+
+    let is_list_cmd =
+        |c: &VoiceCommand| matches!(c, BulletItem | NumberedItem | EndList);
+    if !segments
+        .iter()
+        .any(|s| matches!(s, OutputSegment::Command(c) if is_list_cmd(c)))
+    {
+        return segments;
+    }
+
+    fn flush(buf: &mut String, open_marker: &mut Option<usize>, out: &mut Vec<OutputSegment>) {
+        // Drop a marker that never received item text.
+        if let Some(pos) = open_marker.take() {
+            buf.truncate(pos);
+        }
+        let text = buf.trim_end().to_string();
+        buf.clear();
+        if !text.is_empty() {
+            out.push(OutputSegment::Text(text));
+        }
+    }
+
+    let mut out: Vec<OutputSegment> = Vec::new();
+    let mut buf = String::new();
+    // Next number for `NumberedItem`; reset by `EndList`.
+    let mut counter: usize = 1;
+    // Byte offset in `buf` where the last marker starts, kept until the
+    // marker receives item text (used to drop dangling markers).
+    let mut open_marker: Option<usize> = None;
+    // `EndList` requests a line break, applied only if prose follows.
+    let mut pending_break = false;
+    // True while the paste caret is at the start of a line (utterance start,
+    // or right after a NewLine/NewParagraph keystroke) — markers there don't
+    // need a leading newline.
+    let mut at_line_start = true;
+
+    for seg in segments {
+        match seg {
+            OutputSegment::Text(t) => {
+                if pending_break && !buf.is_empty() {
+                    buf.push('\n');
+                }
+                pending_break = false;
+                if open_marker.take().is_some() && capitalize_items {
+                    let mut chars = t.chars();
+                    match chars.next() {
+                        Some(c) if c.is_alphabetic() => {
+                            buf.extend(c.to_uppercase());
+                            buf.push_str(chars.as_str());
+                        }
+                        _ => buf.push_str(&t),
+                    }
+                } else {
+                    buf.push_str(&t);
+                }
+                at_line_start = false;
+            }
+            OutputSegment::Command(cmd) if is_list_cmd(&cmd) => match cmd {
+                BulletItem | NumberedItem => {
+                    pending_break = false;
+                    // Two markers in a row: drop the empty first one.
+                    if let Some(pos) = open_marker.take() {
+                        buf.truncate(pos);
+                    }
+                    // "milk, bullet point eggs" — the separator belongs to
+                    // the spoken flow, not the finished item.
+                    while buf.ends_with([' ', ',', ';']) {
+                        buf.pop();
+                    }
+                    let pos = buf.len();
+                    if !(buf.is_empty() && (out.is_empty() || at_line_start)) {
+                        buf.push('\n');
+                    }
+                    if cmd == NumberedItem {
+                        buf.push_str(&format!("{counter}. "));
+                        counter += 1;
+                    } else {
+                        buf.push_str("- ");
+                    }
+                    open_marker = Some(pos);
+                    at_line_start = false;
+                }
+                EndList => {
+                    if let Some(pos) = open_marker.take() {
+                        buf.truncate(pos);
+                    }
+                    counter = 1;
+                    pending_break = true;
+                }
+                _ => unreachable!("is_list_cmd guarantees a list command"),
+            },
+            OutputSegment::Command(cmd) => {
+                flush(&mut buf, &mut open_marker, &mut out);
+                pending_break = false;
+                at_line_start = matches!(
+                    cmd,
+                    VoiceCommand::NewLine | VoiceCommand::NewParagraph
+                );
+                out.push(OutputSegment::Command(cmd));
+            }
+        }
+    }
+    flush(&mut buf, &mut open_marker, &mut out);
+    out
+}
+
 /// Collapse segments back into a plain string for clipboard mode.
 ///
 /// - `NewLine` → `\n`
@@ -555,6 +704,12 @@ pub fn segments_to_string(segments: &[OutputSegment]) -> String {
             OutputSegment::Command(VoiceCommand::NewParagraph) => out.push_str("\n\n"),
             OutputSegment::Command(VoiceCommand::DeleteLastWord) => {}
             OutputSegment::Command(VoiceCommand::Send) => {} // keystroke-only, omitted in clipboard
+            // List markers are resolved to literal text by
+            // `resolve_list_segments` before reaching consumers; an
+            // unresolved one has no textual representation here.
+            OutputSegment::Command(
+                VoiceCommand::BulletItem | VoiceCommand::NumberedItem | VoiceCommand::EndList,
+            ) => {}
             // Keystroke-only commands: no textual representation in clipboard mode.
             OutputSegment::Command(
                 VoiceCommand::SelectAll
@@ -1282,6 +1437,165 @@ mod tests {
                 "please scroll down the page".to_string()
             )]
         );
+    }
+
+    // ── List commands (resolve_list_segments) ─────────────────────
+
+    /// Parse with the default table, then resolve list markers (capitalized).
+    fn parse_lists(text: &str) -> Vec<OutputSegment> {
+        resolve_list_segments(parse_commands(text), true)
+    }
+
+    #[test]
+    fn bullet_list_basic() {
+        let result = parse_lists("shopping list bullet point milk bullet point eggs");
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text(
+                "shopping list\n- Milk\n- Eggs".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn numbered_list_counts_up() {
+        let result = parse_lists("steps number item unplug it number item plug it back in");
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text(
+                "steps\n1. Unplug it\n2. Plug it back in".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn end_list_resets_numbering_and_breaks_line() {
+        let result = parse_lists(
+            "number item one end list and then number item two",
+        );
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("1. One\nand then\n1. Two".to_string())]
+        );
+    }
+
+    #[test]
+    fn list_at_utterance_start_has_no_leading_newline() {
+        let result = parse_lists("bullet point milk");
+        assert_eq!(result, vec![OutputSegment::Text("- Milk".to_string())]);
+    }
+
+    #[test]
+    fn trailing_marker_without_item_is_dropped() {
+        let result = parse_lists("buy milk bullet point");
+        assert_eq!(result, vec![OutputSegment::Text("buy milk".to_string())]);
+    }
+
+    #[test]
+    fn lone_marker_produces_nothing() {
+        assert_eq!(parse_lists("bullet point"), vec![]);
+    }
+
+    #[test]
+    fn separator_before_marker_is_trimmed() {
+        // Whisper often writes "milk, bullet point eggs".
+        let result = parse_lists("bullet point milk, bullet point eggs");
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("- Milk\n- Eggs".to_string())]
+        );
+    }
+
+    #[test]
+    fn very_casual_items_stay_lowercase() {
+        let result = resolve_list_segments(parse_commands("bullet point milk"), false);
+        assert_eq!(result, vec![OutputSegment::Text("- milk".to_string())]);
+    }
+
+    #[test]
+    fn next_bullet_and_next_number_aliases() {
+        let result = parse_lists("bullet point milk next bullet eggs");
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("- Milk\n- Eggs".to_string())]
+        );
+        let result = parse_lists("number item alpha next number beta");
+        assert_eq!(
+            result,
+            vec![OutputSegment::Text("1. Alpha\n2. Beta".to_string())]
+        );
+    }
+
+    #[test]
+    fn non_list_commands_pass_through_resolver() {
+        let result = parse_lists("bullet point milk new line done");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("- Milk".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("done".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn marker_after_new_line_keystroke_needs_no_extra_newline() {
+        // After a NewLine keystroke the caret is already on a fresh line.
+        let result = parse_lists("intro new line bullet point milk");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("intro".to_string()),
+                OutputSegment::Command(VoiceCommand::NewLine),
+                OutputSegment::Text("- Milk".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolver_is_identity_without_list_markers() {
+        let segments = parse_commands("hello new line world");
+        assert_eq!(
+            resolve_list_segments(segments.clone(), true),
+            segments
+        );
+    }
+
+    #[test]
+    fn list_then_send_keeps_send_command() {
+        let result = parse_lists("bullet point milk bullet point eggs send");
+        assert_eq!(
+            result,
+            vec![
+                OutputSegment::Text("- Milk\n- Eggs".to_string()),
+                OutputSegment::Command(VoiceCommand::Send),
+            ]
+        );
+    }
+
+    #[test]
+    fn end_list_at_end_leaves_no_trailing_break() {
+        let result = parse_lists("bullet point milk end list");
+        assert_eq!(result, vec![OutputSegment::Text("- Milk".to_string())]);
+    }
+
+    #[test]
+    fn double_marker_drops_empty_first_item() {
+        let result = parse_lists("bullet point bullet point milk");
+        assert_eq!(result, vec![OutputSegment::Text("- Milk".to_string())]);
+    }
+
+    #[test]
+    fn list_builtin_actions_round_trip() {
+        for cmd in [
+            VoiceCommand::BulletItem,
+            VoiceCommand::NumberedItem,
+            VoiceCommand::EndList,
+        ] {
+            let action = command_to_action(&cmd);
+            assert_eq!(action_to_command(&action), Some(cmd));
+        }
     }
 
     // ── Command-line tokenizer ────────────────────────────────────

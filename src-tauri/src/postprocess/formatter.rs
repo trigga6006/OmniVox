@@ -325,19 +325,6 @@ fn split_sentences(text: &str) -> Vec<String> {
     sentences
 }
 
-/// Lowercase the first N words of a sentence (for prefix comparison).
-fn sentence_prefix(sentence: &str, n: usize) -> String {
-    sentence
-        .split_whitespace()
-        .take(n)
-        .map(|w| {
-            w.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Capitalize the first alphabetic character of a string.
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -401,34 +388,22 @@ fn strip_leading_ordinal(s: &str) -> &str {
     trimmed
 }
 
-/// Normalize a sentence for prefix comparison by stripping ordinals, connectors,
-/// and other list-marker noise.  "First, we need..." and "Then we need..." and
-/// "also we need..." all normalize to "we need...".
-fn normalize_for_prefix(s: &str) -> &str {
-    let s = strip_leading_ordinal(s);
-    strip_leading_connector(s)
-}
-
-/// True if the sentence starts with an ordinal word (First, Secondly, …).
+/// True if the sentence leads with a spoken ordinal ("First,", "secondly …").
+///
+/// Used only to upgrade counted-header items to a numbered list — an
+/// ordinal-only run is deliberately NOT a standalone list trigger (that
+/// caused surprise bullets in ordinary dictation; the regression tests pin
+/// ordinal-only runs to prose).
 fn starts_with_ordinal(sentence: &str) -> bool {
-    let _ = sentence;
-    false
+    let trimmed = sentence.trim_start();
+    strip_leading_ordinal(trimmed).len() != trimmed.len()
 }
 
 // ── Header detection ─────────────────────────────────────────────────────
 
-/// How a list header introduces its items.
-enum ListHeader {
-    /// Explicit count: "these three things" → expect N items.
-    Counted(usize),
-    /// Implicit: "here's what I need", "these things", "the following", colon.
-    /// Use all remaining sentences as items.
-    #[allow(dead_code)]
-    Implicit,
-}
-
-/// Check if a sentence introduces a list.
-fn detect_list_header(sentence: &str) -> Option<ListHeader> {
+/// Check if a sentence introduces a counted list ("these three things").
+/// Returns the announced item count.
+fn detect_list_header(sentence: &str) -> Option<usize> {
     let words: Vec<String> = sentence
         .split_whitespace()
         .map(|w| {
@@ -437,13 +412,13 @@ fn detect_list_header(sentence: &str) -> Option<ListHeader> {
         })
         .collect();
 
-    // 1. Explicit count + collection noun: "these three things"
+    // Explicit count + collection noun: "these three things"
     for (i, word) in words.iter().enumerate() {
         if let Some(count) = parse_count(word) {
             let end = (i + 3).min(words.len());
             for item in words.iter().take(end).skip(i + 1) {
                 if COLLECTION_NOUNS.contains(&item.as_str()) {
-                    return Some(ListHeader::Counted(count));
+                    return Some(count);
                 }
             }
         }
@@ -452,278 +427,31 @@ fn detect_list_header(sentence: &str) -> Option<ListHeader> {
     None
 }
 
-// ── Repeated structure detection ─────────────────────────────────────────
-
-/// 2-word prefixes that are too common in natural speech to indicate a list.
-/// These appear frequently in narrative prose and would cause false-positive
-/// bulleting of ordinary paragraphs.
-const COMMON_PROSE_PREFIXES: &[&str] = &[
-    "i was",
-    "i had",
-    "i am",
-    "i got",
-    "i need",
-    "i want",
-    "i think",
-    "it was",
-    "it is",
-    "it has",
-    "it would",
-    "it could",
-    "he was",
-    "he had",
-    "he is",
-    "she was",
-    "she had",
-    "she is",
-    "we had",
-    "we were",
-    "we are",
-    "we went",
-    "we got",
-    "we need",
-    "we can",
-    "they were",
-    "they had",
-    "they are",
-    "they got",
-    "they need",
-    "the meeting",
-    "the team",
-    "the project",
-    "the system",
-    "there was",
-    "there were",
-    "there is",
-    "there are",
-    "you can",
-    "you need",
-    "you should",
-    "you could",
-    "this is",
-    "this was",
-    "this will",
-    "that is",
-    "that was",
-    "and then",
-    "and i",
-    "and we",
-    "and the",
-    "so i",
-    "so we",
-    "so the",
-    "but i",
-    "but we",
-    "but the",
-];
-
-/// Check if the sentence at `start` begins a run of 3+ sentences that share
-/// the same first 3 words after normalizing (stripping ordinals/connectors).
-/// E.g., "First, we need to X. Then we need to Y. Also we need to Z." all
-/// share "we need to" after normalization.
-/// Returns the number of consecutive matching sentences.
-fn detect_repeated_prefix(sentences: &[String], start: usize) -> Option<usize> {
-    if start + 1 >= sentences.len() {
-        return None;
-    }
-
-    // Normalize the first sentence to get the base prefix.
-    let normalized = normalize_for_prefix(&sentences[start]);
-
-    // Try 3-word prefix first (stronger signal), fall back to 2-word only
-    // if the 2-word prefix isn't in the common-prose blocklist.
-    let (prefix, prefix_words) = {
-        let p3 = sentence_prefix(normalized, 3);
-        if p3.split_whitespace().count() >= 3 {
-            (p3, 3)
-        } else {
-            let p2 = sentence_prefix(normalized, 2);
-            if p2.split_whitespace().count() < 2 {
-                return None;
-            }
-            // Reject 2-word prefixes that are common in prose
-            if COMMON_PROSE_PREFIXES.contains(&p2.as_str()) {
-                return None;
-            }
-            (p2, 2)
-        }
-    };
-
-    let mut end = start;
-    while end + 1 < sentences.len() {
-        let next_normalized = normalize_for_prefix(&sentences[end + 1]);
-        let next_prefix = sentence_prefix(next_normalized, prefix_words);
-
-        if next_prefix == prefix {
-            end += 1;
-        } else {
-            break;
-        }
-    }
-
-    let count = end - start + 1;
-    // Require 5+ matches to be confident this is actually a list.
-    if count >= 5 {
-        Some(count)
-    } else {
-        None
-    }
-}
-
-// ── Inline comma list detection ──────────────────────────────────────────
-
-/// Repeated sentence starters are only promoted to bullets when nearby speech
-/// explicitly frames the run as a list. Without this, ordinary long dictations
-/// like "I want to..." repeated five times become surprise bullet lists.
-fn has_nearby_list_cue(sentences: &[String], start: usize) -> bool {
-    let _ = (sentences, start);
-    false
-}
-
-/// Detect an inline comma-separated list within a single sentence.
-/// Returns (prefix, items) if found — e.g., "I need" and ["milk", "eggs", "bread"].
-#[allow(unreachable_code)]
-fn detect_inline_list(sentence: &str) -> Option<(String, Vec<String>)> {
-    let _ = sentence;
-    return None;
-
-    // Strip trailing punctuation for analysis.
-    let trimmed = sentence.trim_end_matches(|c: char| matches!(c, '.' | '!' | '?'));
-
-    // Look for "A, B, C, and D" or "A, B, and C" pattern.
-    // Must have at least 2 commas (3+ items).
-    let comma_count = trimmed.matches(',').count();
-    if comma_count < 2 {
-        return None;
-    }
-
-    // Split on ", and " or ", or " to find the boundary before the last item.
-    let (before_last, last_item) = if let Some(pos) = trimmed.rfind(", and ") {
-        (&trimmed[..pos], trimmed[pos + 6..].trim())
-    } else if let Some(pos) = trimmed.rfind(", or ") {
-        (&trimmed[..pos], trimmed[pos + 5..].trim())
-    } else {
-        return None; // No "and"/"or" → not a clear list
-    };
-
-    // Split the remaining part on commas.
-    let parts: Vec<&str> = before_last.split(',').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    // The first part may contain a prefix before the list starts.
-    // Heuristic: if the first part has more words than others, the extra
-    // words are the prefix (e.g., "I need milk" → prefix "I need", item "milk").
-    let avg_item_words: usize = parts[1..]
-        .iter()
-        .map(|p| p.split_whitespace().count())
-        .sum::<usize>()
-        / parts[1..].len().max(1);
-
-    let first_words: Vec<&str> = parts[0].split_whitespace().collect();
-    let prefix_word_count = if first_words.len() > avg_item_words {
-        first_words.len() - avg_item_words
-    } else {
-        0
-    };
-
-    let prefix = first_words[..prefix_word_count].join(" ");
-    let first_item = first_words[prefix_word_count..].join(" ");
-
-    let mut items: Vec<String> = Vec::new();
-    items.push(first_item.trim().to_string());
-    for part in &parts[1..] {
-        let item = part.trim().to_string();
-        if !item.is_empty() {
-            items.push(item);
-        }
-    }
-    items.push(last_item.to_string());
-
-    if items.len() >= 6 && items.iter().all(|it| !it.is_empty()) {
-        // Only format as bullets if there are many items (6+) — inline
-        // comma lists with fewer items read better as prose.
-        let avg_words: f64 = items
-            .iter()
-            .map(|it| it.split_whitespace().count())
-            .sum::<usize>() as f64
-            / items.len() as f64;
-
-        if avg_words >= 3.0 || items.len() >= 7 {
-            Some((prefix, items))
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-// ── Implicit list termination ────────────────────────────────────────────
-
-/// Determine how many sentences after a list header actually belong to the
-/// list.  Uses sentence-length similarity to detect where the list ends and
-/// normal prose resumes — prevents "runaway" lists where one header turns
-/// everything into bullets.
-///
-/// The heuristic: list items tend to have similar sentence lengths.  When a
-/// sentence is significantly longer than the running average of the items
-/// so far, it's likely a topic transition or conclusion, not another item.
-#[allow(dead_code)]
-fn find_implicit_list_end(sentences: &[String], header_idx: usize) -> usize {
-    let start = header_idx + 1;
-    if start >= sentences.len() {
-        return 0;
-    }
-
-    let mut accepted: usize = 0;
-    let mut total_words: usize = 0;
-
-    for idx in start..sentences.len() {
-        let wc = sentences[idx].split_whitespace().count();
-
-        if accepted == 0 {
-            // First potential item: accept if not paragraph-length.
-            if wc <= 30 {
-                accepted += 1;
-                total_words += wc;
-            } else {
-                break;
-            }
-        } else {
-            let avg = total_words as f64 / accepted as f64;
-
-            // A sentence significantly longer than the running average
-            // signals a topic transition or conclusion — end the list.
-            // The +6 additive guard prevents false positives when the
-            // average is very low (e.g., avg=3 → 3*2.5=7.5 is too tight).
-            if wc as f64 > avg * 2.5 && wc as f64 > avg + 6.0 {
-                break;
-            }
-
-            accepted += 1;
-            total_words += wc;
-        }
-    }
-
-    accepted
-}
-
 // ── Join formatted parts ─────────────────────────────────────────────────
 
+/// True if a formatted part is a list item (`- ` bullet or `1. ` number).
+fn is_list_item(part: &str) -> bool {
+    if part.starts_with("- ") {
+        return true;
+    }
+    let bytes = part.as_bytes();
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0 && bytes.len() > digits + 1 && bytes[digits] == b'.' && bytes[digits + 1] == b' '
+}
+
 /// Join formatted parts: regular sentences flow together with spaces,
-/// bullet items are newline-separated with a newline before the first bullet.
+/// list items (`- ` or `1. `) are newline-separated with a newline before
+/// the first item.
 fn join_parts(parts: &[String]) -> String {
     let mut out = String::new();
     let mut i = 0;
 
     while i < parts.len() {
-        if parts[i].starts_with("- ") {
+        if is_list_item(&parts[i]) {
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
             }
-            while i < parts.len() && parts[i].starts_with("- ") {
+            while i < parts.len() && is_list_item(&parts[i]) {
                 out.push_str(&parts[i]);
                 out.push('\n');
                 i += 1;
@@ -746,114 +474,88 @@ fn join_parts(parts: &[String]) -> String {
 /// are almost never lists and shouldn't be reformatted.
 const MIN_WORDS_FOR_LIST: usize = 40;
 
-/// Detect list patterns in `text` and format them as bullet lists.
+/// Detect list patterns in `text` and format them as lists.
 ///
-/// Patterns detected:
-/// 1. **Counted header**: "these three things" → next N sentences become bullets.
-/// 2. **Implicit header**: "here's what I need", "these things", colon → all
-///    following sentences become bullets (requires 3+ items).
-/// 3. **Ordinal sentences**: "First, … Second, … Third, …" → bullets (ordinals stripped).
-/// 4. **Repeated sentence starters**: 3+ sentences with the same first 3 words.
-/// 5. **Inline comma list**: "I need milk, eggs, and bread" → bullets.
+/// The only auto-list trigger is an explicit **counted header** — "these
+/// three things", "I have four steps" — where the user announces the list
+/// out loud.  The N sentences after the header become items: `- ` bullets
+/// normally, or a `1.` / `2.` numbered list when the items themselves lead
+/// with spoken ordinals ("First, … Second, …").  Broad implicit heuristics
+/// (repeated sentence starters, ordinal-only runs, inline comma lists) were
+/// deliberately removed after they turned ordinary dictation into surprise
+/// bullets; explicit list dictation is handled by the "bullet point" /
+/// "number item" voice commands instead.
 ///
-/// Pre-strips existing bullet/heading markers from input to avoid double-marking.
-/// This is a no-op when no list pattern is detected or text is too short.
+/// Because a counted header is an explicit signal, it is honored even on
+/// short dictations ("I need three things. Milk. Eggs. Bread.").  All other
+/// text below [`MIN_WORDS_FOR_LIST`] passes through untouched.
+///
+/// Pre-strips existing bullet/heading markers from input to avoid
+/// double-marking.  A no-op when no list pattern is detected.
 pub fn format_lists(text: &str) -> String {
-    // Short text guard runs before marker stripping. This preserves brief
-    // numeric dictations like "1. 5 million dollars" where Whisper inserted a
-    // space after a decimal point; stripping first would delete the leading 1.
-    if text.split_whitespace().count() < MIN_WORDS_FOR_LIST {
-        if has_explicit_markers(text) {
-            return strip_existing_markers(text);
-        }
-        return text.to_string();
-    }
+    let long_enough = text.split_whitespace().count() >= MIN_WORDS_FOR_LIST;
 
-    // Pre-strip any existing markers (Whisper markdown hallucinations, user
-    // saying "dash" / "bullet point", etc.) to avoid double-marking.
-    let clean = strip_existing_markers(text);
-    let text = &clean;
+    // Marker stripping: long text is always cleaned; short text only when it
+    // carries explicit markers. The guard preserves brief numeric dictations
+    // like "1. 5 million dollars" where Whisper inserted a space after a
+    // decimal point; stripping first would delete the leading 1.
+    let clean;
+    let text: &str = if long_enough || has_explicit_markers(text) {
+        clean = strip_existing_markers(text);
+        &clean
+    } else {
+        text
+    };
 
+    // A counted list needs at least header + two items.
     let sentences = split_sentences(text);
-
-    // Need at least 4 sentences to have a meaningful list.
-    // Short dictations are almost never lists.
-    if sentences.len() < 4 {
+    if sentences.len() < 3 {
         return text.to_string();
     }
 
     let mut parts: Vec<String> = Vec::new();
+    let mut made_list = false;
     let mut i = 0;
 
     while i < sentences.len() {
         // Counted list header only. Broad implicit heuristics made ordinary
-        // dictation turn into surprise bullets, so list creation now requires
+        // dictation turn into surprise bullets, so list creation requires
         // the user to say an explicit count such as "these three things".
-        if let Some(header) = detect_list_header(&sentences[i]) {
+        if let Some(n) = detect_list_header(&sentences[i]) {
             let remaining = sentences.len() - i - 1;
-            let (items, min_items) = match header {
-                ListHeader::Counted(n) => (if remaining >= n { n } else { 0 }, 2),
-                ListHeader::Implicit => (0, usize::MAX),
-            };
-            if items >= min_items {
+            if n >= 2 && remaining >= n {
                 parts.push(sentences[i].clone());
-                for j in 1..=items {
+                // When the items themselves lead with spoken ordinals
+                // ("First, … Second, …") the user is dictating an ordered
+                // list: number the items and strip the redundant ordinals.
+                let ordinal_items = (1..=n)
+                    .filter(|j| starts_with_ordinal(&sentences[i + j]))
+                    .count();
+                let numbered = ordinal_items * 2 >= n;
+                for j in 1..=n {
                     let item = strip_leading_connector(&sentences[i + j]);
-                    parts.push(format!("- {item}"));
+                    if numbered {
+                        let item = capitalize_first(strip_leading_ordinal(item));
+                        parts.push(format!("{j}. {item}"));
+                    } else {
+                        parts.push(format!("- {item}"));
+                    }
                 }
-                i += items + 1;
+                made_list = true;
+                i += n + 1;
                 continue;
             }
-        }
-
-        // Pattern 3: 5+ consecutive ordinal sentences.
-        // Strip the ordinal marker when adding dashes to avoid redundant
-        // double-markers like "- First, set up the database."
-        if starts_with_ordinal(&sentences[i]) {
-            let start = i;
-            let mut end = i;
-            while end + 1 < sentences.len() && starts_with_ordinal(&sentences[end + 1]) {
-                end += 1;
-            }
-            if end - start >= 4 {
-                for j in start..=end {
-                    let content = strip_leading_ordinal(sentences[j].trim());
-                    // Capitalize the first letter after stripping the ordinal
-                    let content = capitalize_first(content);
-                    parts.push(format!("- {content}"));
-                }
-                i = end + 1;
-                continue;
-            }
-        }
-
-        // Pattern 4: 3+ sentences with the same first 2 words.
-        if has_nearby_list_cue(&sentences, i) {
-            if let Some(count) = detect_repeated_prefix(&sentences, i) {
-                for j in i..i + count {
-                    let item = strip_leading_connector(&sentences[j]);
-                    parts.push(format!("- {item}"));
-                }
-                i += count;
-                continue;
-            }
-        }
-
-        // Pattern 5: Inline comma list within this sentence.
-        if let Some((prefix, items)) = detect_inline_list(&sentences[i]) {
-            if !prefix.is_empty() {
-                parts.push(prefix);
-            }
-            for item in &items {
-                parts.push(format!("- {item}"));
-            }
-            i += 1;
-            continue;
         }
 
         // No pattern — pass through.
         parts.push(sentences[i].clone());
         i += 1;
+    }
+
+    // Short text that produced no list must round-trip byte-exact — don't
+    // let sentence re-joining normalize its whitespace.
+    if !made_list && !long_enough {
+        return text.to_string();
     }
 
     join_parts(&parts)

@@ -46,6 +46,10 @@ enum LlmRequest {
         utterance: String,
         reply_tx: oneshot::Sender<AppResult<Vec<CommandIntent>>>,
     },
+    /// Opportunistic session rebuild (no reply). Sent when a recording starts
+    /// so an idle-dropped KV cache is re-warmed while the user is speaking
+    /// instead of on the extraction's critical path.
+    Prewarm,
 }
 
 /// RAII: dropping the handle drops the sender, which lets the worker exit
@@ -166,6 +170,12 @@ impl LlmRunner {
                             let result = engine.classify_command(&utterance);
                             let _ = reply_tx.send(result);
                         }
+                        LlmRequest::Prewarm => {
+                            if session.is_none() {
+                                session = engine.new_session().ok();
+                                crate::llm::diaglog::log("runner: prewarmed session");
+                            }
+                        }
                     }
                     worker_last_used.store(now_ns(), Ordering::Relaxed);
                 }
@@ -270,6 +280,16 @@ impl LlmRunner {
         let (reply_tx, reply_rx) = oneshot::channel();
         let req = LlmRequest::Classify { utterance, reply_tx };
         self.submit(req, reply_rx, timeout, "classify").await
+    }
+
+    /// Fire-and-forget: rebuild the warmed extraction session if it was
+    /// idle-dropped.  Silently ignored when the worker is busy or the queue
+    /// is full — this is an opportunistic head start, never load-bearing.
+    /// Does not take the busy slot: an extraction submitted while the
+    /// prewarm runs simply queues behind it and then benefits from the
+    /// freshly warmed session.
+    pub fn prewarm(&self) {
+        let _ = self.tx.try_send(LlmRequest::Prewarm);
     }
 
     /// Unix timestamp in nanoseconds when the worker last finished a job.

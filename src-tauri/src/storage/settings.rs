@@ -108,6 +108,11 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         .cloned()
         .unwrap_or(defaults.writing_style);
 
+    let filler_removal = map
+        .get("filler_removal")
+        .map(|v| v == "true")
+        .unwrap_or(defaults.filler_removal);
+
     let audio_ducking = map
         .get("audio_ducking")
         .map(|v| v == "true")
@@ -173,6 +178,7 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
         ship_mode,
         ghost_mode,
         writing_style,
+        filler_removal,
         audio_ducking,
         ducking_amount,
         structured_mode,
@@ -219,7 +225,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     let llm_timeout_str = settings.llm_timeout_secs.to_string();
     let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 27] = [
+    let pairs: [(&str, &str); 28] = [
         ("theme", settings.theme.as_str()),
         ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
@@ -241,6 +247,7 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
         ("ship_mode", b(settings.ship_mode)),
         ("ghost_mode", b(settings.ghost_mode)),
         ("writing_style", settings.writing_style.as_str()),
+        ("filler_removal", b(settings.filler_removal)),
         ("audio_ducking", b(settings.audio_ducking)),
         ("ducking_amount", ducking_amount_str.as_str()),
         ("structured_mode", b(settings.structured_mode)),

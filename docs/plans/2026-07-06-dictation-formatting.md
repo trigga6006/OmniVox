@@ -1,6 +1,8 @@
 # Plan: Standard Dictation Formatting — Lists, Bullets, Numbered Items (No LLM)
 
 > **For agentic workers:** This is an implementation guide produced by a codebase audit (2026-07-06, v0.4.0 / commit `335287d`). Verify cited line numbers before editing — they drift. Work phase by phase; each phase is independently shippable. Follow repo `CLAUDE.md` (surgical changes, simplicity first). Run `cargo test` in `src-tauri/` before and after each task.
+>
+> **STATUS (2026-07-06, branch `claude/audit-implementation`):** Phase 1 (spoken list commands) — DONE (`resolve_list_segments` in `postprocess/voice_commands.rs`, seeded via `seed_missing_builtins`). Phase 2 — DONE with a scope adjustment: standalone ordinal runs stay prose per the product contract pinned in `formatter_tests.rs`; instead, counted headers now honor short dictations and emit numbered lists when items lead with ordinals; dead patterns 4/5/implicit were deleted. Phase 3 — filler-removal toggle DONE; `auto_punctuate` removed as dead. Phase 4 — segment merging landed with Phase 1; Ship-Mode sleep and paste-guard tuning remain open.
 
 **Goal:** Let users dictate structured text — bullet lists, numbered lists, basic layout — in **plain dictation mode**, deterministically, without invoking Structured Mode's LLM. Also tighten general formatting quality and output latency.
 

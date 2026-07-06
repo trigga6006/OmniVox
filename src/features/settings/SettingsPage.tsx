@@ -219,6 +219,10 @@ export function SettingsPage() {
     patchSettings((current) => ({ noise_reduction: !current.noise_reduction })).catch(console.error);
   }, [patchSettings]);
 
+  const handleFillerRemovalToggle = useCallback(() => {
+    patchSettings((current) => ({ filler_removal: !current.filler_removal })).catch(console.error);
+  }, [patchSettings]);
+
   const handleScreenContextToggle = useCallback(() => {
     patchSettings((current) => ({ use_screen_context: !current.use_screen_context })).catch(console.error);
   }, [patchSettings]);
@@ -329,6 +333,12 @@ export function SettingsPage() {
               onChange={handleStyleChange}
             />
           </Row>
+          <Row
+            icon={PenLine}
+            title="Filler removal"
+            description={'Drop filler words ("um", "you know", stray "basically") and stutter repeats. Off = verbatim transcription.'}
+            control={<Toggle checked={settings?.filler_removal ?? true} onChange={handleFillerRemovalToggle} aria-label="Filler removal" />}
+          />
         </GroupCard>
 
         {/* ── Audio ── */}

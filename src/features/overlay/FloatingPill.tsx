@@ -71,7 +71,9 @@ export function FloatingPill() {
   // Live preview state
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [livePreviewEnabled, setLivePreviewEnabled] = useState(false);
-  const [noiseReduction, setNoiseReduction] = useState(true);
+  // Default mirrors the Rust AppSettings default (false) so the quick-toggle
+  // doesn't show the wrong state before settings load.
+  const [noiseReduction, setNoiseReduction] = useState(false);
   const [autoSwitchModes, setAutoSwitchModes] = useState(true);
   const [shipMode, setShipMode] = useState(false);
   const [commandSend, setCommandSend] = useState(true);

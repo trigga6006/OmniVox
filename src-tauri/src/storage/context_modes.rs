@@ -211,15 +211,122 @@ pub fn delete_mode(db: &Database, id: &str) -> AppResult<()> {
     }
 
     // Cascade delete inside one transaction — a crash mid-way must not leave
-    // orphaned dictionary entries or snippets pointing at a deleted mode.
+    // orphaned dictionary entries, snippets, or vocabulary pointing at a
+    // deleted mode.  Vocabulary was missing from the cascade before v0.5,
+    // and since `vocabulary_entries.mode_id` is an enforced FK with no ON
+    // DELETE action, deleting any mode that had vocabulary words failed
+    // outright with "FOREIGN KEY constraint failed".
     let tx = conn.transaction()?;
     tx.execute(
         "DELETE FROM dictionary_entries WHERE mode_id = ?1",
         params![id],
     )?;
     tx.execute("DELETE FROM snippets WHERE mode_id = ?1", params![id])?;
+    tx.execute(
+        "DELETE FROM vocabulary_entries WHERE mode_id = ?1",
+        params![id],
+    )?;
     tx.execute("DELETE FROM context_modes WHERE id = ?1", params![id])?;
     tx.commit()?;
 
     Ok(())
+}
+
+/// Remove vocabulary rows whose mode no longer exists.  FK enforcement makes
+/// new orphans impossible, but rows written before the `foreign_keys` pragma
+/// (or by external tools) can linger and keep feeding phonetic correction —
+/// this is a startup repair for those historical leaks.
+pub fn purge_orphaned_vocabulary(db: &Database) -> AppResult<usize> {
+    let conn = db.conn()?;
+    let purged = conn.execute(
+        "DELETE FROM vocabulary_entries
+         WHERE mode_id IS NOT NULL
+           AND mode_id NOT IN (SELECT id FROM context_modes)",
+        [],
+    )?;
+    Ok(purged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db() -> (Database, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("omnivox-modes-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::init(&dir.join("t.db")).unwrap();
+        (db, dir)
+    }
+
+    #[test]
+    fn delete_mode_cascades_vocabulary() {
+        let (db, dir) = temp_db();
+        let mode = create_mode(&db, "Test", "", "zap", "amber", "formal").unwrap();
+        let mode_id = mode.id.to_string();
+        crate::storage::vocabulary::add_entry(&db, "OmniCue", Some(&mode_id)).unwrap();
+        crate::storage::vocabulary::add_entry(&db, "GlobalWord", None).unwrap();
+
+        delete_mode(&db, &mode_id).unwrap();
+
+        let conn = db.conn().unwrap();
+        let scoped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vocabulary_entries WHERE mode_id = ?1",
+                params![mode_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scoped, 0, "mode-scoped vocabulary must be cascade-deleted");
+        let global: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vocabulary_entries WHERE mode_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(global, 1, "global vocabulary must survive mode deletion");
+
+        drop(conn);
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn purge_removes_only_orphaned_vocabulary() {
+        let (db, dir) = temp_db();
+        let mode = create_mode(&db, "Live", "", "zap", "amber", "formal").unwrap();
+        let live_id = mode.id.to_string();
+        crate::storage::vocabulary::add_entry(&db, "LiveWord", Some(&live_id)).unwrap();
+        crate::storage::vocabulary::add_entry(&db, "GlobalWord", None).unwrap();
+        // Simulate a historical leak (rows written before FK enforcement):
+        // FKs must be off for the orphan to exist at all.
+        {
+            let conn = db.conn().unwrap();
+            conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+            conn.execute(
+                "INSERT INTO vocabulary_entries (id, word, is_enabled, created_at, mode_id)
+                 VALUES (?1, 'Orphan', 1, ?2, 'no-such-mode-id')",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    chrono::Utc::now().to_rfc3339()
+                ],
+            )
+            .unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        }
+
+        let purged = purge_orphaned_vocabulary(&db).unwrap();
+        assert_eq!(purged, 1, "exactly the orphaned row is purged");
+
+        let conn = db.conn().unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vocabulary_entries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2, "live-mode and global rows must survive");
+
+        drop(conn);
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

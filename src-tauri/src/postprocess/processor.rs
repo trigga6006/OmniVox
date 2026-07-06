@@ -55,6 +55,13 @@ impl ProcessorChain {
     pub fn set_style(&mut self, style: WritingStyle) {
         self.config.writing_style = style;
     }
+
+    /// Enable/disable filler-word removal at runtime (called when settings
+    /// change).  Covers all three filler passes: word fillers, contextual
+    /// fillers, and phrase dedup.
+    pub fn set_filler_removal(&mut self, enabled: bool) {
+        self.config.apply_filler_removal = enabled;
+    }
 }
 
 impl TextProcessor for ProcessorChain {

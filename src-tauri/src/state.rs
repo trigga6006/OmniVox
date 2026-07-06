@@ -135,12 +135,16 @@ impl AppState {
         // Initialize database. Create tables on first run.
         let db = Arc::new(Database::init(&db_path).expect("Failed to initialize database"));
 
-        // Load saved writing style so it persists across restarts.
-        let writing_style = crate::storage::settings::get_settings(&db)
+        // Load saved writing style + filler removal so they persist across restarts.
+        let saved = crate::storage::settings::get_settings(&db).ok();
+        let writing_style = saved
+            .as_ref()
             .map(|s| WritingStyle::from_str(&s.writing_style))
             .unwrap_or_default();
+        let filler_removal = saved.as_ref().map(|s| s.filler_removal).unwrap_or(true);
         let processor_config = ProcessorConfig {
             writing_style,
+            apply_filler_removal: filler_removal,
             ..ProcessorConfig::default()
         };
 

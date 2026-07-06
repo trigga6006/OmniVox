@@ -49,7 +49,6 @@ impl WritingStyle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessorConfig {
     pub auto_capitalize: bool,
-    pub auto_punctuate: bool,
     pub apply_dictionary: bool,
     /// Remove filler words (um, uh, you know, etc.) and deduplicate repeated words.
     pub apply_filler_removal: bool,
@@ -61,7 +60,6 @@ impl Default for ProcessorConfig {
     fn default() -> Self {
         Self {
             auto_capitalize: true,
-            auto_punctuate: true,
             apply_dictionary: true,
             apply_filler_removal: true,
             writing_style: WritingStyle::default(),

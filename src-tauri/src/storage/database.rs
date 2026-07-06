@@ -162,9 +162,12 @@ impl Database {
             )?;
         }
 
-        // Seed the built-in voice commands on first run (empty-table guarded).
-        // Called after the conn guard above is dropped since it takes the lock.
+        // Seed the built-in voice commands on first run (empty-table guarded),
+        // then backfill any built-ins added by app updates since the first
+        // seed. Called after the conn guard above is dropped since both take
+        // the lock.
         crate::storage::voice_commands::seed_defaults(self)?;
+        crate::storage::voice_commands::seed_missing_builtins(self)?;
 
         Ok(())
     }

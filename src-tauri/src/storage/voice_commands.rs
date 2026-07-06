@@ -111,6 +111,52 @@ pub fn seed_defaults(db: &Database) -> AppResult<()> {
     Ok(())
 }
 
+/// Backfill built-in commands added in app updates after the user's DB was
+/// first seeded.  [`seed_defaults`] is a no-op once rows exist, so without
+/// this pass an existing install would never see new built-ins (e.g. the
+/// v0.5 list commands).  Inserts only built-ins whose phrase has no row yet;
+/// user edits, re-scopes, and disables of existing rows are left untouched.
+pub fn seed_missing_builtins(db: &Database) -> AppResult<()> {
+    let conn = db.conn()?;
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT phrase FROM custom_voice_commands")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().collect()
+    };
+    let now = Utc::now().to_rfc3339();
+    for (def, enabled) in default_command_table()
+        .iter()
+        .map(|d| (d, true))
+        .chain(default_disabled_command_table().iter().map(|d| (d, false)))
+    {
+        if existing.contains(&def.phrase) {
+            continue;
+        }
+        let sort_order: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM custom_voice_commands",
+            [],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO custom_voice_commands
+                (id, phrase, action, trigger_scope, enabled, built_in, sort_order, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                def.phrase,
+                command_to_action(&def.command),
+                scope_to_str(def.scope),
+                enabled,
+                sort_order,
+                now,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 // ── CRUD ─────────────────────────────────────────────────────────
 
 /// List all commands (built-in and custom) for the management UI.

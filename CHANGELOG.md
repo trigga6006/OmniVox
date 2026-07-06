@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Dictate lists by voice.** New built-in voice commands turn speech into real lists in plain dictation mode — no LLM needed: "bullet point" / "next bullet" starts a `- ` item, "number item" / "next number" starts an auto-counting `1.` `2.` `3.` item, and "end list" closes the list (resets numbering, breaks to a new line before further prose). Items are cleaned up as you'd expect — the comma before a marker is dropped, the first letter is capitalized (except in very-casual style), and a marker you trail off on ("...bullet point" with nothing after) is discarded instead of pasted dangling. The whole list lands in the target app as a single atomic paste instead of one paste per segment, which also makes multi-part dictations faster. All commands appear on the Commands page with individual toggles, including on existing installs.
+- **Counted lists work on short dictations, and spoken ordinals become numbered lists.** "I need three things. Milk. Eggs. Bread." now formats as a list even though it's short — an explicit count is an explicit signal, so the 40-word minimum no longer applies to it. And when the items themselves start with spoken ordinals ("these three steps: First, ... Second, ..."), the list is rendered as `1.` `2.` `3.` with the redundant ordinal words stripped, instead of dash bullets. Ordinal sentences *without* a counted header still stay prose — that guard against surprise bullets is unchanged.
+- **Filler removal is now a setting.** Settings → Writing style gains a "Filler removal" toggle. On (the default) keeps today's behavior — "um", "you know", stutter repeats, and stray "basically" are dropped. Off transcribes verbatim, for users dictating quotes or who want every word kept.
+
+### Improvements
+
+- **Long dictations no longer silently lose content in Structured Mode.** The LLM input cap rises from 1,600 to 4,000 characters (the context window grows to match), and when a dictation still exceeds it the panel now shows a warning with the number of characters that weren't structured — the Raw view always carries the full transcript. Previously everything past the cap was dropped with no indication.
+- **Structured Mode is ready when you are.** The LLM's warmed prompt cache is released after 5 idle minutes to save memory; previously the next dictation paid the multi-second re-warm on its critical path. The session is now rebuilt in the background the moment you start recording, so the prefill overlaps with your speech. Toggling Structured Mode on also no longer freezes the Settings page while the model loads — the load happens in the background.
+- **Deleting a context mode with vocabulary words works now.** The delete cascade was missing vocabulary entries, and since they hold an enforced foreign key, deleting any mode that had mode-scoped vocabulary failed outright with a database error. Vocabulary now deletes with the mode (dictionary and snippets already did), and a startup repair purges any orphaned rows left by databases that predate foreign-key enforcement.
+
+### Internal
+
+- Frontend CI: a new `frontend-health` workflow runs `tsc` + `vite build` on every PR — TypeScript/Rust payload drift previously shipped unchecked (the `context` slot was missing from the TS `SlotExtraction` mirror; fixed).
+- `LlmConfig` sizing (context window, output budget, threads) now has a single source of truth in `LlmConfig::default()` instead of being duplicated in the loader.
+- Removed the never-read `auto_punctuate` processor flag; the overlay pill's noise-reduction quick-toggle no longer defaults to the wrong state before settings load.
+- Deleted the dead list-detection scaffolding in the formatter (patterns that were hard-disabled behind `false` gates); the doc comment now describes what actually runs.
+- Fixed a Linux build error in `audio/ducking.rs` (`DEFAULT_DUCK_FACTOR` referenced outside its cfg), so the Rust suite can build and run on non-Windows dev machines.
+
 ## v0.4.0
 
 ### Features

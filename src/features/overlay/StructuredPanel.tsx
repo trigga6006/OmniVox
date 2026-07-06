@@ -306,6 +306,18 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
         </div>
       </div>
 
+      {/* Truncation warning — long dictation exceeded the LLM input cap.
+          The raw transcript always carries the full text. */}
+      {payload.truncated_chars > 0 && (
+        <div className="sp-error">
+          <span className="sp-error-dot" />
+          <span className="sp-error-text">
+            Long dictation — the last ~{payload.truncated_chars} characters
+            weren't structured. Use Raw for the full text.
+          </span>
+        </div>
+      )}
+
       {/* Error banner */}
       {pasteError && (
         <div className="sp-error">

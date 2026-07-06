@@ -453,6 +453,10 @@ impl OutputRouter {
             VoiceCommand::LaunchApp(command_line) => {
                 Self::launch_app(command_line);
             }
+            // List markers are resolved into literal text segments by
+            // `resolve_list_segments` before segments reach the router; an
+            // unresolved one has nothing to execute.
+            VoiceCommand::BulletItem | VoiceCommand::NumberedItem | VoiceCommand::EndList => {}
         }
         Ok(())
     }

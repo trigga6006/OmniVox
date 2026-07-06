@@ -99,6 +99,8 @@ export interface AppSettings {
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
+  /** Remove filler words and stutter repeats during post-processing. */
+  filler_removal: boolean;
   audio_ducking: boolean;
   ducking_amount: number;
   /** Send dictation through a local LLM and output a structured Markdown prompt. */
@@ -458,6 +460,13 @@ export type Urgency = "low" | "normal" | "high";
 
 export interface SlotExtraction {
   goal: string;
+  /**
+   * Background/situational statements from the dictation.  Renders as
+   * `## Context`.  (Present in the Rust schema since v0.2.x; was missing
+   * from this mirror, silently dropping the slot in any TS consumer.)
+   * Absent on the wire when empty — Rust skip-serializes empty slots.
+   */
+  context?: string[];
   constraints: string[];
   files: string[];
   urgency?: Urgency | null;
@@ -484,6 +493,12 @@ export interface StructuredOutputPayload {
   markdown: string;
   slots: SlotExtraction;
   raw_transcript: string;
+  /**
+   * Characters dropped from the LLM input because the dictation exceeded
+   * the structured input cap.  0 when nothing was truncated.  The full
+   * dictation is always preserved in `raw_transcript`.
+   */
+  truncated_chars: number;
 }
 
 export const listLlmModels = () => invoke<LlmModelInfo[]>("list_llm_models");

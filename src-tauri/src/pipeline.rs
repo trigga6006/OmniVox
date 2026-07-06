@@ -22,6 +22,10 @@ struct StructuredOutputPayload {
     markdown: String,
     slots: SlotExtraction,
     raw_transcript: String,
+    /// Characters dropped from the LLM input because the dictation exceeded
+    /// `STRUCTURED_INPUT_CHAR_CAP`. 0 when nothing was truncated — the panel
+    /// shows a warning and points at "Raw" (which always has the full text).
+    truncated_chars: usize,
 }
 
 /// Payload emitted with `recording-state-change` when the state is "error".
@@ -252,6 +256,16 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
                     }
                 }
             }
+        }
+    }
+
+    // Structured Mode: re-warm the LLM session while the user speaks.  The
+    // runner drops its KV cache after 5 idle minutes; rebuilding it here
+    // overlaps the multi-second prefill with the utterance instead of paying
+    // it on the extraction's critical path.  No-op when already warm.
+    if settings.as_ref().map(|s| s.structured_mode).unwrap_or(false) {
+        if let Some(runner) = state.llm_runner.lock().ok().and_then(|g| g.clone()) {
+            runner.prewarm();
         }
     }
 
@@ -822,16 +836,21 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         None
     };
 
-    const STRUCTURED_INPUT_CHAR_CAP: usize = 1600;
-    let structured_input = if processed_text.chars().count() > STRUCTURED_INPUT_CHAR_CAP {
+    // Sized together with LlmConfig::default().n_ctx: 4,000 chars ≈ 1,100
+    // tokens of input on top of the ~1,900-token system prompt and 384-token
+    // output budget.  Anything beyond the cap is dropped from the LLM input
+    // (never from the raw transcript) and surfaced to the user via
+    // `truncated_chars` on the structured payload.
+    const STRUCTURED_INPUT_CHAR_CAP: usize = 4000;
+    let total_chars = processed_text.chars().count();
+    let truncated_chars = total_chars.saturating_sub(STRUCTURED_INPUT_CHAR_CAP);
+    let structured_input = if truncated_chars > 0 {
         let clipped: String = processed_text
             .chars()
             .take(STRUCTURED_INPUT_CHAR_CAP)
             .collect();
         crate::llm::diaglog::log(&format!(
-            "pipeline: truncating structured input from {} to {} chars",
-            processed_text.chars().count(),
-            STRUCTURED_INPUT_CHAR_CAP
+            "pipeline: truncating structured input from {total_chars} to {STRUCTURED_INPUT_CHAR_CAP} chars"
         ));
         clipped
     } else {
@@ -962,8 +981,18 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     } else {
         None
     };
+    // Resolve spoken list markers ("bullet point", "number item", "end list")
+    // into literal `- ` / `1. ` text and merge adjacent text segments so a
+    // dictated list lands as one atomic paste. Item capitalization follows
+    // the writing style (VeryCasual stays lowercase).
+    let capitalize_items = settings
+        .as_ref()
+        .map(|s| s.writing_style != "very_casual")
+        .unwrap_or(true);
     let voice_segments = voice_command_table.as_ref().map(|table| {
-        crate::postprocess::voice_commands::parse_commands_with_table(&final_text, table)
+        let segments =
+            crate::postprocess::voice_commands::parse_commands_with_table(&final_text, table);
+        crate::postprocess::voice_commands::resolve_list_segments(segments, capitalize_items)
     });
 
     // 5. Kick off focus restoration in parallel with output.
@@ -1074,6 +1103,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 // already been through filler removal, dictionary, and
                 // capitalization, which would mask the original words.
                 raw_transcript: transcription.text.clone(),
+                truncated_chars,
             },
         );
     }

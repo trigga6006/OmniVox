@@ -160,18 +160,12 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         .map(|s| s.gpu_acceleration)
         .unwrap_or(false);
 
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(2).max(2).min(8) as i32)
-        .unwrap_or(4);
-
+    // n_ctx / max_tokens / n_threads live in LlmConfig::default() — the
+    // single source of truth for engine sizing.
     let config = LlmConfig {
         model_path: model_path.to_string_lossy().into_owned(),
-        n_threads,
         use_gpu,
-        // Sized for system prompt (~1,900 tok) + capped input + 384 output.
-        // 2048 overflowed mid-generation on long dictations.
-        n_ctx: 3072,
-        max_tokens: 384,
+        ..LlmConfig::default()
     };
 
     // Drop the previous runner before loading a replacement so llama.cpp does

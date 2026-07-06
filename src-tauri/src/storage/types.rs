@@ -139,6 +139,10 @@ pub struct AppSettings {
     pub ghost_mode: bool,
     /// Writing style controls capitalization and punctuation ("formal", "casual", "very_casual").
     pub writing_style: String,
+    /// Remove filler words (um, uh, "you know", stray "basically") and
+    /// deduplicate stutter repeats during post-processing.  Off = transcribe
+    /// verbatim.
+    pub filler_removal: bool,
     /// Lower system volume while recording to reduce background noise pickup.
     pub audio_ducking: bool,
     /// How much to reduce volume (0 = no reduction, 100 = full mute). Default 70.
@@ -195,6 +199,7 @@ impl Default for AppSettings {
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),
+            filler_removal: true,
             audio_ducking: true,
             ducking_amount: 70,
             structured_mode: false,
