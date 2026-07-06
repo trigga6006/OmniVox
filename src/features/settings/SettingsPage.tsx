@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
@@ -15,7 +15,8 @@ import {
   type PlatformInfo,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Button, Card, Toggle, Segmented, Badge, Modal } from "@/components/ui";
+import { Button, Card, Toggle, Segmented, Badge } from "@/components/ui";
+import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
 import { HotkeySection } from "./HotkeySection";
@@ -119,8 +120,8 @@ export function SettingsPage() {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
-  const [showVoiceCommands, setShowVoiceCommands] = useState(false);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const setPage = useAppStore((s) => s.setPage);
   const { replaceSettings, patchSettings } = useSettingsPatch(setSettings);
   // Version is sourced from tauri.conf.json via the Tauri app API
   // rather than hardcoded — so the About section stays correct across
@@ -258,6 +259,10 @@ export function SettingsPage() {
 
   const handleShipModeToggle = useCallback(() => {
     patchSettings((current) => ({ ship_mode: !current.ship_mode })).catch(console.error);
+  }, [patchSettings]);
+
+  const handleCommandModeToggle = useCallback(() => {
+    patchSettings((current) => ({ command_mode: !current.command_mode })).catch(console.error);
   }, [patchSettings]);
 
   const currentTheme = settings?.theme ?? "dark";
@@ -505,7 +510,7 @@ export function SettingsPage() {
                   variant="ghost"
                   icon={<Info />}
                   className="self-start"
-                  onClick={() => setShowVoiceCommands(true)}
+                  onClick={() => setPage("commands")}
                 >
                   View all commands
                 </Button>
@@ -556,6 +561,18 @@ export function SettingsPage() {
             }
             control={<Toggle checked={!!settings?.ship_mode} onChange={handleShipModeToggle} aria-label="Ship Mode" />}
           />
+          <Row
+            icon={Zap}
+            title="Command Mode"
+            description={
+              <>
+                Hold <span className="text-amber-300/85">Right Ctrl</span> and speak a command —
+                "open Spotify", "close this window". Performs an action instead of typing.
+                Model and testing live on the Models page.
+              </>
+            }
+            control={<Toggle accent="amber" checked={!!settings?.command_mode} onChange={handleCommandModeToggle} aria-label="Command Mode" />}
+          />
         </GroupCard>
 
         {/* ── Appearance ── */}
@@ -604,35 +621,6 @@ export function SettingsPage() {
         </GroupCard>
       </div>
 
-      {/* ── Voice Commands Reference ── */}
-      <Modal
-        open={showVoiceCommands}
-        onClose={() => setShowVoiceCommands(false)}
-        title="Voice Commands"
-        className="max-w-sm"
-      >
-        <div className="space-y-2">
-          {[
-            { phrase: "new line", desc: "Insert a line break" },
-            { phrase: "new paragraph", desc: "Insert a paragraph break" },
-            { phrase: "delete last word", desc: "Remove the previous word" },
-            { phrase: "send", desc: "Press Enter to send (must be last word)" },
-          ].map((cmd) => (
-            <div
-              key={cmd.phrase}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-2/55 px-3 py-2.5"
-            >
-              <div>
-                <span className="font-mono text-xs font-medium text-amber-300">"{cmd.phrase}"</span>
-                <p className="mt-0.5 text-xs text-text-muted">{cmd.desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        <p className="mt-5 text-center text-[10.5px] text-text-muted">
-          Speak these phrases naturally during dictation
-        </p>
-      </Modal>
     </div>
   );
 }
