@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Loader2, Zap, Check, X } from "lucide-react";
 import { confirmCommand, cancelCommand } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -20,12 +21,21 @@ const ACCENT = `rgb(${ACCENT_RGB})`;
 export function CommandPill({ showContent }: { showContent: boolean }) {
   const state = useCommandStore((s) => s.state);
   const summary = useCommandStore((s) => s.summary);
+  const editableText = useCommandStore((s) => s.editableText);
 
   const isListening = state === "listening";
   const isRecognizing = state === "recognizing";
   const isConfirm = state === "confirm";
   const isDone = state === "done";
   const isError = state === "error";
+  const isEditableConfirm = isConfirm && editableText !== null;
+
+  // Local draft of the editable message — re-seeded whenever a new confirm
+  // arrives so a previous edit can't leak into the next command.
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    setDraft(editableText ?? "");
+  }, [editableText]);
 
   const borderClass = isError
     ? "border-recording-500/40"
@@ -36,8 +46,12 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
   return (
     <div
       className={cn(
-        isConfirm ? "w-[300px] h-[44px]" : "w-[260px] h-[34px]",
-        "relative flex items-center overflow-hidden shrink-0 rounded-full border px-3.5",
+        isEditableConfirm
+          ? "w-[340px] h-[92px] rounded-2xl"
+          : isConfirm
+            ? "w-[300px] h-[44px] rounded-full"
+            : "w-[260px] h-[34px] rounded-full",
+        "relative flex items-center overflow-hidden shrink-0 border px-3.5",
         "bg-[var(--color-pill-bg)] transition-[border-color] duration-200 ease-out",
         borderClass
       )}
@@ -52,6 +66,63 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
       {/* Ambient command-blue dither field while listening/recognizing. */}
       <CommandDither active={isListening || isRecognizing} />
 
+      {isEditableConfirm ? (
+        /* Review-message confirm: the send text is editable so a Whisper
+           mishearing can be fixed before Enter fires.  The global hook's
+           Enter/Esc path is deliberately unarmed for this variant — the
+           textarea owns the keyboard (Ctrl+Enter sends, Esc dismisses). */
+        <div className="relative z-[1] flex w-full flex-col gap-1.5 py-2">
+          <div className="flex items-center gap-2">
+            <Zap size={12} style={{ color: ACCENT }} strokeWidth={2} fill={ACCENT} />
+            <span
+              className="text-[9px] font-semibold uppercase tracking-[0.16em]"
+              style={{ color: ACCENT, opacity: 0.85, fontFamily: "var(--font-display)" }}
+            >
+              Review message
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <button
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  confirmCommand(draft).catch(() => {});
+                }}
+                title="Send (Ctrl+Enter)"
+                className="flex items-center justify-center h-6 w-6 rounded-full border border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/25 transition-colors"
+              >
+                <Check size={12} strokeWidth={2.5} />
+              </button>
+              <button
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  cancelCommand().catch(() => {});
+                }}
+                title="Dismiss (Esc)"
+                className="flex items-center justify-center h-6 w-6 rounded-full border border-white/15 text-text-secondary/80 hover:bg-white/10 transition-colors"
+              >
+                <X size={12} strokeWidth={2.5} />
+              </button>
+            </div>
+          </div>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                confirmCommand(draft).catch(() => {});
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelCommand().catch(() => {});
+              }
+            }}
+            rows={2}
+            className="w-full resize-none rounded-lg border border-border/60 bg-surface-2/60 px-2.5 py-1.5 text-[11px] leading-snug text-text-primary outline-none focus:border-amber-500/40"
+            spellCheck={false}
+          />
+        </div>
+      ) : (
       <div className="relative z-[1] flex w-full items-center gap-2.5">
       {/* Left glyph — the ⚡ is the command identity. */}
       <div className="shrink-0 flex items-center justify-center min-w-[20px]">
@@ -146,6 +217,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
         </div>
       )}
       </div>
+      )}
     </div>
   );
 }

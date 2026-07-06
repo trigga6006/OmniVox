@@ -114,6 +114,7 @@ export function FloatingPill() {
     setShowShipPopup,
   });
 
+  const commandEditableConfirm = useCommandStore((s) => s.editableText !== null);
   const showContent = useOverlaySizing({
     pillState,
     hasStructuredPayload: Boolean(structuredPayload),
@@ -121,6 +122,7 @@ export function FloatingPill() {
     showModeSelector,
     modeCount: modes.length,
     commandState,
+    commandEditableConfirm,
   });
   const handleDictatingChange = useCallback((active: boolean) => {
     if (dictatingGraceTimerRef.current !== null) {

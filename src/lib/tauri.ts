@@ -310,10 +310,15 @@ export interface CommandResult {
 }
 export interface CommandConfirm {
   summary: string;
+  /** Present when the pending action sends a typed message — shown in an
+   *  editable textarea so a mishearing can be fixed before it sends. */
+  editable_text?: string;
 }
 
-/** Execute the command currently awaiting confirmation. */
-export const confirmCommand = () => invoke<void>("confirm_command");
+/** Execute the command currently awaiting confirmation.  Pass `editedText`
+ *  when the user revised the message in the confirm pill's textarea. */
+export const confirmCommand = (editedText?: string) =>
+  invoke<void>("confirm_command", { editedText: editedText ?? null });
 /** Discard the command currently awaiting confirmation. */
 export const cancelCommand = () => invoke<void>("cancel_command");
 

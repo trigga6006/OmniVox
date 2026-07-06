@@ -18,13 +18,18 @@ interface CommandState {
   state: CommandUiState;
   /** Result/confirm summary text, e.g. "Opened Spotify" or "Open Spotify?". */
   summary: string | null;
-  setState: (state: CommandUiState, summary?: string | null) => void;
+  /** In `confirm` state: the message text of a pending send, editable in the
+   *  pill before it fires.  Null for non-message confirms (open/close). */
+  editableText: string | null;
+  setState: (state: CommandUiState, summary?: string | null, editableText?: string | null) => void;
   reset: () => void;
 }
 
 export const useCommandStore = create<CommandState>((set) => ({
   state: "idle",
   summary: null,
-  setState: (state, summary = null) => set({ state, summary }),
-  reset: () => set({ state: "idle", summary: null }),
+  editableText: null,
+  setState: (state, summary = null, editableText = null) =>
+    set({ state, summary, editableText }),
+  reset: () => set({ state: "idle", summary: null, editableText: null }),
 }));

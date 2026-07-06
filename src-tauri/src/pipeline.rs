@@ -1213,6 +1213,11 @@ pub fn current_audio_level(state: &AppState) -> f32 {
 #[derive(Clone, serde::Serialize)]
 struct CommandConfirmPayload {
     summary: String,
+    /// When the pending action sends a typed message, the message text —
+    /// the pill shows it in an editable textarea so a mishearing can be
+    /// fixed before Enter fires (a verbatim send is the whole risk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editable_text: Option<String>,
 }
 
 /// Payload for `command-result`.
@@ -1407,11 +1412,40 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
             .any(|i| matches!(i, crate::actions::CommandIntent::TypeText { submit: true, .. }))
         {
             let summary = confirm_chain_summary(state, &intents);
+            // Editable when the chain sends exactly one message — the pill
+            // shows a textarea so a Whisper mishearing can be corrected
+            // before the Enter fires.
+            let editable_text = {
+                let sends: Vec<&String> = intents
+                    .iter()
+                    .filter_map(|i| match i {
+                        crate::actions::CommandIntent::TypeText { text, submit: true } => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                match sends.as_slice() {
+                    [one] => Some((*one).clone()),
+                    _ => None,
+                }
+            };
             if let Ok(mut pending) = state.pending_command.lock() {
                 *pending = Some(crate::state::PendingCommand::Chain { intents });
             }
-            crate::hotkey::set_confirm_pending(true);
-            let _ = app_handle.emit("command-confirm", &CommandConfirmPayload { summary });
+            // Editable confirms deliberately do NOT arm the hook's Enter/Esc
+            // path: the pill shows a focusable textarea, and a global Enter
+            // swallow would eat the user's edits (and send as-heard — the
+            // opposite of what a review surface is for).  The textarea's own
+            // key handlers cover Ctrl+Enter / Esc instead.
+            crate::hotkey::set_confirm_pending(editable_text.is_none());
+            let _ = app_handle.emit(
+                "command-confirm",
+                &CommandConfirmPayload {
+                    summary,
+                    editable_text,
+                },
+            );
             return;
         }
 
@@ -1425,7 +1459,13 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
                     *pending = Some(crate::state::PendingCommand::Chain { intents });
                 }
                 crate::hotkey::set_confirm_pending(true);
-                let _ = app_handle.emit("command-confirm", &CommandConfirmPayload { summary });
+                let _ = app_handle.emit(
+                    "command-confirm",
+                    &CommandConfirmPayload {
+                        summary,
+                        editable_text: None,
+                    },
+                );
                 return;
             }
         }
@@ -1668,6 +1708,7 @@ async fn run_intent(
                         "command-confirm",
                         &CommandConfirmPayload {
                             summary: format!("Open {}?", r.name),
+                            editable_text: None,
                         },
                     );
                 }
@@ -1693,8 +1734,13 @@ async fn run_intent(
                     } else {
                         format!("Close \u{201c}{title}\u{201d}?")
                     };
-                    let _ = app_handle
-                        .emit("command-confirm", &CommandConfirmPayload { summary });
+                    let _ = app_handle.emit(
+                        "command-confirm",
+                        &CommandConfirmPayload {
+                            summary,
+                            editable_text: None,
+                        },
+                    );
                 }
             }
         }
@@ -2066,7 +2112,15 @@ async fn run_blocking(
 /// Execute the pending (confirmed) command — called by the `confirm_command`
 /// Tauri command when the user accepts a low-confidence app match, a window
 /// close, or a chain containing a message send.
-pub async fn confirm_pending_command(app_handle: &tauri::AppHandle, state: &AppState) {
+///
+/// `edited_text`, when present, replaces the message of the chain's single
+/// submitting TypeText — the pill's editable confirm lets the user fix a
+/// mishearing before it sends.  Ignored for non-chain pendings.
+pub async fn confirm_pending_command(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    edited_text: Option<String>,
+) {
     let pending = state
         .pending_command
         .lock()
@@ -2097,7 +2151,21 @@ pub async fn confirm_pending_command(app_handle: &tauri::AppHandle, state: &AppS
                 Err(e) => emit_command_result(app_handle, "error", e),
             }
         }
-        crate::state::PendingCommand::Chain { intents } => {
+        crate::state::PendingCommand::Chain { mut intents } => {
+            // Apply an edit from the pill's textarea to the single submitting
+            // TypeText (the only editable pending shape the pill offers).
+            if let Some(new_text) = edited_text {
+                let trimmed = new_text.trim();
+                if !trimmed.is_empty() {
+                    for intent in intents.iter_mut() {
+                        if let crate::actions::CommandIntent::TypeText { text, submit: true } =
+                            intent
+                        {
+                            *text = trimmed.to_string();
+                        }
+                    }
+                }
+            }
             // The user accepted the whole sequence up front, so the chain
             // runner may now execute its submitting type_text steps.
             run_chain(app_handle, state, intents).await;

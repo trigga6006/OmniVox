@@ -32,6 +32,8 @@ interface OverlaySizingOptions {
   showModeSelector: boolean;
   modeCount: number;
   commandState: CommandUiState;
+  /** Confirm pill carries an editable message textarea — needs a taller window. */
+  commandEditableConfirm: boolean;
 }
 
 export function useOverlaySizing({
@@ -41,6 +43,7 @@ export function useOverlaySizing({
   showModeSelector,
   modeCount,
   commandState,
+  commandEditableConfirm,
 }: OverlaySizingOptions) {
   const prevTargetRef = useRef<{ w: number; h: number }>({ w: IDLE_WIN_W, h: IDLE_WIN_H });
   const showContentTimerRef = useRef<number | null>(null);
@@ -59,7 +62,11 @@ export function useOverlaySizing({
   useEffect(() => {
     let targetW: number;
     let targetH: number;
-    if (commandState === "confirm") {
+    if (commandState === "confirm" && commandEditableConfirm) {
+      // Review-message confirm: header row + a 2-row textarea.
+      targetW = 340;
+      targetH = 96;
+    } else if (commandState === "confirm") {
       // Room for "Open X?" plus the Yes/No buttons.
       targetW = 300;
       targetH = 46;
@@ -125,7 +132,7 @@ export function useOverlaySizing({
         settleTimerRef.current = null;
       }, 320);
     }
-  }, [pillState, hasStructuredPayload, structuredDegraded, showModeSelector, modeCount, commandState]);
+  }, [pillState, hasStructuredPayload, structuredDegraded, showModeSelector, modeCount, commandState, commandEditableConfirm]);
 
   useEffect(() => {
     return () => {

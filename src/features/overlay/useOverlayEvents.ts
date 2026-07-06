@@ -200,7 +200,9 @@ export function useOverlayEvents({
         window.clearTimeout(clearTimer);
         clearTimer = null;
       }
-      useCommandStore.getState().setState("confirm", p.summary);
+      useCommandStore
+        .getState()
+        .setState("confirm", p.summary, p.editable_text ?? null);
     });
     const unResult = onCommandResult((p) => {
       useCommandStore

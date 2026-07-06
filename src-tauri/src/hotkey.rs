@@ -281,7 +281,9 @@ mod state_machine {
                     tauri::async_runtime::spawn(async move {
                         let st = h.state::<crate::state::AppState>();
                         if confirm {
-                            crate::pipeline::confirm_pending_command(&h, &st).await;
+                            // Keyboard confirm sends the message as heard —
+                            // editing goes through the pill's textarea (mouse).
+                            crate::pipeline::confirm_pending_command(&h, &st, None).await;
                         } else {
                             crate::pipeline::cancel_pending_command(&h, &st);
                         }

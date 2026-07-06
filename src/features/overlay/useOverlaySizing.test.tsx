@@ -23,6 +23,7 @@ type Props = {
   showModeSelector: boolean;
   modeCount: number;
   commandState: CommandUiState;
+  commandEditableConfirm: boolean;
 };
 
 const idleProps: Props = {
@@ -32,6 +33,7 @@ const idleProps: Props = {
   showModeSelector: false,
   modeCount: 0,
   commandState: "idle",
+  commandEditableConfirm: false,
 };
 
 beforeEach(() => {
@@ -93,6 +95,15 @@ describe("useOverlaySizing", () => {
 
     rerender({ ...idleProps, commandState: "confirm" });
     expect(resizeOverlay).toHaveBeenCalledWith(300, 46);
+  });
+
+  it("sizes the editable review-message confirm taller", () => {
+    const { rerender } = renderHook((p: Props) => useOverlaySizing(p), {
+      initialProps: idleProps,
+    });
+
+    rerender({ ...idleProps, commandState: "confirm", commandEditableConfirm: true });
+    expect(resizeOverlay).toHaveBeenCalledWith(340, 96);
   });
 
   it("does not resize again when the target is unchanged", () => {

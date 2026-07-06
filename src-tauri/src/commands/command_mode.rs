@@ -9,13 +9,16 @@ use tauri::State;
 
 use crate::state::AppState;
 
-/// Execute the command currently awaiting confirmation.
+/// Execute the command currently awaiting confirmation.  `edited_text`
+/// carries the pill textarea's content when the user revised a message
+/// before accepting.
 #[tauri::command]
 pub async fn confirm_command(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
+    edited_text: Option<String>,
 ) -> Result<(), String> {
-    crate::pipeline::confirm_pending_command(&app_handle, &state).await;
+    crate::pipeline::confirm_pending_command(&app_handle, &state, edited_text).await;
     Ok(())
 }
 
