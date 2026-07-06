@@ -21,19 +21,19 @@ import {
   setActiveContextMode,
   onContextModeChanged,
   onTranscriptionPreview,
-  onSettingsChanged,
   onStructuredOutputReady,
   onStructuredModeDegraded,
   onWhisperGpuFallback,
   onCommandStateChange,
   onCommandConfirm,
   onCommandResult,
-  getSettings,
+  type AppSettings,
   type ContextMode,
   type StructuredOutputPayload,
 } from "@/lib/tauri";
 import { formatDuration, cn } from "@/lib/utils";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
+import { useSettingsSync } from "@/hooks/useSettingsSync";
 import { PillWaveform } from "./PillWaveform";
 import { ModeSelector } from "./ModeSelector";
 import { StructuredPanel } from "./StructuredPanel";
@@ -241,31 +241,11 @@ export function FloatingPill() {
     };
   }, []);
 
-  // Load settings, listen for changes from other windows, and preview events
-  useEffect(() => {
-    getSettings()
-      .then((s) => {
-        replaceSettings(s);
-        setLivePreviewEnabled(s.live_preview);
-        setNoiseReduction(s.noise_reduction);
-        setAutoSwitchModes(s.auto_switch_modes);
-        setShipMode(s.ship_mode);
-        setCommandSend(s.command_send);
-        setGhostMode(s.ghost_mode);
-        setStructuredMode(s.structured_mode);
-        setStructuredVoiceCommand(s.structured_voice_command);
-      })
-      .catch(() => {});
-
-    const unlistenPreview = onTranscriptionPreview((text) => {
-      // Keep a generous tail; the pill right-anchors the text and clips the
-      // older words off the left, so the newest speech stays visible.
-      const tail = text.length > 90 ? text.slice(-90) : text;
-      setPreviewText(tail.replace(/^\s+/, ""));
-    });
-
-    // Stay in sync when settings change from the main window (or any window)
-    const unlistenSettings = onSettingsChanged((s) => {
+  // Load settings and stay in sync with changes from any window — one apply
+  // callback wired through useSettingsSync instead of duplicated fetch +
+  // listener bodies.
+  const applySettings = useCallback(
+    (s: AppSettings) => {
       replaceSettings(s);
       setLivePreviewEnabled(s.live_preview);
       setNoiseReduction(s.noise_reduction);
@@ -275,6 +255,18 @@ export function FloatingPill() {
       setGhostMode(s.ghost_mode);
       setStructuredMode(s.structured_mode);
       setStructuredVoiceCommand(s.structured_voice_command);
+    },
+    [replaceSettings]
+  );
+  useSettingsSync(applySettings);
+
+  // Preview + structured-output events
+  useEffect(() => {
+    const unlistenPreview = onTranscriptionPreview((text) => {
+      // Keep a generous tail; the pill right-anchors the text and clips the
+      // older words off the left, so the newest speech stays visible.
+      const tail = text.length > 90 ? text.slice(-90) : text;
+      setPreviewText(tail.replace(/^\s+/, ""));
     });
 
     const unlistenStructured = onStructuredOutputReady((payload) => {
@@ -326,7 +318,6 @@ export function FloatingPill() {
 
     return () => {
       unlistenPreview.then((fn) => fn());
-      unlistenSettings.then((fn) => fn());
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());

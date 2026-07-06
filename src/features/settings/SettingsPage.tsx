@@ -2,10 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap, Power } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  getSettings,
   getAudioDevices,
   setAudioDevice,
-  onSettingsChanged,
   getPlatformInfo,
   openMicSettings,
   openAccessibilitySettings,
@@ -19,6 +17,7 @@ import { Button, Card, Toggle, Segmented, Badge } from "@/components/ui";
 import { useAppStore } from "@/stores/appStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
+import { useSettingsSync } from "@/hooks/useSettingsSync";
 import { HotkeySection } from "./HotkeySection";
 import { GpuAccelerationSection } from "./GpuAccelerationSection";
 
@@ -130,17 +129,21 @@ export function SettingsPage() {
   // just "OmniVox" in the meantime.
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
-  useEffect(() => {
-    getSettings()
-      .then((s) => {
-        replaceSettings(s);
-        const mode = outputModes.find((m) => m.id === s.output_mode);
-        setActiveMode(mode ? mode.id : "clipboard");
-        const style = writingStyles.find((st) => st.id === s.writing_style);
-        setActiveStyle(style ? style.id : "formal");
-      })
-      .catch((e) => console.error("Failed to load settings:", e));
+  // Load settings and stay in sync with changes from the overlay pill (or
+  // any window) — one apply callback wired through useSettingsSync.
+  const applySettings = useCallback(
+    (s: AppSettings) => {
+      replaceSettings(s);
+      const mode = outputModes.find((m) => m.id === s.output_mode);
+      setActiveMode(mode ? mode.id : "clipboard");
+      const style = writingStyles.find((st) => st.id === s.writing_style);
+      setActiveStyle(style ? style.id : "formal");
+    },
+    [replaceSettings]
+  );
+  useSettingsSync(applySettings);
 
+  useEffect(() => {
     getAudioDevices()
       .then((devices) => {
         setAudioDevices(devices);
@@ -156,19 +159,7 @@ export function SettingsPage() {
     getVersion()
       .then(setAppVersion)
       .catch((e) => console.error("Failed to load app version:", e));
-
-    // Stay in sync when settings change from the overlay pill (or any window)
-    const unlisten = onSettingsChanged((s) => {
-      replaceSettings(s);
-      const mode = outputModes.find((m) => m.id === s.output_mode);
-      setActiveMode(mode ? mode.id : "clipboard");
-      const style = writingStyles.find((st) => st.id === s.writing_style);
-      setActiveStyle(style ? style.id : "formal");
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [replaceSettings]);
+  }, []);
 
   const handleModeChange = useCallback(
     (mode: OutputMode) => {
