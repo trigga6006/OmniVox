@@ -5,8 +5,14 @@ import type { CommandUiState } from "@/stores/commandStore";
 
 type PillState = RecordingStatus | "success";
 
-export const ACTIVE_W = 156;
+// ─── Pill geometry: single source of truth (TS side) ───
+// The Rust side mirrors the idle *window* size for window creation and
+// recovery — keep OVERLAY_IDLE_WIN_W/H in src-tauri/src/lib.rs in sync
+// with IDLE_WIN_W/H below.
+export const ACTIVE_W = 156; // active window width; pill is ACTIVE_PILL_W inside
 export const ACTIVE_H = 34;
+export const ACTIVE_PILL_W = 148; // pill CSS width — 8px slack inside ACTIVE_W
+export const MENU_PILL_W = 196; // thin base slit under the mode-selector menu
 export const IDLE_W = 42;
 export const IDLE_H = 14;
 // The idle pill is a tiny dark slit; on a black UI behind it you can't tell

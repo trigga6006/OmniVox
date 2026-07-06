@@ -40,7 +40,16 @@ import { StructuredPanel } from "./StructuredPanel";
 import { StructuredModeToggle } from "./StructuredModeToggle";
 import { CommandPill } from "./CommandPill";
 import { useCommandStore } from "@/stores/commandStore";
-import { IDLE_WIN_H, IDLE_WIN_W, useOverlaySizing } from "./useOverlaySizing";
+import {
+  ACTIVE_H,
+  ACTIVE_PILL_W,
+  IDLE_H,
+  IDLE_W,
+  IDLE_WIN_H,
+  IDLE_WIN_W,
+  MENU_PILL_W,
+  useOverlaySizing,
+} from "./useOverlaySizing";
 import "./FloatingPill.css";
 
 type PillState = RecordingStatus | "success";
@@ -881,6 +890,13 @@ export function FloatingPill() {
       onContextMenu={handleContextMenu}
       disabled={isProcessing}
       style={{
+        // Pill size comes from the shared geometry constants in
+        // useOverlaySizing.ts so the window resize targets and the pill CSS
+        // can never drift apart.  Idle = 42-px slit · menu-open = a thin
+        // base slit the exact width of the mode-selector panel · active =
+        // the snug recording pill (8px slack inside the ACTIVE_W window).
+        width: showModeSelector ? MENU_PILL_W : isIdle ? IDLE_W : ACTIVE_PILL_W,
+        height: showModeSelector || isIdle ? IDLE_H : ACTIVE_H,
         // Ghost mode: fully transparent but still interactive
         opacity: ghostMode && !showModeSelector ? 0 : 1,
         // Idle locator — a super-faint amber glow so the dark slit stays
@@ -902,13 +918,7 @@ export function FloatingPill() {
         // producing a visible one-frame jolt.  Colour + background
         // transitions below pick up those same class changes and
         // smooth them over 200 ms.
-        // Idle = 42-px slit · menu-open = a thin base slit the exact width of the
-        // mode-selector panel (196) · active = the snug recording pill.
-        showModeSelector
-          ? "w-[196px] h-[14px]"
-          : isIdle
-            ? "w-[42px] h-[14px] mb-[2px]"
-            : "w-[148px] h-[34px]",
+        !showModeSelector && isIdle && "mb-[2px]",
         "relative flex items-center overflow-hidden shrink-0 border border-transparent rounded-full",
         "transition-[border-color,background-color,box-shadow,width,height] duration-[280ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
         isProcessing ? "cursor-default" : "cursor-pointer",

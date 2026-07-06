@@ -342,9 +342,9 @@ pub async fn recover_overlay(
     let mon_pos = target.position();
     let mon_size = target.size();
 
-    // Idle pill size (matches FloatingPill.tsx IDLE_W/IDLE_H).
-    let pill_w_logical = 56.0_f64;
-    let pill_h_logical = 26.0_f64;
+    // Idle window size — shared const, matches useOverlaySizing.ts IDLE_WIN_W/H.
+    let pill_w_logical = crate::OVERLAY_IDLE_WIN_W;
+    let pill_h_logical = crate::OVERLAY_IDLE_WIN_H;
     let phys_w = pill_w_logical * scale;
     let phys_h = pill_h_logical * scale;
     let taskbar_phys = TASKBAR_H * scale;

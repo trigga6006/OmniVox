@@ -61,14 +61,22 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Overlay idle *window* size in logical px — the pill slit plus its glow
+/// margin.  Single source of truth on the Rust side (window creation +
+/// `recover_overlay`); MUST match `IDLE_WIN_W`/`IDLE_WIN_H` in
+/// `src/features/overlay/useOverlaySizing.ts`.
+pub const OVERLAY_IDLE_WIN_W: f64 = 62.0;
+pub const OVERLAY_IDLE_WIN_H: f64 = 26.0;
+
 /// Create the floating overlay pill window — transparent, borderless,
 /// always-on-top, positioned just above the taskbar/dock at screen center.
 fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::WebviewWindowBuilder;
 
-    // Start at active size — the frontend shrinks it to idle once mounted.
-    let pill_width = 210.0_f64;
-    let pill_height = 34.0_f64;
+    // Created at idle size so there is no startup flash — the frontend's
+    // mount-time resize to the same idle size is then a no-op.
+    let pill_width = OVERLAY_IDLE_WIN_W;
+    let pill_height = OVERLAY_IDLE_WIN_H;
     let taskbar_height = 48.0_f64;
     let margin = 12.0_f64;
 
