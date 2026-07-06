@@ -1,6 +1,8 @@
 # Plan: Command Mode → "Jarvis" — Roadmap to a Background-Capable Voice Assistant
 
 > **For agentic workers:** This is the flagship roadmap from the 2026-07-06 audit (v0.4.0 / commit `335287d`). It is bigger than one session — phases A–C are conventional feature work; D–E are greenfield architecture. **Do phases in order**: A (safety/control) is a hard prerequisite for everything after it. Verify cited lines before editing. Read `docs/voice-command-mode-research.md` (the v0.4.0 research doc) for deep background — its Phase 2/3 items that went unbuilt are folded in here.
+>
+> **STATUS (2026-07-06, branch `claude/audit-implementation`):** Phase A — PARTIAL: keyboard confirm/cancel (Enter/Esc via the hook, 250ms debounce + 15s freshness, armed at every `pending_command` park site), Esc-cancels-command-capture, global stop (`AppState::command_abort` set by tier-0 spoken "stop"/"cancel" checked before matcher/LLM; honored between `run_chain` steps), and bare-OpenUrl grounding confirm (`url_grounded_in_utterance`) are DONE. **Still open in A: undo (last_action slot + spawn PID retention) and the editable send confirm.** The FloatingPill split (prereq) landed: orchestrator + useOverlayEvents.ts + QuickToggles.tsx + PillContent.tsx. Phases B–F — untouched.
 
 **Product vision (from the owner):** a Jarvis on your computer. Ask it to split off a background task, do something while you keep working in the foreground, or prepare something for your next task — all local-first.
 
