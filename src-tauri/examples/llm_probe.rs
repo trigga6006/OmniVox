@@ -2,9 +2,19 @@ use omnivoice_lib::llm::engine::{LlamaEngine, LlmEngine};
 use omnivoice_lib::llm::types::LlmConfig;
 
 fn main() {
-    let model_path = std::env::args().nth(1).unwrap_or_else(|| {
-        r"C:\Users\fowle\AppData\Roaming\omnivox\llm_models\Qwen3-1.7B-Q4_K_M.gguf".to_string()
-    });
+    let model_path = std::env::args()
+        .nth(1)
+        .or_else(|| std::env::var("OMNIVOX_LLM_MODEL").ok())
+        .or_else(|| {
+            dirs::config_dir().map(|d| {
+                d.join("omnivox")
+                    .join("llm_models")
+                    .join("Qwen3-1.7B-Q4_K_M.gguf")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .expect("pass a model path as arg 1 or set OMNIVOX_LLM_MODEL");
 
     let input = std::env::args().nth(2).unwrap_or_else(|| {
         "Hi, Codex. I want you to go through this entire codebase. Tighten up the dictation app, make sure the structured mode plumbing is solid, and keep the UI and model setup aligned with the current Qwen path."

@@ -1,5 +1,7 @@
 # OmniVox Structured Mode — Implementation Plan (v1)
 
+> **HISTORICAL DOCUMENT.** This is the original v1 design proposal. What actually shipped differs substantially (Qwen3 instead of FunctionGemma, no `output_format` slots, different phase order). For the current state and active plans, see [`docs/plans/`](./plans/) — in particular [`2026-07-06-structured-mode-tuneup.md`](./plans/2026-07-06-structured-mode-tuneup.md).
+
 **Status:** proposal, not yet implemented. To be reviewed by user + Codex before any code change.
 
 **Branch:** work will land on `feat/structured-mode`, which will be branched from `perf/audit-fixes` (contains the audit fixes already completed and not yet merged to `main`).
