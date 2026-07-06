@@ -216,7 +216,11 @@ pub async fn update_settings(
                 let app_for_load = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let st = app_for_load.state::<AppState>();
-                    if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, &st) {
+                    if let Err(e) = crate::commands::llm::load_and_activate_llm_with_status(
+                        &model_id,
+                        &st,
+                        Some(&app_for_load),
+                    ) {
                         eprintln!("Eager LLM load on toggle failed: {e}");
                     }
                 });

@@ -513,6 +513,25 @@ export const llmTestExtract = (text?: string) =>
 export const pasteStructuredOutput = (markdown: string) =>
   invoke<void>("paste_structured_output", { markdown });
 
+/** Mirrors Rust `llm::diaglog::ExtractionRecord`. */
+export interface LlmExtractionRecord {
+  /** RFC 3339 UTC. */
+  timestamp: string;
+  duration_ms: number;
+  /** Chars actually sent to the LLM (post-truncation). */
+  input_chars: number;
+  /** Chars dropped by the input cap (0 = nothing truncated). */
+  truncated_chars: number;
+  /** Rendered markdown length; 0 when the extraction failed. */
+  output_chars: number;
+  /** "ok", or the degradation reason shown to the user. */
+  outcome: string;
+}
+
+/** Recent structured-mode extraction attempts, newest first. */
+export const getLlmDiagnostics = () =>
+  invoke<LlmExtractionRecord[]>("get_llm_diagnostics");
+
 export const onLlmDownloadProgress = (
   callback: (progress: LlmDownloadProgress) => void
 ): Promise<UnlistenFn> =>
@@ -524,6 +543,17 @@ export const onLlmModelLoaded = (
   callback: (modelId: string) => void
 ): Promise<UnlistenFn> =>
   listen<string>("llm-model-loaded", (e) => callback(e.payload));
+
+/**
+ * Structured-Mode LLM lifecycle: "loading" while the GGUF loads,
+ * "ready" once usable, "error: …" on a failed load.  Lets the overlay
+ * explain why a first structured dictation is slow instead of
+ * appearing hung.
+ */
+export const onLlmStatus = (
+  callback: (status: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("llm-status", (e) => callback(e.payload));
 
 export const onStructuredOutputReady = (
   callback: (payload: StructuredOutputPayload) => void

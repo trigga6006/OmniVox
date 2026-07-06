@@ -816,7 +816,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             existing
         } else if let Some(model_id) = configured_llm_id.clone() {
             crate::llm::diaglog::log(&format!("runner: lazy-loading '{model_id}'"));
-            match crate::commands::llm::load_and_activate_llm(&model_id, state) {
+            match crate::commands::llm::load_and_activate_llm_with_status(
+                &model_id,
+                state,
+                Some(app_handle),
+            ) {
                 Ok(()) => {
                     crate::llm::diaglog::log("runner: lazy-load ok");
                     state.llm_runner.lock().ok().and_then(|g| g.clone())
@@ -906,6 +910,14 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                         slots
                     ));
                     let md = render_markdown(&slots);
+                    crate::llm::diaglog::record(crate::llm::diaglog::ExtractionRecord {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        duration_ms: t0.elapsed().as_millis() as u64,
+                        input_chars: structured_input.chars().count(),
+                        truncated_chars,
+                        output_chars: md.chars().count(),
+                        outcome: "ok".into(),
+                    });
                     Some((md, slots))
                 }
                 Err(e) => {
@@ -913,6 +925,14 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                         "pipeline: extraction FAILED after {}ms: {e}",
                         t0.elapsed().as_millis()
                     ));
+                    crate::llm::diaglog::record(crate::llm::diaglog::ExtractionRecord {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        duration_ms: t0.elapsed().as_millis() as u64,
+                        input_chars: structured_input.chars().count(),
+                        truncated_chars,
+                        output_chars: 0,
+                        outcome: format!("Extraction failed: {e}"),
+                    });
                     let _ = app_handle.emit(
                         "structured-mode-degraded",
                         &format!("Extraction failed: {e}"),
@@ -921,6 +941,14 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 }
             }
         } else {
+            crate::llm::diaglog::record(crate::llm::diaglog::ExtractionRecord {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                duration_ms: 0,
+                input_chars: structured_input.chars().count(),
+                truncated_chars,
+                output_chars: 0,
+                outcome: "No LLM model available".into(),
+            });
             let _ = app_handle.emit(
                 "structured-mode-degraded",
                 "No LLM model available for Structured Mode. Using plain dictation.",

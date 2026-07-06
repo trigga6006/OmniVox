@@ -84,7 +84,7 @@ pub async fn set_active_llm_model(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    load_and_activate_llm(&model_id, &state)?;
+    load_and_activate_llm_with_status(&model_id, &state, Some(&app_handle))?;
     let _ = app_handle.emit("llm-model-loaded", &model_id);
     Ok(())
 }
@@ -136,6 +136,39 @@ pub async fn llm_test_extract(
         .await
         .map_err(|e| e.to_string())?;
     Ok(render_markdown(&slots))
+}
+
+/// Recent structured-mode extraction attempts (newest first) from the
+/// in-memory ring buffer — powers the diagnostics panel on the Models page.
+#[tauri::command]
+pub async fn get_llm_diagnostics() -> Result<Vec<crate::llm::diaglog::ExtractionRecord>, String> {
+    Ok(crate::llm::diaglog::recent())
+}
+
+/// Load a GGUF model and install it as the active LLM runner, emitting
+/// `llm-status` transitions (loading → ready | error: …) when an
+/// AppHandle is provided so the overlay can explain why the first
+/// structured dictation is slow instead of appearing hung.
+pub fn load_and_activate_llm_with_status(
+    model_id: &str,
+    state: &AppState,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    if let Some(app) = app {
+        let _ = app.emit("llm-status", "loading");
+    }
+    let result = load_and_activate_llm(model_id, state);
+    if let Some(app) = app {
+        match &result {
+            Ok(()) => {
+                let _ = app.emit("llm-status", "ready");
+            }
+            Err(e) => {
+                let _ = app.emit("llm-status", &format!("error: {e}"));
+            }
+        }
+    }
+    result
 }
 
 /// Load a GGUF model and install it as the active LLM runner.

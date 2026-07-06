@@ -237,7 +237,7 @@ fn load_default_llm_deferred(app_handle: &tauri::AppHandle, state: &state::AppSt
     }
 
     eprintln!("Loading LLM model in background...");
-    match commands::llm::load_and_activate_llm(&model_id, state) {
+    match commands::llm::load_and_activate_llm_with_status(&model_id, state, Some(app_handle)) {
         Ok(()) => {
             eprintln!("LLM model loaded successfully");
             let _ = app_handle.emit("llm-model-loaded", &model_id);
