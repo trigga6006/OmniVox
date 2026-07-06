@@ -5,7 +5,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 const SELECT_COLS: &str =
-    "id, name, description, icon, color, llm_prompt, sort_order, is_builtin, created_at, updated_at, writing_style";
+    "id, name, description, icon, color, structured_profile, sort_order, is_builtin, created_at, updated_at, writing_style";
 
 pub fn seed_builtin_context_modes(db: &Database) -> AppResult<()> {
     seed_programming_mode(db)?;
@@ -69,7 +69,6 @@ struct BuiltinModeSeed<'a> {
     description: &'a str,
     icon: &'a str,
     color: &'a str,
-    additions: &'a str,
     sort_order: i32,
     writing_style: &'a str,
     dictionary: &'a [(&'a str, &'a str)],
@@ -87,16 +86,11 @@ fn seed_builtin_mode(db: &Database, seed: BuiltinModeSeed<'_>) -> AppResult<()> 
         )
         .ok();
 
+    // Fully seeded — leave the row alone.  In particular NEVER touch
+    // `structured_profile` on relaunch: it holds the user's per-mode
+    // Structured Mode profile choice.
     let (id, needs_entries) = match existing {
-        Some((id, count)) if count > 0 => {
-            let now = Utc::now().to_rfc3339();
-            conn.execute(
-                "UPDATE context_modes SET llm_prompt = ?1, updated_at = ?2 \
-                 WHERE id = ?3 AND is_builtin = 1",
-                params![seed.additions, now, id],
-            )?;
-            return Ok(());
-        }
+        Some((_, count)) if count > 0 => return Ok(()),
         Some((id, _)) => (id, true),
         None => (Uuid::new_v4().to_string(), false),
     };
@@ -111,7 +105,8 @@ fn seed_builtin_mode(db: &Database, seed: BuiltinModeSeed<'_>) -> AppResult<()> 
                 seed.description,
                 seed.icon,
                 seed.color,
-                seed.additions,
+                // Default Structured Mode profile (agent-prompt).
+                "",
                 seed.sort_order,
                 true,
                 now,
@@ -141,18 +136,6 @@ fn seed_builtin_mode(db: &Database, seed: BuiltinModeSeed<'_>) -> AppResult<()> 
 
     Ok(())
 }
-
-/// Mode-specific additions for Programming mode (appended to base rules).
-const PROGRAMMING_ADDITIONS: &str = "\
-- Recognize programming terms, syntax, and jargon:
-  - Language names: JavaScript, TypeScript, Python, Rust, Go, C++, etc.
-  - Frameworks/libs: React, Next.js, Tauri, Node, Express, Django, Flask, etc.
-  - Concepts: API, REST, GraphQL, SQL, NoSQL, ORM, CLI, GUI, SDK, IDE, CI/CD
-  - Operations: git push, git commit, npm install, cargo build, pip install
-  - Types/patterns: async/await, callback, promise, mutex, trait, interface, enum
-  - Symbols: When the speaker says \"dot\" in a code context, use \".\" — e.g. \"console dot log\" → \"console.log\"
-  - Casing: Preserve camelCase, PascalCase, snake_case, and SCREAMING_SNAKE when the speaker clearly intends them
-- Do NOT wrap output in code blocks or backticks — output plain text only";
 
 /// Seed the Programming/Coding builtin mode if it doesn't exist,
 /// or backfill its dictionary/snippets if they're missing (e.g. from
@@ -262,7 +245,6 @@ fn seed_programming_mode(db: &Database) -> AppResult<()> {
             description: "Optimized for coding and software development",
             icon: "code",
             color: "blue",
-            additions: PROGRAMMING_ADDITIONS,
             sort_order: 1,
             writing_style: "formal",
             dictionary: dict_entries,
@@ -270,20 +252,6 @@ fn seed_programming_mode(db: &Database) -> AppResult<()> {
         },
     )
 }
-
-/// Mode-specific additions for Business & Sales mode.
-const BUSINESS_SALES_ADDITIONS: &str = "\
-- Recognize business, sales, and CRM terminology:
-  - Metrics: ARR, MRR, ACV, TCV, CAC, LTV, CLV, NRR, GRR, NPS, CSAT, churn rate, burn rate, runway
-  - Sales stages: MQL, SQL, SAL, SAO, discovery, demo, negotiation, closed-won, closed-lost, pipeline
-  - Roles: SDR, BDR, AE, AM, CSM, VP of Sales, CRO, CMO, CFO, CEO, CTO, COO
-  - CRM & tools: Salesforce, HubSpot, Outreach, Gong, ZoomInfo, LinkedIn, Slack, Zoom, Teams
-  - SaaS concepts: ARR, MRR, churn, upsell, cross-sell, expansion revenue, logo retention, net retention
-  - Deal terms: SOW, MSA, NDA, SLA, RFP, RFQ, RFI, PO, invoice, renewal, multi-year
-  - Business acronyms: ROI, KPI, OKR, P&L, EBITDA, QBR, QoQ, YoY, MoM, WoW, EOD, EOM, EOQ, EOY
-  - Frameworks: BANT, MEDDIC, MEDDPICC, SPIN, Challenger, SPICED, value selling
-- Format currency amounts with $ symbol when clearly dictated (e.g. \"ten thousand dollars\" → \"$10,000\")
-- Preserve professional email tone — do not make language overly casual or overly formal";
 
 /// Seed the Business & Sales builtin mode.
 fn seed_business_sales_mode(db: &Database) -> AppResult<()> {
@@ -431,7 +399,6 @@ fn seed_business_sales_mode(db: &Database) -> AppResult<()> {
             description: "Optimized for sales, CRM, and business communication",
             icon: "briefcase",
             color: "green",
-            additions: BUSINESS_SALES_ADDITIONS,
             sort_order: 2,
             writing_style: "formal",
             dictionary: dict_entries,
@@ -439,20 +406,6 @@ fn seed_business_sales_mode(db: &Database) -> AppResult<()> {
         },
     )
 }
-
-/// Mode-specific additions for Medical mode.
-const MEDICAL_ADDITIONS: &str = "\
-- Recognize medical terminology, drug names, and clinical jargon:
-  - Vitals: BP, HR, RR, SpO2, BMI, temp, pulse ox, systolic, diastolic
-  - Labs: CBC, BMP, CMP, LFT, TSH, A1C, HbA1c, BUN, creatinine, WBC, RBC, hemoglobin, hematocrit
-  - Imaging: MRI, CT, X-ray, ultrasound, PET scan, DEXA, echocardiogram, EKG, ECG, EEG
-  - Prescriptions: Preserve dosage formatting (e.g. \"500 mg\", \"10 mL\", \"0.5 mcg\")
-  - Latin abbreviations: q.d., b.i.d., t.i.d., q.i.d., p.r.n., q.h.s., a.c., p.c., p.o., IV, IM, SubQ
-  - Documentation: SOAP, HPI, ROS, PMH, PSH, assessment, plan, chief complaint, differential diagnosis
-  - Conditions: hypertension, diabetes mellitus, COPD, CHF, CAD, DVT, PE, UTI, GERD, MI, CVA, TIA
-  - Procedures: intubation, catheterization, biopsy, excision, debridement, lavage, suture, I&D
-- Preserve exact medical terminology — do not simplify or substitute clinical terms with lay terms
-- Format drug names with proper capitalization (brand names capitalized, generics lowercase)";
 
 /// Seed the Medical builtin mode.
 fn seed_medical_mode(db: &Database) -> AppResult<()> {
@@ -567,7 +520,6 @@ fn seed_medical_mode(db: &Database) -> AppResult<()> {
             description: "Optimized for healthcare and clinical documentation",
             icon: "heart",
             color: "red",
-            additions: MEDICAL_ADDITIONS,
             sort_order: 3,
             writing_style: "formal",
             dictionary: dict_entries,
@@ -575,19 +527,6 @@ fn seed_medical_mode(db: &Database) -> AppResult<()> {
         },
     )
 }
-
-/// Mode-specific additions for Legal mode.
-const LEGAL_ADDITIONS: &str = "\
-- Recognize legal terminology, Latin phrases, and citation formats:
-  - Document types: brief, motion, memorandum, affidavit, deposition, subpoena, complaint, answer, stipulation
-  - Court terms: plaintiff, defendant, counsel, jurisdiction, venue, discovery, voir dire, arraignment
-  - Latin phrases: habeas corpus, prima facie, pro bono, amicus curiae, certiorari, stare decisis, res judicata, mens rea, actus reus, de facto, de jure, ex parte, in camera, inter alia, per curiam, pro se, sua sponte, sub judice, voir dire
-  - Citations: Preserve legal citation formats — e.g. \"Section 230\", \"42 U.S.C.\", \"Fed. R. Civ. P.\", \"Rule 12(b)(6)\"
-  - Contract terms: indemnification, force majeure, severability, arbitration, liquidated damages, covenant, warranty, representation
-  - Entities: SCOTUS, DOJ, SEC, FTC, IRS, USPTO, FDA, EEOC, OSHA, NLRB
-  - Roles: J.D., Esq., partner, associate, paralegal, of counsel, general counsel, in-house counsel
-- Preserve formal legal writing style — do not simplify legal terms to plain language
-- When the speaker dictates numbered sections or subsections, preserve hierarchical numbering (e.g. Section 3(a)(ii))";
 
 /// Seed the Legal builtin mode.
 fn seed_legal_mode(db: &Database) -> AppResult<()> {
@@ -694,7 +633,6 @@ fn seed_legal_mode(db: &Database) -> AppResult<()> {
             description: "Optimized for legal writing and correspondence",
             icon: "scale",
             color: "purple",
-            additions: LEGAL_ADDITIONS,
             sort_order: 4,
             writing_style: "formal",
             dictionary: dict_entries,

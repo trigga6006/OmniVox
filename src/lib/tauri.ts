@@ -356,6 +356,11 @@ export interface ContextMode {
   created_at: string;
   updated_at: string;
   writing_style: string;
+  /**
+   * Structured Mode profile id for this mode ("agent-prompt", "email",
+   * "notes-outline").  Empty = default agent-prompt.
+   */
+  structured_profile: string;
 }
 
 export const listContextModes = () => invoke<ContextMode[]>("list_context_modes");
@@ -366,7 +371,8 @@ export const createContextMode = (
   description: string,
   icon: string,
   color: string,
-  writingStyle: string
+  writingStyle: string,
+  structuredProfile: string
 ) =>
   invoke<ContextMode>("create_context_mode", {
     name,
@@ -374,6 +380,7 @@ export const createContextMode = (
     icon,
     color,
     writingStyle,
+    structuredProfile,
   });
 export const updateContextMode = (
   id: string,
@@ -381,7 +388,8 @@ export const updateContextMode = (
   description: string,
   icon: string,
   color: string,
-  writingStyle: string
+  writingStyle: string,
+  structuredProfile: string
 ) =>
   invoke<void>("update_context_mode", {
     id,
@@ -390,6 +398,7 @@ export const updateContextMode = (
     icon,
     color,
     writingStyle,
+    structuredProfile,
   });
 export const deleteContextMode = (id: string) =>
   invoke<void>("delete_context_mode", { id });
@@ -489,7 +498,12 @@ export interface SlotExtraction {
 
 export interface StructuredOutputPayload {
   markdown: string;
-  slots: SlotExtraction;
+  /**
+   * Profile-specific slot object.  `SlotExtraction`-shaped for the default
+   * agent-prompt profile; the email / notes-outline profiles emit their own
+   * shapes (none of these keys), so every field is effectively optional.
+   */
+  slots: Partial<SlotExtraction>;
   raw_transcript: string;
   /**
    * Characters dropped from the LLM input because the dictation exceeded

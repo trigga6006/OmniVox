@@ -1,0 +1,13 @@
+root ::= "{" (recipient-kv ",")? subject-kv "," body-kv ("," signoff-kv)? "}"
+
+recipient-kv ::= "\"recipient_hint\":" bounded-string
+subject-kv ::= "\"subject\":" bounded-string
+body-kv ::= "\"body_points\":" string-array
+signoff-kv ::= "\"sign_off\":" bounded-string
+
+string-array ::= "[" bounded-string ("," bounded-string){0,8} "]"
+
+bounded-string ::= "\"" char{1,520} "\""
+char ::= [^"\\\x00-\x1F] | "\\" escape
+escape ::= ["\\/bfnrt] | "u" hex{4}
+hex ::= [0-9a-fA-F]

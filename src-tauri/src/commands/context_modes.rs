@@ -24,6 +24,7 @@ pub async fn create_context_mode(
     icon: String,
     color: String,
     writing_style: String,
+    structured_profile: String,
     state: State<'_, AppState>,
 ) -> Result<ContextMode, String> {
     crate::storage::context_modes::create_mode(
@@ -33,6 +34,7 @@ pub async fn create_context_mode(
         &icon,
         &color,
         &writing_style,
+        &structured_profile,
     )
     .map_err(|e| e.to_string())
 }
@@ -45,6 +47,7 @@ pub async fn update_context_mode(
     icon: String,
     color: String,
     writing_style: String,
+    structured_profile: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     crate::storage::context_modes::update_mode(
@@ -55,8 +58,16 @@ pub async fn update_context_mode(
         &icon,
         &color,
         &writing_style,
+        &structured_profile,
     )
     .map_err(|e| e.to_string())?;
+
+    // If the edited mode is the active one, its profile choice takes effect
+    // immediately (same as re-activating it).
+    let active_id = state.active_context_mode_id.lock().unwrap().clone();
+    if active_id.as_deref() == Some(&id) {
+        sync_structured_profile(&state, &structured_profile);
+    }
 
     Ok(())
 }
@@ -162,6 +173,10 @@ pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<
         proc.set_style(WritingStyle::from_str(&mode.writing_style));
     }
 
+    // Sync the mode's Structured Mode profile — if a runner is loaded it
+    // re-warms its KV session on the new system prompt in the background.
+    sync_structured_profile(state, &mode.structured_profile);
+
     // Load global + mode-scoped entries into the processor
     super::dictionary::sync_processor(state);
 
@@ -169,4 +184,16 @@ pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<
     super::dictionary::sync_whisper_prompt(state);
 
     Ok(())
+}
+
+/// Resolve a profile id (empty/unknown → default agent-prompt), record it as
+/// the active profile, and nudge the loaded runner to re-warm on it.
+fn sync_structured_profile(state: &AppState, profile_id: &str) {
+    let profile = crate::llm::profiles::get(profile_id);
+    if let Ok(mut active) = state.active_structured_profile.lock() {
+        *active = profile;
+    }
+    if let Some(runner) = state.llm_runner.lock().ok().and_then(|g| g.clone()) {
+        runner.set_profile(profile);
+    }
 }

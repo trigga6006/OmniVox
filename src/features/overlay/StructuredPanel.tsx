@@ -494,8 +494,8 @@ function UrgencyChip({ value }: { value: "low" | "normal" | "high" }) {
 }
 
 /**
- * Minimal Markdown renderer — handles headings (##), unordered lists (- ),
- * and inline code (`…`).  The Structured Mode template only uses these
+ * Minimal Markdown renderer — handles headings (## and ###), unordered lists
+ * (- ), and inline code (`…`).  The Structured Mode templates only use these
  * features, so we avoid pulling in a full Markdown library just for the panel.
  */
 function MarkdownPreview({ markdown }: { markdown: string }) {
@@ -515,7 +515,16 @@ function MarkdownPreview({ markdown }: { markdown: string }) {
   };
 
   lines.forEach((line, i) => {
-    if (line.startsWith("## ")) {
+    if (line.startsWith("### ")) {
+      // Sub-heading — used by the notes-outline profile's section headings.
+      flushList(String(i));
+      elements.push(
+        <div key={`h-${i}`} className="sp-h sp-h--sub">
+          <span className="sp-h-rule" aria-hidden="true" />
+          <span className="sp-h-text">{line.slice(4)}</span>
+        </div>
+      );
+    } else if (line.startsWith("## ")) {
       flushList(String(i));
       elements.push(
         <div key={`h-${i}`} className="sp-h">

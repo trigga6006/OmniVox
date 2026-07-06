@@ -4,8 +4,6 @@ use tauri::{Emitter, State};
 
 use crate::llm::engine::LlamaEngine;
 use crate::llm::runner::LlmRunner;
-use crate::llm::schema::SlotExtraction;
-use crate::llm::template::render_markdown;
 use crate::llm::types::LlmConfig;
 use crate::llm_models::types::LlmModelInfo;
 use crate::state::AppState;
@@ -131,11 +129,11 @@ pub async fn llm_test_extract(
     let input = text.unwrap_or_else(|| {
         "Refactor the checkout flow in billing.tsx and cart.tsx. Keep the Stripe integration. Urgent.".to_string()
     });
-    let slots: SlotExtraction = runner
+    let out = runner
         .extract_with_timeout(input, std::time::Duration::from_secs(15))
         .await
         .map_err(|e| e.to_string())?;
-    Ok(render_markdown(&slots))
+    Ok(out.markdown)
 }
 
 /// Recent structured-mode extraction attempts (newest first) from the
@@ -261,8 +259,10 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         .map_err(|_| "LLM loader panicked during initialization".to_string())?
         .map_err(|e| format!("Failed to load LLM: {e}"))?;
 
-    // Spawn the runner worker that will own this engine.
-    let runner = LlmRunner::spawn(engine).map_err(|e| e.to_string())?;
+    // Spawn the runner worker that will own this engine, warmed on the
+    // active context mode's Structured Mode profile.
+    let profile = *state.active_structured_profile.lock().unwrap();
+    let runner = LlmRunner::spawn(engine, profile).map_err(|e| e.to_string())?;
 
     *state.llm_runner.lock().unwrap() = Some(Arc::new(runner));
     *state.active_llm_model_id.lock().unwrap() = Some(model_id.to_string());

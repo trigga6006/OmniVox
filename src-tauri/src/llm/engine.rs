@@ -12,10 +12,9 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
 use crate::error::{AppError, AppResult};
-use crate::llm::grammar::{
-    COMMAND_INTENT_ROOT, COMMAND_INTENT_V1, SLOT_EXTRACTION_ROOT, SLOT_EXTRACTION_V1,
-};
-use crate::llm::prompt::{format_prompt, format_prompt_with_context, SYSTEM_PROMPT};
+use crate::llm::grammar::{COMMAND_INTENT_ROOT, COMMAND_INTENT_V1};
+use crate::llm::profiles::{self, Profile};
+use crate::llm::prompt::format_profile_prompt;
 use crate::llm::schema::SlotExtraction;
 use crate::llm::types::{LlmConfig, LlmInferenceResult};
 
@@ -65,14 +64,18 @@ pub trait LlmEngine: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Create a stateful extraction session for a dedicated worker thread.
+    /// Create a stateful extraction session for a dedicated worker thread,
+    /// bound to one Structured Mode profile (its system prompt + grammar).
     ///
-    /// The default implementation is stateless — every call delegates back to
-    /// `extract_slots_with_context` — so test mocks compile unchanged.  The
-    /// production `LlamaEngine` overrides this with a KV-cache-backed session
-    /// that prefills the (large, constant) system prompt once instead of on
-    /// every extraction.
-    fn new_session(&self) -> AppResult<Box<dyn LlmSession + '_>>
+    /// The default implementation is stateless and ignores the profile —
+    /// every call delegates back to `extract_slots_with_context` — so test
+    /// mocks compile unchanged.  The production `LlamaEngine` overrides this
+    /// with a KV-cache-backed session that prefills the (large, constant)
+    /// profile system prompt once instead of on every extraction.
+    fn new_session_for(
+        &self,
+        _profile: &'static Profile,
+    ) -> AppResult<Box<dyn LlmSession + '_>>
     where
         Self: Sized,
     {
@@ -86,26 +89,33 @@ pub trait LlmEngine: Send + Sync {
 /// the production implementation holds a `LlamaContext`, which must stay on
 /// the thread that created it.
 pub trait LlmSession {
-    fn extract_slots_with_context(
+    /// Run one grammar-constrained generation for this session's profile and
+    /// return the raw (unparsed) JSON string.  Parsing / grounding / render
+    /// live in the profile's `postprocess` so slot shapes can differ.
+    fn generate_raw(
         &mut self,
         user_text: &str,
         screen_tokens: &[String],
         source_app: Option<&str>,
-    ) -> AppResult<SlotExtraction>;
+    ) -> AppResult<String>;
 }
 
-/// Fallback session that re-runs the full prompt on every call.
+/// Fallback session that re-runs the full prompt on every call.  Only used by
+/// mock engines (the production engine overrides `new_session_for`), so it is
+/// agent-prompt-shaped: it serializes the mock's `SlotExtraction` back to JSON.
 pub struct StatelessSession<'e, E: LlmEngine>(pub &'e E);
 
 impl<E: LlmEngine> LlmSession for StatelessSession<'_, E> {
-    fn extract_slots_with_context(
+    fn generate_raw(
         &mut self,
         user_text: &str,
         screen_tokens: &[String],
         source_app: Option<&str>,
-    ) -> AppResult<SlotExtraction> {
-        self.0
-            .extract_slots_with_context(user_text, screen_tokens, source_app)
+    ) -> AppResult<String> {
+        let slots = self
+            .0
+            .extract_slots_with_context(user_text, screen_tokens, source_app)?;
+        serde_json::to_string(&slots).map_err(|e| AppError::Llm(format!("serialize: {e}")))
     }
 }
 
@@ -198,16 +208,17 @@ impl LlamaEngine {
     }
 
     /// Run the generation loop for a single extraction using a throwaway
-    /// context.  Used by `extract_raw` (Settings "Test" button) and as the
-    /// stateless fallback path — the runner's hot path goes through
-    /// `new_session` instead, which keeps the system-prompt KV cached.
+    /// context on the DEFAULT (agent-prompt) profile.  Used by `extract_raw`
+    /// (Settings "Test" button) and the stateless fallback path — the
+    /// runner's hot path goes through `new_session_for` instead, which keeps
+    /// the active profile's system-prompt KV cached.
     fn generate_json(
         &self,
         user_text: &str,
         screen_tokens: &[String],
         source_app: Option<&str>,
     ) -> AppResult<String> {
-        let mut session = LlamaSession::new(self)?;
+        let mut session = LlamaSession::new(self, profiles::get(profiles::DEFAULT_PROFILE_ID))?;
         session.generate_json(user_text, screen_tokens, source_app)
     }
 
@@ -228,24 +239,30 @@ impl LlamaEngine {
     /// does NOT reuse the warmed slot-extraction session — different prompt and
     /// grammar — so Command Mode never thrashes Structured Mode's KV cache.
     fn classify_command_raw(&self, utterance: &str) -> AppResult<String> {
-        let mut session = LlamaSession::new(self)?;
+        // Profile is irrelevant here — the command prompt/grammar are built
+        // inside `generate_command_json` — but the session needs one.
+        let mut session = LlamaSession::new(self, profiles::get(profiles::DEFAULT_PROFILE_ID))?;
         session.generate_command_json(utterance)
     }
 }
 
-/// KV-cache-backed extraction session.
+/// KV-cache-backed extraction session, bound to one Structured Mode profile.
 ///
 /// Owns one persistent `LlamaContext`.  Across calls it keeps the longest
 /// common token prefix of the previous prompt in the KV cache — in practice
-/// the entire system turn (~1,900 tokens, byte-identical every time) — so
-/// each extraction only prefills the user's own words plus the few dozen
+/// the entire system turn (byte-identical every time for a given profile) —
+/// so each extraction only prefills the user's own words plus the few dozen
 /// template tokens around them.  On CPU this cuts per-extraction prompt
 /// processing from seconds to tens of milliseconds.
+///
+/// Profile switching invalidates the warm prefix by construction: the runner
+/// drops this session and builds a fresh one for the new profile.
 ///
 /// Self-healing: any error mid-extraction clears the cache entirely, so a
 /// failed decode can never poison the next call's prefix match.
 pub struct LlamaSession<'m> {
     engine: &'m LlamaEngine,
+    profile: &'static Profile,
     ctx: LlamaContext<'m>,
     // 'static: the batch owns its buffers (allocated via `LlamaBatch::new`);
     // the lifetime parameter only matters for the borrowing `get_one` path.
@@ -259,7 +276,7 @@ impl<'m> LlamaSession<'m> {
     /// Allocate a fresh context for this session.  KV memory for the full
     /// `n_ctx` is reserved here and held until the session is dropped — the
     /// runner drops idle sessions to give it back.
-    pub fn new(engine: &'m LlamaEngine) -> AppResult<Self> {
+    pub fn new(engine: &'m LlamaEngine, profile: &'static Profile) -> AppResult<Self> {
         let backend = backend()?;
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(engine.config.n_ctx))
@@ -274,6 +291,7 @@ impl<'m> LlamaSession<'m> {
 
         Ok(Self {
             engine,
+            profile,
             ctx,
             batch: LlamaBatch::new(n_ctx, 1),
             cached_tokens: Vec::new(),
@@ -284,12 +302,16 @@ impl<'m> LlamaSession<'m> {
     /// the first real extraction only pays for the user's words.  Called by
     /// the runner right after spawn, while no dictation is waiting.
     pub fn warm(&mut self) -> AppResult<()> {
-        let prefix = format!("<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n");
+        let prefix = format!(
+            "<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n",
+            self.profile.system_prompt
+        );
         let t0 = std::time::Instant::now();
         let n = self.ensure_prompt(&prefix)?;
         crate::llm::diaglog::log(&format!(
-            "session: warmed {} prefix tokens in {}ms",
+            "session: warmed {} prefix tokens ({}) in {}ms",
             n,
+            self.profile.id,
             t0.elapsed().as_millis()
         ));
         Ok(())
@@ -420,23 +442,29 @@ impl<'m> LlamaSession<'m> {
         Ok(out)
     }
 
-    /// Full prompt-build → prefill → generate pass.  On any error the KV
-    /// cache is reset so the failure can't corrupt the next call.
+    /// Full prompt-build → prefill → generate pass under this session's
+    /// profile (its system prompt + grammar).  On any error the KV cache is
+    /// reset so the failure can't corrupt the next call.
     fn generate_json(
         &mut self,
         user_text: &str,
         screen_tokens: &[String],
         source_app: Option<&str>,
     ) -> AppResult<String> {
-        let prompt = if screen_tokens.is_empty() {
-            format_prompt(user_text)
+        // Screen-context tokens only make sense for profiles whose system
+        // prompt documents the SCREEN CONTEXT block (agent-prompt); for the
+        // others they would just invite copying on-screen text into output.
+        let tokens: &[String] = if self.profile.uses_screen_context {
+            screen_tokens
         } else {
-            format_prompt_with_context(user_text, screen_tokens, source_app)
+            &[]
         };
+        let prompt =
+            format_profile_prompt(self.profile.system_prompt, user_text, tokens, source_app);
 
-        let result = self
-            .ensure_prompt(&prompt)
-            .and_then(|n_prompt| self.generate(n_prompt, SLOT_EXTRACTION_V1, SLOT_EXTRACTION_ROOT));
+        let result = self.ensure_prompt(&prompt).and_then(|n_prompt| {
+            self.generate(n_prompt, self.profile.grammar, self.profile.grammar_root)
+        });
 
         if result.is_err() {
             self.ctx.clear_kv_cache();
@@ -462,16 +490,17 @@ impl<'m> LlamaSession<'m> {
 }
 
 impl LlmSession for LlamaSession<'_> {
-    fn extract_slots_with_context(
+    fn generate_raw(
         &mut self,
         user_text: &str,
         screen_tokens: &[String],
         source_app: Option<&str>,
-    ) -> AppResult<SlotExtraction> {
+    ) -> AppResult<String> {
         let t0 = std::time::Instant::now();
         crate::llm::diaglog::log(&format!(
-            "session extract: model={} input_chars={} screen_tokens={} app={:?}",
+            "session extract: model={} profile={} input_chars={} screen_tokens={} app={:?}",
             self.engine.model_name,
+            self.profile.id,
             user_text.chars().count(),
             screen_tokens.len(),
             source_app,
@@ -491,7 +520,7 @@ impl LlmSession for LlamaSession<'_> {
             t0.elapsed().as_millis(),
             raw.trim().len()
         ));
-        LlamaEngine::parse_slots(&raw, user_text)
+        Ok(raw)
     }
 }
 
@@ -562,10 +591,11 @@ impl LlmEngine for LlamaEngine {
         Ok(intents)
     }
 
-    /// KV-cache-backed session: prefills the system prompt once at creation
-    /// so per-extraction prompt processing only covers the user's words.
-    fn new_session(&self) -> AppResult<Box<dyn LlmSession + '_>> {
-        let mut session = LlamaSession::new(self)?;
+    /// KV-cache-backed session: prefills the profile's system prompt once at
+    /// creation so per-extraction prompt processing only covers the user's
+    /// words.
+    fn new_session_for(&self, profile: &'static Profile) -> AppResult<Box<dyn LlmSession + '_>> {
+        let mut session = LlamaSession::new(self, profile)?;
         // Warm failure is non-fatal — the session still works, the first
         // extraction just pays the full prefill like the old path did.
         if let Err(e) = session.warm() {

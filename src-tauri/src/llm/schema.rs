@@ -180,6 +180,160 @@ impl SlotExtraction {
     }
 }
 
+/// Slot fields for the `email` profile, in GBNF order
+/// (`resources/grammars/email_draft_v1.gbnf`).
+///
+/// `recipient_hint` and `sign_off` are the fabrication-risk fields: a draft
+/// addressed to an invented person is worse than no draft.  Both are omitted
+/// by the grammar when absent and grounded against the dictation below.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EmailExtraction {
+    /// Who the email is addressed to — only when the user named them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recipient_hint: String,
+
+    /// Short subject line distilled from the user's own words.
+    pub subject: String,
+
+    /// The message body, near-verbatim, one entry per distinct thought.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_points: Vec<String>,
+
+    /// Closing line — only when the user dictated one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sign_off: String,
+}
+
+impl EmailExtraction {
+    /// Trim / dedupe plus the grounded-against-raw-input pass.
+    ///
+    /// Grounding rules (strictest on the name-bearing fields):
+    ///   - `recipient_hint` and `sign_off`: EVERY content word must appear in
+    ///     the dictation, otherwise the field is dropped entirely.  This kills
+    ///     invented recipients and invented sign-off names ("Thanks, Jennifer"
+    ///     when the user only said "sign it thanks").
+    ///   - `subject` is a distillation, so it only needs SOME content-word
+    ///     overlap; zero overlap means the model invented a topic → drop.
+    ///   - `body_points` get the same short-input fabrication guard as the
+    ///     agent-prompt slots.
+    pub fn normalize_with_raw(mut self, raw_input: &str) -> Self {
+        let raw_lower = raw_input.to_lowercase();
+        let raw_words = content_words(&raw_lower);
+
+        self.subject = self.subject.trim().to_string();
+        if !shares_content_word(&self.subject, &raw_words) {
+            self.subject.clear();
+        }
+
+        self.recipient_hint = self.recipient_hint.trim().to_string();
+        if !all_content_words_grounded(&self.recipient_hint, &raw_words) {
+            self.recipient_hint.clear();
+        }
+
+        self.sign_off = self.sign_off.trim().to_string();
+        if !all_content_words_grounded(&self.sign_off, &raw_words) {
+            self.sign_off.clear();
+        }
+
+        self.body_points = normalize_items(self.body_points);
+        const SHORT_INPUT_THRESHOLD: usize = 120;
+        if raw_input.chars().count() <= SHORT_INPUT_THRESHOLD {
+            self.body_points
+                .retain(|item| shares_content_word(item, &raw_words));
+        }
+
+        self
+    }
+}
+
+/// One outline section for the `notes-outline` profile.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NotesSection {
+    /// Optional topic label; empty when the section has no natural heading.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub heading: String,
+
+    /// Individual statements, near-verbatim, in the order spoken.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<String>,
+}
+
+/// Slot fields for the `notes-outline` profile, matching
+/// `resources/grammars/notes_outline_v1.gbnf`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NotesExtraction {
+    /// Short label for the whole note.
+    pub title: String,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<NotesSection>,
+}
+
+impl NotesExtraction {
+    /// Trim / dedupe plus the grounded-against-raw-input pass.
+    ///
+    ///   - `title` and `heading`s are distillations → dropped only on ZERO
+    ///     content-word overlap (a section whose heading is dropped keeps its
+    ///     points, it just renders heading-less).
+    ///   - `points` are deduped ACROSS sections (the model sometimes repeats a
+    ///     point under two headings) and get the same short-input fabrication
+    ///     guard as the other profiles.
+    ///   - Sections left without points are removed.
+    pub fn normalize_with_raw(mut self, raw_input: &str) -> Self {
+        let raw_lower = raw_input.to_lowercase();
+        let raw_words = content_words(&raw_lower);
+        let short_input = raw_input.chars().count() <= 120;
+
+        self.title = self.title.trim().to_string();
+        if !shares_content_word(&self.title, &raw_words) {
+            self.title.clear();
+        }
+
+        let mut seen_keys: Vec<String> = Vec::new();
+        for section in &mut self.sections {
+            section.heading = section.heading.trim().to_string();
+            if !shares_content_word(&section.heading, &raw_words) {
+                section.heading.clear();
+            }
+            section.points = normalize_items(std::mem::take(&mut section.points));
+            if short_input {
+                section
+                    .points
+                    .retain(|item| shares_content_word(item, &raw_words));
+            }
+            section.points.retain(|item| {
+                let key = compact_key(item);
+                if seen_keys.iter().any(|existing| existing == &key) {
+                    false
+                } else {
+                    seen_keys.push(key);
+                    true
+                }
+            });
+        }
+        self.sections.retain(|s| !s.points.is_empty());
+
+        self
+    }
+}
+
+/// True when every content word of `value` appears in the dictation's
+/// content words.  Used for the strictest grounding tier (recipients,
+/// sign-offs) where a partially-invented value must not survive.  A value
+/// with no content words at all (pure stopwords/punctuation) passes — there
+/// is nothing to fabricate in it.
+fn all_content_words_grounded(value: &str, raw_words: &[String]) -> bool {
+    let value_lower = value.to_lowercase();
+    let value_words = content_words(&value_lower);
+    if value_words.is_empty() {
+        return true;
+    }
+    if raw_words.is_empty() {
+        return false;
+    }
+    value_words.iter().all(|w| raw_words.contains(w))
+}
+
 fn normalize_items(items: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen_keys: Vec<String> = Vec::new();
