@@ -121,6 +121,10 @@ pub struct AppState {
     pub pending_stop: std::sync::atomic::AtomicBool,
     /// A resolved command awaiting confirmation (low-confidence app match).
     pub pending_command: Mutex<Option<PendingCommand>>,
+    /// Global command abort (Phase A "stop").  Set by the spoken
+    /// "stop"/"cancel" tier-1 phrases; `run_chain` checks it between steps
+    /// and resets it when a fresh chain starts.
+    pub command_abort: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -173,6 +177,7 @@ impl AppState {
             capture_live: std::sync::atomic::AtomicBool::new(false),
             pending_stop: std::sync::atomic::AtomicBool::new(false),
             pending_command: Mutex::new(None),
+            command_abort: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

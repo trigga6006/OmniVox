@@ -1253,6 +1253,7 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
     if let Ok(mut pending) = state.pending_command.lock() {
         *pending = None;
     }
+    crate::hotkey::set_confirm_pending(false);
 
     // Scope the audio guard so it's provably dropped before any `.await` below
     // (a MutexGuard isn't Send, and this fn is spawned as a Send future).
@@ -1357,6 +1358,26 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
 
     let utterance = transcription.text.trim().to_string();
 
+    // Tier-0 safety phrases — checked before everything else so no app name
+    // or LLM interpretation can ever shadow them.  "stop"/"cancel" sets the
+    // global abort flag (a chain in flight checks it between steps) and
+    // clears any pending confirm.  The cheapest trust win there is.
+    let norm = crate::actions::matcher::normalize(&utterance);
+    if matches!(
+        norm.as_str(),
+        "stop" | "stop it" | "cancel" | "cancel that" | "never mind" | "nevermind" | "abort"
+    ) {
+        state
+            .command_abort
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Ok(mut g) = state.pending_command.lock() {
+            *g = None;
+        }
+        crate::hotkey::set_confirm_pending(false);
+        emit_command_result(app_handle, "done", "Stopped");
+        return;
+    }
+
     // Fast path: deterministic grammar match (microseconds, no LLM).
     if let Some(intent) = crate::actions::match_command(&utterance) {
         run_intent(app_handle, state, intent).await;
@@ -1379,8 +1400,24 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
             if let Ok(mut pending) = state.pending_command.lock() {
                 *pending = Some(crate::state::PendingCommand::Chain { intents });
             }
+            crate::hotkey::set_confirm_pending(true);
             let _ = app_handle.emit("command-confirm", &CommandConfirmPayload { summary });
             return;
+        }
+
+        // A bare LLM-produced URL the utterance never named is a fabrication
+        // risk (the model invents a plausible domain) — confirm it instead of
+        // opening blind.  A grounded URL ("open github dot com") stays auto.
+        if let [crate::actions::CommandIntent::OpenUrl(url)] = intents.as_slice() {
+            if !url_grounded_in_utterance(&utterance, url) {
+                let summary = format!("Open {url}?");
+                if let Ok(mut pending) = state.pending_command.lock() {
+                    *pending = Some(crate::state::PendingCommand::Chain { intents });
+                }
+                crate::hotkey::set_confirm_pending(true);
+                let _ = app_handle.emit("command-confirm", &CommandConfirmPayload { summary });
+                return;
+            }
         }
         if intents.len() == 1 {
             run_intent(app_handle, state, intents.into_iter().next().unwrap()).await;
@@ -1396,6 +1433,47 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         format!("\u{201c}{utterance}\u{201d}")
     };
     emit_command_result(app_handle, "error", format!("No command recognized ({heard})"));
+}
+
+/// True when the utterance plausibly names the URL's host — "open github dot
+/// com" grounds `github.com`; an LLM-invented domain does not.  Compares the
+/// host's first label against the normalized utterance; labels shorter than
+/// 3 chars are never treated as grounded (too easy to match by accident).
+fn url_grounded_in_utterance(utterance: &str, url: &str) -> bool {
+    let norm = crate::actions::matcher::normalize(utterance);
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("www.");
+    let first_label = host.split(['.', '/', ':']).next().unwrap_or("");
+    first_label.len() >= 3 && norm.contains(&first_label.to_lowercase())
+}
+
+#[cfg(test)]
+mod url_grounding_tests {
+    use super::url_grounded_in_utterance;
+
+    #[test]
+    fn spoken_domain_is_grounded() {
+        assert!(url_grounded_in_utterance(
+            "open github dot com",
+            "https://github.com"
+        ));
+        assert!(url_grounded_in_utterance(
+            "go to YouTube",
+            "https://www.youtube.com"
+        ));
+    }
+
+    #[test]
+    fn invented_domain_is_not_grounded() {
+        assert!(!url_grounded_in_utterance(
+            "open my bank website",
+            "https://chase.com"
+        ));
+        // Too-short labels never count as grounded.
+        assert!(!url_grounded_in_utterance("open x", "https://x.com"));
+    }
 }
 
 /// Try the Qwen LLM fallback to interpret a free-form command the fast-path
@@ -1502,6 +1580,7 @@ async fn run_intent(
                             name: r.name.clone(),
                         });
                     }
+                    crate::hotkey::set_confirm_pending(true);
                     let _ = app_handle.emit(
                         "command-confirm",
                         &CommandConfirmPayload {
@@ -1525,6 +1604,7 @@ async fn run_intent(
                             title: title.clone(),
                         });
                     }
+                    crate::hotkey::set_confirm_pending(true);
                     let summary = if title.trim().is_empty() {
                         "Close this window?".to_string()
                     } else {
@@ -1702,6 +1782,12 @@ async fn run_chain(
     let mut summaries = Vec::with_capacity(total);
     let mut all_ok = true;
 
+    // A fresh chain clears any stale abort so a "stop" spoken for a previous
+    // (already finished) run can't kill this one.
+    state
+        .command_abort
+        .store(false, std::sync::atomic::Ordering::Release);
+
     // Focus target for keystroke/window steps.  Starts as the window that was
     // foreground before command capture; once a step launches an app we re-aim
     // at that app (now foreground) so "open notepad and paste" targets notepad,
@@ -1717,6 +1803,19 @@ async fn run_chain(
     let mut target_unverified = false;
 
     for (i, intent) in intents.into_iter().enumerate() {
+        // Global stop (Phase A): the spoken "stop"/"cancel" sets this flag
+        // from a parallel command capture — honor it before firing anything
+        // further.  Checked per step so a 5-step chain can be halted between
+        // any two actions.
+        if state
+            .command_abort
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            summaries.push("stopped".to_string());
+            all_ok = false;
+            break;
+        }
+
         // A focus-dependent step (key chord / window action) after an
         // unverified launch would fire into the window the user spoke from, not
         // the app they just opened — refuse it rather than risk a stray
@@ -1832,6 +1931,7 @@ pub async fn confirm_pending_command(app_handle: &tauri::AppHandle, state: &AppS
         .lock()
         .ok()
         .and_then(|mut g| g.take());
+    crate::hotkey::set_confirm_pending(false);
     let Some(p) = pending else {
         return;
     };
@@ -1866,6 +1966,7 @@ pub fn cancel_pending_command(app_handle: &tauri::AppHandle, state: &AppState) {
     if let Ok(mut g) = state.pending_command.lock() {
         *g = None;
     }
+    crate::hotkey::set_confirm_pending(false);
     let _ = app_handle.emit("command-state-change", "idle");
 }
 

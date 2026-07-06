@@ -113,6 +113,23 @@ mod state_machine {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     pub static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
+    /// Epoch-ms timestamp when a command confirm pill was armed (0 = none).
+    /// Written from the pipeline via [`set_confirm_pending`]; read lock-free
+    /// on the hook thread so Enter/Esc can drive the confirm without focus.
+    static CONFIRM_PENDING_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+
+    const VK_RETURN: u16 = 0x0D;
+    const VK_ESCAPE: u16 = 0x1B;
+
+    /// Arm (or clear) the hook's Enter/Esc confirm path.  Called wherever a
+    /// `PendingCommand` is parked or consumed.
+    pub fn set_confirm_pending(pending: bool) {
+        // max(1): a pill armed in the very first millisecond after launch
+        // must not encode as the "none" sentinel.
+        let v = if pending { now_ms().max(1) } else { 0 };
+        CONFIRM_PENDING_SINCE_MS.store(v, Ordering::Release);
+    }
+
     fn now_ms() -> u64 {
         let epoch = EPOCH.get_or_init(Instant::now);
         epoch.elapsed().as_millis() as u64
@@ -230,6 +247,50 @@ mod state_machine {
             }
             return false;
         }
+
+        // ── Phase A control keys ─────────────────────────────
+        // Esc while a command capture is live cancels it (the overlay window
+        // is focused(false), so DOM key events can never arrive — the hook is
+        // the only path).  Scoped to COMMAND on purpose: Esc during dictation
+        // is often meant for the app the user is dictating into.
+        if vk == VK_ESCAPE && is_down && COMMAND.recording.load(Ordering::Relaxed) {
+            reset(&COMMAND);
+            if let Some(handle) = APP_HANDLE.get() {
+                let h = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = h.state::<crate::state::AppState>();
+                    crate::pipeline::cancel_recording(&h, &st);
+                });
+            }
+            return true; // swallow — this Esc was aimed at OmniVox
+        }
+
+        // Enter/Esc while a confirm pill is pending drives it from the
+        // keyboard.  Guard rails against confirming something the user never
+        // saw: a 250ms arming debounce (an Enter finishing their typing must
+        // not confirm) and a 15s freshness window (a forgotten pill must not
+        // swallow keys minutes later — the mouse buttons keep working).
+        let since = CONFIRM_PENDING_SINCE_MS.load(Ordering::Acquire);
+        if since != 0 && is_down && (vk == VK_RETURN || vk == VK_ESCAPE) {
+            let age = now_ms().saturating_sub(since);
+            if (250..15_000).contains(&age) {
+                CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
+                let confirm = vk == VK_RETURN;
+                if let Some(handle) = APP_HANDLE.get() {
+                    let h = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let st = h.state::<crate::state::AppState>();
+                        if confirm {
+                            crate::pipeline::confirm_pending_command(&h, &st).await;
+                        } else {
+                            crate::pipeline::cancel_pending_command(&h, &st);
+                        }
+                    });
+                }
+                return true; // swallow
+            }
+        }
+
         // Check both; swallow if either consumed the event. (The default combos
         // share no keys, so at most one fires per event.)
         let d = process_one(&DICTATION, Action::Dictation, vk, is_down, is_up);
@@ -561,6 +622,13 @@ pub fn set_command_mode_enabled(enabled: bool) {
 /// Suspend or resume the hook.
 pub fn set_suspended(suspended: bool) {
     state_machine::set_suspended(suspended);
+}
+
+/// Arm (or clear) the hook's Enter/Esc handling for a pending command
+/// confirm.  Call with `true` when a `PendingCommand` is parked and the
+/// confirm pill shown; with `false` whenever it is consumed or cleared.
+pub fn set_confirm_pending(pending: bool) {
+    state_machine::set_confirm_pending(pending);
 }
 
 /// Feed a key event from the frontend (WebView) into the hotkey state machine.
