@@ -15,6 +15,10 @@ pub struct ContextMode {
     pub updated_at: DateTime<Utc>,
     /// Writing style for this mode ("formal", "casual", "very_casual").
     pub writing_style: String,
+    /// Structured Mode profile id for this mode ("agent-prompt", "email",
+    /// "notes-outline").  Empty or unknown resolves to the default
+    /// agent-prompt profile (`llm::profiles::get`).
+    pub structured_profile: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

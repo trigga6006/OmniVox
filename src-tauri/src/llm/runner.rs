@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use crate::actions::CommandIntent;
 use crate::error::{AppError, AppResult};
 use crate::llm::engine::LlmEngine;
-use crate::llm::schema::SlotExtraction;
+use crate::llm::profiles::{Profile, ProfileOutput};
 
 /// Dedicated-worker runner.
 ///
@@ -29,17 +29,24 @@ pub struct LlmRunner {
     tx: SyncSender<LlmRequest>,
     busy: Arc<AtomicBool>,
     last_used_ns: Arc<AtomicI64>,
+    /// The profile the worker's session should be warmed on.  Shared state
+    /// (not a queued message) so a profile switch can never be lost to a full
+    /// queue — the worker reconciles against this before every extraction and
+    /// prewarm.  There is only ever ONE warmed session (one KV cache); a
+    /// switch drops it and rebuilds on the new profile.
+    desired_profile: Arc<Mutex<&'static Profile>>,
     /// Kept alive to stop the worker cleanly on drop.
     _worker: WorkerHandle,
 }
 
 enum LlmRequest {
-    /// Structured Mode slot extraction (uses the warmed KV-cache session).
+    /// Structured Mode extraction on the active profile (uses the warmed
+    /// KV-cache session).
     Extract {
         text: String,
         screen_tokens: Vec<String>,
         source_app: Option<String>,
-        reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
+        reply_tx: oneshot::Sender<AppResult<ProfileOutput>>,
     },
     /// Command Mode free-form classification (one-off throwaway context).
     Classify {
@@ -73,18 +80,33 @@ fn now_ns() -> i64 {
         .unwrap_or(0)
 }
 
+/// Poison-tolerant lock on the shared desired-profile cell.  The value is a
+/// `&'static Profile` (plain pointer), so a panicked writer can't have left
+/// it half-updated — recovering the inner value is always safe.
+fn lock_profile<'a>(
+    cell: &'a Mutex<&'static Profile>,
+) -> std::sync::MutexGuard<'a, &'static Profile> {
+    cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl LlmRunner {
-    /// Spawn a dedicated worker thread owning `engine`.
+    /// Spawn a dedicated worker thread owning `engine`, warmed on
+    /// `initial_profile`.
     ///
     /// The thread gets a 256 MB stack to match the Whisper loader — llama.cpp
     /// has the same enormous debug-build stack frames that cause
     /// STATUS_STACK_BUFFER_OVERRUN on Windows without this.
-    pub fn spawn<E: LlmEngine + 'static>(engine: E) -> AppResult<Self> {
+    pub fn spawn<E: LlmEngine + 'static>(
+        engine: E,
+        initial_profile: &'static Profile,
+    ) -> AppResult<Self> {
         let (tx, rx) = sync_channel::<LlmRequest>(1);
         let busy = Arc::new(AtomicBool::new(false));
         let last_used_ns = Arc::new(AtomicI64::new(now_ns()));
+        let desired_profile = Arc::new(Mutex::new(initial_profile));
         let worker_busy = Arc::clone(&busy);
         let worker_last_used = Arc::clone(&last_used_ns);
+        let worker_desired = Arc::clone(&desired_profile);
 
         let join = thread::Builder::new()
             .name("omnivox-llm".into())
@@ -98,16 +120,17 @@ impl LlmRunner {
                 const SESSION_IDLE_SECS: i64 = 5 * 60;
 
                 let engine = engine;
-                // Persistent extraction session — keeps the system prompt's
-                // KV cached across requests so each extraction only prefills
-                // the user's words.  Warmed here, in the background, right
-                // after model activation.  On failure we fall back to the
-                // stateless per-request path.
-                let mut session = match engine.new_session() {
+                // Persistent extraction session — keeps the active profile's
+                // system prompt KV cached across requests so each extraction
+                // only prefills the user's words.  Warmed here, in the
+                // background, right after model activation.  On failure the
+                // per-request rebuild below retries.
+                let mut profile: &'static Profile = *lock_profile(&worker_desired);
+                let mut session = match engine.new_session_for(profile) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         crate::llm::diaglog::log(&format!(
-                            "runner: session init failed, stateless fallback: {e}"
+                            "runner: session init failed (will retry per-request): {e}"
                         ));
                         None
                     }
@@ -136,6 +159,20 @@ impl LlmRunner {
                     };
 
                     let _busy_reset = BusyReset(Arc::clone(&worker_busy));
+
+                    // Reconcile with the desired profile before any session
+                    // use.  A switch drops the old session (its KV prefix is
+                    // useless for the new prompt) — never two sessions alive.
+                    let want: &'static Profile = *lock_profile(&worker_desired);
+                    if want.id != profile.id {
+                        session = None;
+                        profile = want;
+                        crate::llm::diaglog::log(&format!(
+                            "runner: switching to profile '{}'",
+                            profile.id
+                        ));
+                    }
+
                     match req {
                         LlmRequest::Extract {
                             text,
@@ -143,23 +180,23 @@ impl LlmRunner {
                             source_app,
                             reply_tx,
                         } => {
-                            // Rebuild the session if it was idle-dropped (or
-                            // failed at init).  The request then pays one full
-                            // warm-up — same cost as the old stateless path.
+                            // Rebuild the session if it was idle-dropped,
+                            // profile-switched, or failed at init.  The
+                            // request then pays one full warm-up.
                             if session.is_none() {
-                                session = engine.new_session().ok();
+                                session = engine.new_session_for(profile).ok();
                             }
                             let result = match session.as_mut() {
-                                Some(s) => s.extract_slots_with_context(
-                                    &text,
-                                    &screen_tokens,
-                                    source_app.as_deref(),
-                                ),
-                                None => engine.extract_slots_with_context(
-                                    &text,
-                                    &screen_tokens,
-                                    source_app.as_deref(),
-                                ),
+                                Some(s) => s
+                                    .generate_raw(
+                                        &text,
+                                        &screen_tokens,
+                                        source_app.as_deref(),
+                                    )
+                                    .and_then(|raw| (profile.postprocess)(&raw, &text)),
+                                None => Err(AppError::Llm(
+                                    "LLM session unavailable".into(),
+                                )),
                             };
                             // Release the busy slot BEFORE delivering the
                             // reply: the native decode is done, and a caller
@@ -178,8 +215,11 @@ impl LlmRunner {
                         }
                         LlmRequest::Prewarm => {
                             if session.is_none() {
-                                session = engine.new_session().ok();
-                                crate::llm::diaglog::log("runner: prewarmed session");
+                                session = engine.new_session_for(profile).ok();
+                                crate::llm::diaglog::log(&format!(
+                                    "runner: prewarmed session ({})",
+                                    profile.id
+                                ));
                             }
                         }
                     }
@@ -192,6 +232,7 @@ impl LlmRunner {
             tx,
             busy,
             last_used_ns,
+            desired_profile,
             _worker: WorkerHandle {
                 _join: Mutex::new(Some(join)),
             },
@@ -209,7 +250,7 @@ impl LlmRunner {
         &self,
         text: String,
         timeout: Duration,
-    ) -> AppResult<SlotExtraction> {
+    ) -> AppResult<ProfileOutput> {
         self.extract_with_context_and_timeout(text, Vec::new(), None, timeout)
             .await
     }
@@ -263,7 +304,7 @@ impl LlmRunner {
         screen_tokens: Vec<String>,
         source_app: Option<String>,
         timeout: Duration,
-    ) -> AppResult<SlotExtraction> {
+    ) -> AppResult<ProfileOutput> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let req = LlmRequest::Extract {
             text,
@@ -298,6 +339,24 @@ impl LlmRunner {
         let _ = self.tx.try_send(LlmRequest::Prewarm);
     }
 
+    /// Switch the active Structured Mode profile.
+    ///
+    /// Updates the shared desired-profile cell (can't be lost, even when the
+    /// worker is busy) and nudges a background re-warm so the KV session is
+    /// rebuilt on the new system prompt while the user isn't dictating.  If
+    /// the nudge is dropped (queue full), the next extraction reconciles and
+    /// pays the one-time warm cost itself — slow once, never wrong.
+    pub fn set_profile(&self, profile: &'static Profile) {
+        {
+            let mut desired = lock_profile(&self.desired_profile);
+            if desired.id == profile.id {
+                return;
+            }
+            *desired = profile;
+        }
+        let _ = self.tx.try_send(LlmRequest::Prewarm);
+    }
+
     /// Unix timestamp in nanoseconds when the worker last finished a job.
     pub fn last_used_ns(&self) -> i64 {
         self.last_used_ns.load(Ordering::Relaxed)
@@ -311,6 +370,8 @@ impl LlmRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::profiles;
+    use crate::llm::schema::SlotExtraction;
     use std::sync::Arc;
 
     struct SlowEngine {
@@ -330,9 +391,12 @@ mod tests {
     #[tokio::test]
     async fn rejects_second_request_while_native_inference_is_running() {
         let runner = Arc::new(
-            LlmRunner::spawn(SlowEngine {
-                delay: Duration::from_millis(100),
-            })
+            LlmRunner::spawn(
+                SlowEngine {
+                    delay: Duration::from_millis(100),
+                },
+                profiles::get(profiles::DEFAULT_PROFILE_ID),
+            )
             .unwrap(),
         );
 
@@ -359,7 +423,71 @@ mod tests {
         assert!(second.unwrap_err().to_string().contains("busy"));
 
         let first_result = first.await.unwrap().unwrap();
-        assert_eq!(first_result.goal, "first");
+        assert_eq!(first_result.slots["goal"], "first");
+        assert!(first_result.markdown.contains("first"));
         assert!(!runner.is_busy());
+    }
+
+    /// Engine that records which profile each session was built for, so the
+    /// test can observe the switch-triggered rebuild.
+    struct RecordingEngine {
+        sessions: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl LlmEngine for RecordingEngine {
+        fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction> {
+            Ok(SlotExtraction {
+                goal: user_text.to_string(),
+                ..Default::default()
+            })
+        }
+
+        fn new_session_for(
+            &self,
+            profile: &'static Profile,
+        ) -> AppResult<Box<dyn crate::llm::engine::LlmSession + '_>> {
+            self.sessions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(profile.id);
+            Ok(Box::new(crate::llm::engine::StatelessSession(self)))
+        }
+    }
+
+    #[tokio::test]
+    async fn set_profile_rebuilds_session_on_new_profile_in_background() {
+        let sessions = Arc::new(Mutex::new(Vec::new()));
+        let runner = LlmRunner::spawn(
+            RecordingEngine {
+                sessions: Arc::clone(&sessions),
+            },
+            profiles::get(profiles::DEFAULT_PROFILE_ID),
+        )
+        .unwrap();
+
+        // Initial session is built (in the worker) on the default profile.
+        for _ in 0..200 {
+            if !sessions.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(*sessions.lock().unwrap(), vec!["agent-prompt"]);
+
+        // Switching kicks a background re-warm on the new profile — exactly
+        // one new session, no extraction needed.
+        runner.set_profile(profiles::get("email"));
+        for _ in 0..200 {
+            if sessions.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(*sessions.lock().unwrap(), vec!["agent-prompt", "email"]);
+
+        // Setting the same profile again is a no-op (no session churn).
+        runner.set_profile(profiles::get("email"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(sessions.lock().unwrap().len(), 2);
     }
 }

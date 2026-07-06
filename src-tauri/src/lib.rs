@@ -471,6 +471,16 @@ pub fn run() {
 
                 *state.active_context_mode_id.lock().unwrap() = Some(active_id.clone());
 
+                // Restore the active mode's Structured Mode profile before
+                // the deferred LLM load below so the runner warms the right
+                // system prompt on the first try.
+                if let Ok(mode) =
+                    crate::storage::context_modes::get_mode(&state.db, &active_id)
+                {
+                    *state.active_structured_profile.lock().unwrap() =
+                        crate::llm::profiles::get(&mode.structured_profile);
+                }
+
                 // Load global + mode-scoped dictionary/snippets into processor
                 commands::dictionary::sync_processor(&state);
             }

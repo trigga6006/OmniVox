@@ -1,6 +1,7 @@
 pub mod diaglog;
 pub mod engine;
 pub mod grammar;
+pub mod profiles;
 pub mod prompt;
 pub mod runner;
 pub mod schema;

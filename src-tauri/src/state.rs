@@ -104,6 +104,10 @@ pub struct AppState {
     /// Dedicated llama.cpp worker.  None until the first model is loaded.
     /// Wrapped in Arc so async extraction calls don't pin the mutex.
     pub llm_runner: Mutex<Option<Arc<LlmRunner>>>,
+    /// Active Structured Mode profile (from the active context mode's
+    /// `structured_profile`).  Read when the runner spawns so it warms the
+    /// right system prompt; mode activation keeps it and the runner in sync.
+    pub active_structured_profile: Mutex<&'static crate::llm::profiles::Profile>,
     /// ID of the currently active LLM model.
     pub active_llm_model_id: Mutex<Option<String>>,
     /// LLM model catalog.
@@ -186,6 +190,9 @@ impl AppState {
             prev_foreground: Mutex::new(None),
             active_context_mode_id: Mutex::new(None),
             llm_runner: Mutex::new(None),
+            active_structured_profile: Mutex::new(crate::llm::profiles::get(
+                crate::llm::profiles::DEFAULT_PROFILE_ID,
+            )),
             active_llm_model_id: Mutex::new(None),
             llm_model_manager: LlmModelManager::new(llm_models_dir.clone()),
             llm_downloader: LlmModelDownloader::new(llm_models_dir.clone()),

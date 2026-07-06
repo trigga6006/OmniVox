@@ -1,6 +1,7 @@
 use crate::llm::grammar::{SLOT_EXTRACTION_ROOT, SLOT_EXTRACTION_V1};
-use crate::llm::schema::{SlotExtraction, Urgency};
-use crate::llm::template::render_markdown;
+use crate::llm::profiles;
+use crate::llm::schema::{EmailExtraction, NotesExtraction, NotesSection, SlotExtraction, Urgency};
+use crate::llm::template::{render_email, render_markdown, render_notes};
 
 #[test]
 fn grammar_has_root_rule() {
@@ -640,6 +641,346 @@ fn prompt_with_context_caps_at_30_tokens() {
     assert!(!block.contains("tok199.rs"));
 }
 
+// ── Profile registry ────────────────────────────────────────────────────
+
+#[test]
+fn profiles_registry_integrity() {
+    let mut seen_ids: Vec<&str> = Vec::new();
+    for p in profiles::PROFILES {
+        assert!(!p.id.is_empty(), "profile id must be non-empty");
+        assert!(
+            !seen_ids.contains(&p.id),
+            "duplicate profile id {:?}",
+            p.id
+        );
+        seen_ids.push(p.id);
+        assert!(!p.display_name.is_empty());
+        assert!(!p.description.is_empty());
+        assert!(
+            !p.system_prompt.is_empty(),
+            "profile {:?} has an empty system prompt",
+            p.id
+        );
+        assert!(
+            p.grammar.contains("root ::="),
+            "profile {:?} grammar must define a root rule",
+            p.id
+        );
+        assert_eq!(p.grammar_root, "root");
+    }
+    assert_eq!(profiles::PROFILES[0].id, profiles::DEFAULT_PROFILE_ID);
+}
+
+#[test]
+fn profiles_lookup_falls_back_to_agent_prompt() {
+    assert_eq!(profiles::get("").id, "agent-prompt");
+    assert_eq!(profiles::get("no-such-profile").id, "agent-prompt");
+    assert_eq!(profiles::get("email").id, "email");
+    assert_eq!(profiles::get("notes-outline").id, "notes-outline");
+}
+
+/// The KV-cache contract: the agent-prompt profile's system prompt must be
+/// byte-identical to the frozen `SYSTEM_PROMPT` constant the legacy prompt
+/// builders use.  Any drift silently costs the 2–7 s prefill on every
+/// extraction.
+#[test]
+fn agent_profile_prompt_is_byte_identical_to_system_prompt() {
+    let agent = profiles::get(profiles::DEFAULT_PROFILE_ID);
+    assert_eq!(agent.system_prompt, crate::llm::prompt::SYSTEM_PROMPT);
+    // And the profile-aware prompt builder must produce the exact legacy
+    // prompt for the agent profile.
+    let legacy = crate::llm::prompt::format_prompt("hello world");
+    let via_profile = crate::llm::prompt::format_profile_prompt(
+        agent.system_prompt,
+        "hello world",
+        &[],
+        None,
+    );
+    assert_eq!(legacy, via_profile);
+}
+
+#[test]
+fn profile_grammars_mention_their_slot_keys() {
+    let email = profiles::get("email");
+    for key in ["recipient_hint", "subject", "body_points", "sign_off"] {
+        assert!(email.grammar.contains(key), "email grammar missing {key}");
+        assert!(
+            email.system_prompt.contains(key),
+            "email prompt missing {key}"
+        );
+    }
+    let notes = profiles::get("notes-outline");
+    for key in ["title", "sections", "heading", "points"] {
+        assert!(notes.grammar.contains(key), "notes grammar missing {key}");
+        assert!(
+            notes.system_prompt.contains(key),
+            "notes prompt missing {key}"
+        );
+    }
+}
+
+#[test]
+fn profile_postprocess_roundtrips_minimal_json() {
+    // Each profile's postprocess must accept the minimal valid JSON its
+    // grammar can emit and produce non-empty markdown.
+    let cases: &[(&str, &str, &str)] = &[
+        ("agent-prompt", r#"{"goal":"fix the panel"}"#, "fix the panel"),
+        (
+            "email",
+            r#"{"subject":"faucet is leaking","body_points":["the faucet is leaking"]}"#,
+            "the faucet is leaking",
+        ),
+        (
+            "notes-outline",
+            r#"{"title":"vet notes","sections":[{"points":["book a follow-up at the vet"]}]}"#,
+            "book a follow-up at the vet",
+        ),
+    ];
+    for (id, raw, raw_input) in cases {
+        let profile = profiles::get(id);
+        let out = (profile.postprocess)(raw, raw_input)
+            .unwrap_or_else(|e| panic!("postprocess failed for {id}: {e}"));
+        assert!(
+            !out.markdown.trim().is_empty(),
+            "profile {id} rendered empty markdown"
+        );
+        assert!(out.slots.is_object(), "profile {id} slots must be an object");
+    }
+}
+
+// ── Email profile: schema grounding ─────────────────────────────────────
+
+#[test]
+fn email_normalize_drops_ungrounded_recipient_and_sign_off() {
+    let raw = "email that the shipment is delayed until friday";
+    let e = EmailExtraction {
+        recipient_hint: "Jennifer".into(), // never dictated
+        subject: "Shipment delayed until Friday".into(),
+        body_points: vec!["The shipment is delayed until Friday.".into()],
+        sign_off: "Best regards, Tom".into(), // never dictated
+    }
+    .normalize_with_raw(raw);
+    assert!(e.recipient_hint.is_empty(), "invented recipient must drop");
+    assert!(e.sign_off.is_empty(), "invented sign-off must drop");
+    assert_eq!(e.subject, "Shipment delayed until Friday");
+    assert_eq!(e.body_points.len(), 1);
+}
+
+#[test]
+fn email_normalize_keeps_grounded_recipient_and_sign_off() {
+    let raw = "write to sarah that the report is ready, sign it thanks ben";
+    let e = EmailExtraction {
+        recipient_hint: "Sarah".into(),
+        subject: "Report is ready".into(),
+        body_points: vec!["The report is ready.".into()],
+        sign_off: "Thanks, Ben".into(),
+    }
+    .normalize_with_raw(raw);
+    assert_eq!(e.recipient_hint, "Sarah");
+    assert_eq!(e.sign_off, "Thanks, Ben");
+}
+
+#[test]
+fn email_normalize_drops_partially_invented_sign_off_name() {
+    // User dictated a sign-off word but the model appended an invented name —
+    // the strict all-words rule drops the whole field rather than shipping
+    // the fabricated name.
+    let raw = "email the team that standup moves to two pm, sign it thanks";
+    let e = EmailExtraction {
+        subject: "Standup moves to 2pm".into(),
+        body_points: vec!["Standup moves to 2pm.".into()],
+        sign_off: "Thanks, Jennifer".into(),
+        ..Default::default()
+    }
+    .normalize_with_raw(raw);
+    assert!(e.sign_off.is_empty());
+}
+
+#[test]
+fn email_normalize_drops_ungrounded_subject_and_dedupes_body() {
+    let raw = "quick note that the meeting is cancelled, the meeting is cancelled";
+    let e = EmailExtraction {
+        subject: "Budget review follow-up".into(), // zero overlap → invented
+        body_points: vec![
+            "The meeting is cancelled.".into(),
+            "the meeting is cancelled".into(),
+        ],
+        ..Default::default()
+    }
+    .normalize_with_raw(raw);
+    assert!(e.subject.is_empty());
+    assert_eq!(e.body_points.len(), 1);
+}
+
+#[test]
+fn email_normalize_short_input_drops_ungrounded_body_points() {
+    let raw = "email bob that the demo is at noon";
+    let e = EmailExtraction {
+        recipient_hint: "Bob".into(),
+        subject: "Demo at noon".into(),
+        body_points: vec![
+            "The demo is at noon.".into(),
+            "Please let me know if you have questions.".into(), // classic padding
+        ],
+        ..Default::default()
+    }
+    .normalize_with_raw(raw);
+    assert_eq!(e.body_points, vec!["The demo is at noon."]);
+}
+
+// ── Notes profile: schema grounding ─────────────────────────────────────
+
+#[test]
+fn notes_normalize_dedupes_points_across_sections_and_drops_empty_sections() {
+    let raw = "meeting notes, the migration finished, we found two broken indexes, \
+               hiring wise the candidate declined so we reopen the req";
+    let n = NotesExtraction {
+        title: "Meeting notes".into(),
+        sections: vec![
+            NotesSection {
+                heading: "Migration".into(),
+                points: vec![
+                    "the migration finished".into(),
+                    "we found two broken indexes".into(),
+                ],
+            },
+            NotesSection {
+                heading: "Hiring".into(),
+                points: vec![
+                    "the migration finished".into(), // repeat under 2nd heading
+                    "the candidate declined so we reopen the req".into(),
+                ],
+            },
+            NotesSection {
+                heading: "Ghost".into(),
+                points: vec!["THE MIGRATION FINISHED".into()], // all dupes → section dies
+            },
+        ],
+    }
+    .normalize_with_raw(raw);
+    assert_eq!(n.sections.len(), 2);
+    assert_eq!(n.sections[0].points.len(), 2);
+    assert_eq!(
+        n.sections[1].points,
+        vec!["the candidate declined so we reopen the req"]
+    );
+}
+
+#[test]
+fn notes_normalize_clears_ungrounded_title_and_heading_but_keeps_points() {
+    let raw = "remember to water the plants and take out the recycling";
+    let n = NotesExtraction {
+        title: "Quarterly OKR review".into(), // invented
+        sections: vec![NotesSection {
+            heading: "Sprint retrospective".into(), // invented
+            points: vec![
+                "water the plants".into(),
+                "take out the recycling".into(),
+            ],
+        }],
+    }
+    .normalize_with_raw(raw);
+    assert!(n.title.is_empty(), "invented title must drop");
+    assert_eq!(n.sections.len(), 1);
+    assert!(n.sections[0].heading.is_empty(), "invented heading must drop");
+    assert_eq!(n.sections[0].points.len(), 2, "grounded points survive");
+}
+
+#[test]
+fn notes_normalize_short_input_drops_ungrounded_points() {
+    let raw = "note that the wifi password changed";
+    let n = NotesExtraction {
+        title: "Wifi password".into(),
+        sections: vec![NotesSection {
+            heading: String::new(),
+            points: vec![
+                "the wifi password changed".into(),
+                "the router firmware needs an upgrade".into(), // invented
+            ],
+        }],
+    }
+    .normalize_with_raw(raw);
+    assert_eq!(n.sections[0].points, vec!["the wifi password changed"]);
+}
+
+// ── Email / notes templates ─────────────────────────────────────────────
+
+#[test]
+fn template_email_full_render() {
+    let e = EmailExtraction {
+        recipient_hint: "Sarah".into(),
+        subject: "Quarterly report".into(),
+        body_points: vec![
+            "The March numbers are still missing.".into(),
+            "Could you send them by Thursday?".into(),
+        ],
+        sign_off: "Thanks, Ben".into(),
+    };
+    let md = render_email(&e);
+    assert_eq!(
+        md,
+        "To: Sarah\nSubject: Quarterly report\n\
+         \nThe March numbers are still missing.\n\
+         \nCould you send them by Thursday?\n\
+         \nThanks, Ben\n"
+    );
+}
+
+#[test]
+fn template_email_body_only() {
+    let e = EmailExtraction {
+        body_points: vec!["The meeting is cancelled.".into()],
+        ..Default::default()
+    };
+    let md = render_email(&e);
+    assert_eq!(md, "The meeting is cancelled.\n");
+    assert!(!md.contains("To:"));
+    assert!(!md.contains("Subject:"));
+}
+
+#[test]
+fn template_notes_full_render() {
+    let n = NotesExtraction {
+        title: "Vet visit".into(),
+        sections: vec![
+            NotesSection {
+                heading: "Weight".into(),
+                points: vec!["22 pounds".into()],
+            },
+            NotesSection {
+                heading: String::new(),
+                points: vec!["book a follow-up".into()],
+            },
+        ],
+    };
+    let md = render_notes(&n);
+    assert_eq!(
+        md,
+        "## Vet visit\n\
+         \n### Weight\n- 22 pounds\n\
+         \n- book a follow-up\n"
+    );
+}
+
+#[test]
+fn template_notes_skips_empty_title_and_sections() {
+    let n = NotesExtraction {
+        title: String::new(),
+        sections: vec![
+            NotesSection {
+                heading: "Ghost".into(),
+                points: vec![],
+            },
+            NotesSection {
+                heading: String::new(),
+                points: vec!["only point".into()],
+            },
+        ],
+    };
+    let md = render_notes(&n);
+    assert_eq!(md, "- only point\n");
+}
+
 /// End-to-end check of the KV-cached session against a real local model.
 ///
 /// Ignored by default — needs the Qwen GGUF already downloaded (it uses the
@@ -688,29 +1029,38 @@ fn real_model_session_reuses_prefix_and_matches_stateless() {
             let stateless_ms = t0.elapsed().as_millis();
 
             // Session path: warm → extract A → extract B.
+            let agent = crate::llm::profiles::get(crate::llm::profiles::DEFAULT_PROFILE_ID);
             let t0 = std::time::Instant::now();
-            let mut session = engine.new_session().expect("session create+warm");
+            let mut session = engine.new_session_for(agent).expect("session create+warm");
             let warm_ms = t0.elapsed().as_millis();
 
             let t0 = std::time::Instant::now();
-            let a = session
-                .extract_slots_with_context(input_a, &[], None)
+            let raw_a = session
+                .generate_raw(input_a, &[], None)
                 .expect("session extract A");
+            let a = (agent.postprocess)(&raw_a, input_a).expect("postprocess A");
             let a_ms = t0.elapsed().as_millis();
 
             let t0 = std::time::Instant::now();
-            let b = session
-                .extract_slots_with_context(input_b, &[], None)
+            let raw_b = session
+                .generate_raw(input_b, &[], None)
                 .expect("session extract B");
+            let b = (agent.postprocess)(&raw_b, input_b).expect("postprocess B");
             let b_ms = t0.elapsed().as_millis();
 
             eprintln!("stateless: {stateless_ms}ms  warm: {warm_ms}ms  A: {a_ms}ms  B: {b_ms}ms");
             eprintln!("stateless goal: {:?}", stateless.goal);
-            eprintln!("session A goal: {:?}", a.goal);
-            eprintln!("session B goal: {:?}", b.goal);
+            eprintln!("session A goal: {:?}", a.slots["goal"]);
+            eprintln!("session B goal: {:?}", b.slots["goal"]);
 
-            assert!(!a.goal.is_empty(), "session extraction A produced no goal");
-            assert!(!b.goal.is_empty(), "session extraction B produced no goal");
+            assert!(
+                a.slots["goal"].as_str().is_some_and(|g| !g.is_empty()),
+                "session extraction A produced no goal"
+            );
+            assert!(
+                b.slots["goal"].as_str().is_some_and(|g| !g.is_empty()),
+                "session extraction B produced no goal"
+            );
             assert!(!stateless.goal.is_empty(), "stateless produced no goal");
 
             // The cached-prefix path must be dramatically cheaper than the

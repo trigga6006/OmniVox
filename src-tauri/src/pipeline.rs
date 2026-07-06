@@ -9,8 +9,7 @@ use crate::error::ErrorCode;
 use crate::focus::{
     capture_foreground_window, get_process_name_from_hwnd, restore_foreground_window,
 };
-use crate::llm::schema::SlotExtraction;
-use crate::llm::template::render_markdown;
+use crate::llm::profiles::ProfileOutput;
 use crate::postprocess::processor::TextProcessor;
 use crate::screen_context::ScreenContext;
 use crate::state::AppState;
@@ -20,7 +19,9 @@ use crate::state::AppState;
 #[derive(Clone, serde::Serialize)]
 struct StructuredOutputPayload {
     markdown: String,
-    slots: SlotExtraction,
+    /// Profile-specific slot object — `SlotExtraction`-shaped for the
+    /// default agent-prompt profile, email/notes shapes for the others.
+    slots: serde_json::Value,
     raw_transcript: String,
     /// Characters dropped from the LLM input because the dictation exceeded
     /// `STRUCTURED_INPUT_CHAR_CAP`. 0 when nothing was truncated — the panel
@@ -870,7 +871,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         processed_text.clone()
     };
 
-    let structured: Option<(String, SlotExtraction)> = if should_structure
+    let structured: Option<ProfileOutput> = if should_structure
         && processed_text.chars().count() >= min_chars
     {
         if let Some(runner) = runner_opt {
@@ -912,22 +913,21 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 )
                 .await
             {
-                Ok(slots) => {
+                Ok(out) => {
                     crate::llm::diaglog::log(&format!(
-                        "pipeline: extraction OK in {}ms slots={:?}",
+                        "pipeline: extraction OK in {}ms slots={}",
                         t0.elapsed().as_millis(),
-                        slots
+                        out.slots
                     ));
-                    let md = render_markdown(&slots);
                     crate::llm::diaglog::record(crate::llm::diaglog::ExtractionRecord {
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         duration_ms: t0.elapsed().as_millis() as u64,
                         input_chars: structured_input.chars().count(),
                         truncated_chars,
-                        output_chars: md.chars().count(),
+                        output_chars: out.markdown.chars().count(),
                         outcome: "ok".into(),
                     });
-                    Some((md, slots))
+                    Some(out)
                 }
                 Err(e) => {
                     crate::llm::diaglog::log(&format!(
@@ -987,8 +987,8 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //     items).  Structural formatting is handled here at zero cost.
     //     When Structured Mode is active the LLM is the sole formatter —
     //     skip list formatting so we don't double-handle.
-    let final_text = if let Some((md, _)) = &structured {
-        md.clone()
+    let final_text = if let Some(out) = &structured {
+        out.markdown.clone()
     } else {
         crate::postprocess::formatter::format_lists(&processed_text)
     };
@@ -1161,12 +1161,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //    those flows.  For Structured Mode we also emit the rich payload
     //    so the overlay can render the preview panel.
     let _ = app_handle.emit("transcription-result", &record.text);
-    if let Some((md, slots)) = &structured {
+    if let Some(out) = &structured {
         let _ = app_handle.emit(
             "structured-output-ready",
             &StructuredOutputPayload {
-                markdown: md.clone(),
-                slots: slots.clone(),
+                markdown: out.markdown.clone(),
+                slots: out.slots.clone(),
                 // Use the pre-processor ASR output so "View raw transcript"
                 // actually shows what the user said — processed_text has
                 // already been through filler removal, dictionary, and

@@ -1,0 +1,15 @@
+root ::= "{" title-kv "," sections-kv "}"
+
+title-kv ::= "\"title\":" bounded-string
+sections-kv ::= "\"sections\":" "[" section ("," section){0,5} "]"
+
+section ::= "{" (heading-kv ",")? points-kv "}"
+heading-kv ::= "\"heading\":" bounded-string
+points-kv ::= "\"points\":" string-array
+
+string-array ::= "[" bounded-string ("," bounded-string){0,8} "]"
+
+bounded-string ::= "\"" char{1,520} "\""
+char ::= [^"\\\x00-\x1F] | "\\" escape
+escape ::= ["\\/bfnrt] | "u" hex{4}
+hex ::= [0-9a-fA-F]

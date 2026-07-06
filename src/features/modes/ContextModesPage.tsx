@@ -331,6 +331,10 @@ function ModeForm({
   const [icon, setIcon] = useState(mode?.icon ?? "mic");
   const [color, setColor] = useState(mode?.color ?? "amber");
   const [writingStyle, setWritingStyle] = useState(mode?.writing_style ?? "formal");
+  // Empty (legacy rows) means the default agent-prompt profile.
+  const [structuredProfile, setStructuredProfile] = useState(
+    mode?.structured_profile || "agent-prompt"
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -437,10 +441,25 @@ function ModeForm({
     setError(null);
     try {
       if (isEdit) {
-        await updateContextMode(mode.id, name, description, icon, color, writingStyle);
+        await updateContextMode(
+          mode.id,
+          name,
+          description,
+          icon,
+          color,
+          writingStyle,
+          structuredProfile
+        );
         onSave();
       } else {
-        const created = await createContextMode(name, description, icon, color, writingStyle);
+        const created = await createContextMode(
+          name,
+          description,
+          icon,
+          color,
+          writingStyle,
+          structuredProfile
+        );
         onSave(created);
       }
     } catch (e) {
@@ -535,6 +554,22 @@ function ModeForm({
             ]}
             value={writingStyle}
             onChange={setWritingStyle}
+          />
+        </FormSection>
+
+        {/* Structured Mode Profile */}
+        <FormSection
+          label="Structured Mode Profile"
+          hint="How Structured Mode formats dictations while this mode is active: a prompt for an AI coding agent, an email draft, or a notes outline."
+        >
+          <Segmented
+            options={[
+              { value: "agent-prompt", label: "Agent Prompt" },
+              { value: "email", label: "Email" },
+              { value: "notes-outline", label: "Notes" },
+            ]}
+            value={structuredProfile}
+            onChange={setStructuredProfile}
           />
         </FormSection>
 
