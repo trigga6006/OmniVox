@@ -1115,9 +1115,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             // include the 250ms post-paste guard, so by this point the paste
             // keystroke has been delivered and the clipboard held stable.
             // This settle only covers the target app *processing* its Ctrl+V
-            // before Enter arrives — 300ms is a conservative floor for slow
-            // apps (was a blind 1500ms on top of the guard).
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            // before Enter arrives.  600ms (850ms total after paste) is sized
+            // for Ship Mode's actual targets — Electron chat/agent UIs, which
+            // process paste on a renderer tick — while still 900ms faster
+            // than the old blind 1500ms.  Native edit controls need far less.
+            std::thread::sleep(std::time::Duration::from_millis(600));
             if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
                 let _ =
                     enigo::Keyboard::key(&mut enigo, enigo::Key::Return, enigo::Direction::Click);
@@ -1406,7 +1408,10 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
 /// *different* model than the one the user activated — whichever loads first
 /// becomes the shared `state.llm_runner`.  Returns None if nothing is
 /// configured/available or the load fails.
-fn ensure_llm_runner(state: &AppState) -> Option<Arc<crate::llm::runner::LlmRunner>> {
+fn ensure_llm_runner(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+) -> Option<Arc<crate::llm::runner::LlmRunner>> {
     if let Some(r) = state.llm_runner.lock().ok().and_then(|g| g.clone()) {
         return Some(r);
     }
@@ -1416,7 +1421,7 @@ fn ensure_llm_runner(state: &AppState) -> Option<Arc<crate::llm::runner::LlmRunn
         .filter(|id| !id.is_empty())
         .or_else(|| state.active_llm_model_id.lock().ok().and_then(|g| g.clone()))
         .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state))?;
-    match crate::commands::llm::load_and_activate_llm(&id, state) {
+    match crate::commands::llm::load_and_activate_llm_with_status(&id, state, Some(app_handle)) {
         Ok(()) => state.llm_runner.lock().ok().and_then(|g| g.clone()),
         Err(e) => {
             crate::llm::diaglog::log(&format!("command LLM lazy-load failed: {e}"));
@@ -1433,10 +1438,8 @@ async fn classify_command_via_llm(
     if utterance.is_empty() {
         return Vec::new();
     }
-    let _ = app_handle; // reserved for future "thinking" UI; keeps signature stable
-
     // First free-form command pays a one-time model load; subsequent ones are fast.
-    let runner = match ensure_llm_runner(state) {
+    let runner = match ensure_llm_runner(app_handle, state) {
         Some(r) => r,
         None => return Vec::new(),
     };
