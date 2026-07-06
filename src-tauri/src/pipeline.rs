@@ -1378,6 +1378,16 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         return;
     }
 
+    // Tier-0 undo — before the matcher so bare "undo" (Ctrl+Z chord) never
+    // shadows it.  Reverses the assistant's own last action, not the app's.
+    if matches!(
+        norm.as_str(),
+        "undo that" | "undo it" | "undo last command" | "undo the last command"
+    ) {
+        run_undo(app_handle, state).await;
+        return;
+    }
+
     // Fast path: deterministic grammar match (microseconds, no LLM).
     if let Some(intent) = crate::actions::match_command(&utterance) {
         run_intent(app_handle, state, intent).await;
@@ -1433,6 +1443,78 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         format!("\u{201c}{utterance}\u{201d}")
     };
     emit_command_result(app_handle, "error", format!("No command recognized ({heard})"));
+}
+
+/// Reverse the assistant's most recent undoable action ("undo that").
+/// One-shot: the slot is consumed so a second "undo that" reports there's
+/// nothing left rather than repeating the reversal.
+async fn run_undo(app_handle: &tauri::AppHandle, state: &AppState) {
+    use crate::state::LastAction;
+
+    let action = state.last_action.lock().ok().and_then(|mut g| g.take());
+    let Some(action) = action else {
+        emit_command_result(app_handle, "error", "Nothing to undo");
+        return;
+    };
+
+    let (summary, ok) = match action {
+        LastAction::LaunchedApp { hwnd, name } => {
+            let label = format!("Closed {name}");
+            match run_blocking_result(move || {
+                crate::actions::executor::run_close_window(Some(hwnd))
+            })
+            .await
+            {
+                Ok(()) => (label, true),
+                Err(e) => (e, false),
+            }
+        }
+        LastAction::Minimized { hwnd } => {
+            match run_blocking_result(move || crate::actions::executor::run_restore_window(hwnd))
+                .await
+            {
+                Ok(()) => ("Restored the window".to_string(), true),
+                Err(e) => (e, false),
+            }
+        }
+        LastAction::ShowDesktop => {
+            // Win+D toggles — firing it again brings the windows back.
+            match run_blocking_result(|| {
+                crate::actions::executor::run_chord(crate::actions::KeyChord::ShowDesktop)
+            })
+            .await
+            {
+                Ok(()) => ("Brought your windows back".to_string(), true),
+                Err(e) => (e, false),
+            }
+        }
+        LastAction::TypedText { target } => {
+            match run_blocking_result(move || {
+                if let Some(h) = target {
+                    crate::focus::restore_foreground_window_public(h);
+                }
+                crate::actions::executor::run_chord(crate::actions::KeyChord::Undo)
+            })
+            .await
+            {
+                Ok(()) => ("Undid the typed text".to_string(), true),
+                Err(e) => (e, false),
+            }
+        }
+    };
+
+    emit_command_result(app_handle, if ok { "done" } else { "error" }, summary);
+}
+
+/// `run_blocking` sibling that preserves the Result instead of flattening to
+/// a summary — undo wants its own success labels.
+async fn run_blocking_result(
+    f: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(r) => r,
+        Err(_) => Err("Command execution failed".to_string()),
+    }
 }
 
 /// True when the utterance plausibly names the URL's host — "open github dot
@@ -1567,6 +1649,7 @@ async fn run_intent(
                 Some(r) if r.score >= crate::actions::app_index::AUTO && !r.ambiguous => {
                     match crate::actions::app_index::launch(&r.app_id) {
                         Ok(()) => {
+                            record_launch_for_undo(app_handle, r.name.clone());
                             emit_command_result(app_handle, "done", format!("Opened {}", r.name))
                         }
                         Err(e) => emit_command_result(app_handle, "error", e),
@@ -1618,10 +1701,64 @@ async fn run_intent(
         // Everything else is fire-and-report via the shared no-confirm executor.
         other => {
             let target = state.prev_foreground.lock().ok().and_then(|g| *g);
+            let undoable = undoable_from_intent(&other, target);
             let (summary, ok) = execute_intent_now(target, other).await;
+            if ok {
+                record_undoable(state, undoable);
+            }
             emit_command_result(app_handle, if ok { "done" } else { "error" }, summary);
         }
     }
+}
+
+/// What (if anything) this intent can undo once it succeeds.  Launched apps
+/// are handled separately — their undo target is the verified foreground
+/// window from `settle_after_launch`, not the intent itself.
+fn undoable_from_intent(
+    intent: &crate::actions::CommandIntent,
+    target: Option<isize>,
+) -> Option<crate::state::LastAction> {
+    use crate::actions::{CommandIntent, KeyChord, WindowAction};
+    match intent {
+        CommandIntent::Window(WindowAction::Minimize) => target
+            .map(|hwnd| crate::state::LastAction::Minimized { hwnd }),
+        CommandIntent::KeyChord(KeyChord::ShowDesktop) => {
+            Some(crate::state::LastAction::ShowDesktop)
+        }
+        CommandIntent::TypeText { submit: false, .. } => {
+            Some(crate::state::LastAction::TypedText { target })
+        }
+        _ => None,
+    }
+}
+
+/// Overwrite the single undo slot when the action is undoable.
+fn record_undoable(state: &AppState, action: Option<crate::state::LastAction>) {
+    if let Some(a) = action {
+        if let Ok(mut g) = state.last_action.lock() {
+            *g = Some(a);
+        }
+    }
+}
+
+/// Record a launched app's verified window for undo, off the result path —
+/// polls for the app to take the foreground (same discipline as
+/// `settle_after_launch`) and stores it only on a verified non-own change.
+fn record_launch_for_undo(app_handle: &tauri::AppHandle, name: String) {
+    let own = own_window_hwnds(app_handle);
+    let prev = {
+        let state = app_handle.state::<AppState>();
+        state.prev_foreground.lock().ok().and_then(|g| *g)
+    };
+    let h = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(hwnd) = settle_after_launch(prev, &own).await {
+            let state = h.state::<AppState>();
+            if let Ok(mut g) = state.last_action.lock() {
+                *g = Some(crate::state::LastAction::LaunchedApp { hwnd, name });
+            };
+        }
+    });
 }
 
 /// Execute a single intent against `target_hwnd` — the window to restore focus
@@ -1834,7 +1971,11 @@ async fn run_chain(
         }
 
         let launched_app = matches!(intent, CommandIntent::OpenApp(_));
+        let undoable = undoable_from_intent(&intent, target);
         let (summary, ok) = execute_intent_now(target, intent).await;
+        if ok {
+            record_undoable(state, undoable);
+        }
         summaries.push(summary);
 
         // Abort the rest of the chain on a failed step.  Later steps almost
@@ -1938,7 +2079,10 @@ pub async fn confirm_pending_command(app_handle: &tauri::AppHandle, state: &AppS
     match p {
         crate::state::PendingCommand::OpenApp { app_id, name } => {
             match crate::actions::app_index::launch(&app_id) {
-                Ok(()) => emit_command_result(app_handle, "done", format!("Opened {name}")),
+                Ok(()) => {
+                    record_launch_for_undo(app_handle, name.clone());
+                    emit_command_result(app_handle, "done", format!("Opened {name}"))
+                }
                 Err(e) => emit_command_result(app_handle, "error", e),
             }
         }

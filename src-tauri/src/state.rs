@@ -46,6 +46,23 @@ pub enum PendingCommand {
     },
 }
 
+/// What the most recent executed command can undo (Phase A minimum-viable
+/// undo).  One slot, overwritten per undoable action — "undo that" always
+/// refers to the last thing the assistant did.  Submitted messages are
+/// deliberately NOT undoable; the confirm gate is their protection.
+#[derive(Debug, Clone)]
+pub enum LastAction {
+    /// A launched app's verified foreground window — undo closes it
+    /// gracefully (WM_CLOSE, so the app runs its own save prompt).
+    LaunchedApp { hwnd: isize, name: String },
+    /// A minimized window — undo restores it.
+    Minimized { hwnd: isize },
+    /// Show-desktop — undo toggles it back (Win+D is a toggle).
+    ShowDesktop,
+    /// Non-submitting typed text — undo sends Ctrl+Z at the target window.
+    TypedText { target: Option<isize> },
+}
+
 /// Central application state, managed by Tauri.
 ///
 /// All mutable fields are behind `Mutex` for thread-safe access from
@@ -125,6 +142,8 @@ pub struct AppState {
     /// "stop"/"cancel" tier-1 phrases; `run_chain` checks it between steps
     /// and resets it when a fresh chain starts.
     pub command_abort: std::sync::atomic::AtomicBool,
+    /// The most recent undoable command action ("undo that").
+    pub last_action: Mutex<Option<LastAction>>,
 }
 
 impl AppState {
@@ -178,6 +197,7 @@ impl AppState {
             pending_stop: std::sync::atomic::AtomicBool::new(false),
             pending_command: Mutex::new(None),
             command_abort: std::sync::atomic::AtomicBool::new(false),
+            last_action: Mutex::new(None),
         }
     }
 }

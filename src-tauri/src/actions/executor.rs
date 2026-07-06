@@ -148,6 +148,21 @@ pub fn run_close_window(_hwnd: Option<isize>) -> Result<(), String> {
     Err("Closing windows is only supported on Windows".into())
 }
 
+/// Restore a previously minimized window ("undo that" after a minimize).
+#[cfg(windows)]
+pub fn run_restore_window(hwnd: isize) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_RESTORE};
+    unsafe {
+        ShowWindow(hwnd as *mut core::ffi::c_void, SW_RESTORE);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn run_restore_window(_hwnd: isize) -> Result<(), String> {
+    Err("Window control is only supported on Windows".into())
+}
+
 /// Best-effort window title for confirm UX ("Close \"Untitled - Notepad\"?").
 /// Empty string if it can't be read.
 #[cfg(windows)]
