@@ -6,11 +6,11 @@ import {
   addNote,
   updateNote,
   deleteNote,
-  getSettings,
-  onSettingsChanged,
+  onRecordingStateChange,
   onTranscriptionResult,
   type Note,
 } from "@/lib/tauri";
+import { DICTATION_INSERTED_EVENT } from "@/hooks/useInAppDictation";
 
 type View = "grid" | "editor";
 
@@ -90,40 +90,46 @@ export function NotesPage() {
     };
   }, [editTitle, editContent]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Track the output mode so the append listener below can tell whether the
-  // output router already pasted the dictation into this window.
-  const outputModeRef = useRef<string>("clipboard");
-  useEffect(() => {
-    getSettings()
-      .then((s) => {
-        outputModeRef.current = s.output_mode;
-      })
-      .catch(() => {});
-    const unlisten = onSettingsChanged((s) => {
-      outputModeRef.current = s.output_mode;
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
+  // True when the in-app dictation path (useInAppDictation in App.tsx)
+  // already inserted the current dictation at the caret of a focused field
+  // in this window.  Consumed by the append listener below.
+  const insertedRef = useRef(false);
 
   // When in editor, append transcription results directly into the note —
-  // UNLESS the paste path already delivered them here.  In type/both output
-  // modes the router pastes into the focused element; when that focused
-  // element is this very editor (user dictating into OmniVox), appending too
-  // would duplicate the dictation.  Clipboard mode never pastes, and with
-  // another app focused the paste went elsewhere — append in both cases.
+  // UNLESS the dictation was already delivered into a focused field here.
+  // Dictating into OmniVox emits `dictation-insert` (caret insertion) instead
+  // of an OS paste; appending on top of that duplicated every dictation.
+  // When no field received the insert (focus on a button, or dictating from
+  // another app with the note open in the background) the append is the
+  // delivery path and must run.
   useEffect(() => {
     if (view !== "editor") return;
+
+    const onInserted = () => {
+      insertedRef.current = true;
+    };
+    window.addEventListener(DICTATION_INSERTED_EVENT, onInserted);
+
+    // A new recording clears any stale flag so a skipped/failed run can
+    // never suppress the NEXT dictation's append.
+    const unlistenRecording = onRecordingStateChange((state) => {
+      if (state === "recording") insertedRef.current = false;
+    });
+
     const unlisten = onTranscriptionResult((text) => {
-      const pastedHere = outputModeRef.current !== "clipboard" && document.hasFocus();
-      if (pastedHere) return;
+      if (insertedRef.current) {
+        insertedRef.current = false;
+        return;
+      }
       setEditContent((prev) => {
         const separator = prev.length > 0 && !prev.endsWith("\n") && !prev.endsWith(" ") ? " " : "";
         return prev + separator + text;
       });
     });
+
     return () => {
+      window.removeEventListener(DICTATION_INSERTED_EVENT, onInserted);
+      unlistenRecording.then((fn) => fn());
       unlisten.then((fn) => fn());
     };
   }, [view]);
