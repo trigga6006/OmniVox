@@ -63,14 +63,35 @@ export function HistoryPage() {
     return () => clearTimeout(timer);
   }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Refresh the currently visible window (all loaded pages, current query)
+  // when a new transcription lands.  The backend saves the row before
+  // emitting the event, so no settle timer is needed — and the ref avoids
+  // the stale closure that used to reset an active search/pagination.
+  const refresh = useCallback(() => {
+    const q = query.trim();
+    const limit = Math.max(records.length + 1, PAGE_SIZE);
+    const request = q ? searchHistory(q, limit, 0) : recentHistory(limit, 0);
+    request
+      .then((data) => {
+        if (mountedRef.current) {
+          setRecords(data);
+          setHasMore(data.length >= limit);
+        }
+      })
+      .catch((e) => console.error("Failed to refresh history:", e));
+  }, [query, records.length]);
+
+  const refreshRef = useRef(refresh);
   useEffect(() => {
-    const unlisten = onTranscriptionResult(() => {
-      setTimeout(() => load(), 300);
-    });
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(() => {
+    const unlisten = onTranscriptionResult(() => refreshRef.current());
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCopy = useCallback((text: string, id: string) => {
     navigator.clipboard.writeText(text).then(() => {

@@ -1084,35 +1084,14 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         .await;
     }
 
-    // 7. Notify frontend of the result.
-    //
-    //    `transcription-result` always fires — History auto-refresh, the
-    //    global last-transcription store, and Notes-append all listen for
-    //    it, so skipping it on the Structured path would silently break
-    //    those flows.  For Structured Mode we also emit the rich payload
-    //    so the overlay can render the preview panel.
-    let _ = app_handle.emit("transcription-result", &final_text);
-    if let Some((md, slots)) = &structured {
-        let _ = app_handle.emit(
-            "structured-output-ready",
-            &StructuredOutputPayload {
-                markdown: md.clone(),
-                slots: slots.clone(),
-                // Use the pre-processor ASR output so "View raw transcript"
-                // actually shows what the user said — processed_text has
-                // already been through filler removal, dictionary, and
-                // capitalization, which would mask the original words.
-                raw_transcript: transcription.text.clone(),
-                truncated_chars,
-            },
-        );
-    }
-
-    // 8. Save to history.
+    // 7. Save to history.
     //     `text` is the final paste-ready string (Markdown in Structured
     //     Mode, plain text otherwise).  `raw_transcript` stores the
     //     pre-processor ASR text so the Structured panel's "View raw"
     //     disclosure always reflects what the user actually spoke.
+    //     This happens BEFORE the `transcription-result` emit so listeners
+    //     that re-query history (the History page auto-refresh) see the
+    //     new row without needing a settle timer.
     let raw_transcript = if structured.is_some() {
         Some(transcription.text.clone())
     } else {
@@ -1128,6 +1107,30 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     };
     if let Err(e) = crate::storage::history::save_transcription(&state.db, &record) {
         eprintln!("Failed to save transcription to history: {e}");
+    }
+
+    // 8. Notify frontend of the result.
+    //
+    //    `transcription-result` always fires — History auto-refresh, the
+    //    global last-transcription store, and Notes-append all listen for
+    //    it, so skipping it on the Structured path would silently break
+    //    those flows.  For Structured Mode we also emit the rich payload
+    //    so the overlay can render the preview panel.
+    let _ = app_handle.emit("transcription-result", &record.text);
+    if let Some((md, slots)) = &structured {
+        let _ = app_handle.emit(
+            "structured-output-ready",
+            &StructuredOutputPayload {
+                markdown: md.clone(),
+                slots: slots.clone(),
+                // Use the pre-processor ASR output so "View raw transcript"
+                // actually shows what the user said — processed_text has
+                // already been through filler removal, dictionary, and
+                // capitalization, which would mask the original words.
+                raw_transcript: transcription.text.clone(),
+                truncated_chars,
+            },
+        );
     }
 
     let _ = app_handle.emit("recording-state-change", "idle");
