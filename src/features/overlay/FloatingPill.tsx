@@ -105,6 +105,7 @@ export function FloatingPill() {
     setStructuredPayload,
     structuredDegraded,
     setStructuredDegraded,
+    llmStatus,
   } = useOverlayEvents({
     status,
     dictatingInPanelRef,
@@ -563,6 +564,7 @@ export function FloatingPill() {
           isRecording={isRecording}
           isProcessing={isProcessing}
           isStructuring={isStructuring}
+          llmLoading={llmStatus === "loading"}
           isSuccess={isSuccess}
           isError={isError}
           duration={duration}

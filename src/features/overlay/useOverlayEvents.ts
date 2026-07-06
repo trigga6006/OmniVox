@@ -14,6 +14,7 @@ import {
   onStructuredOutputReady,
   onStructuredModeDegraded,
   onWhisperGpuFallback,
+  onLlmStatus,
   onCommandStateChange,
   onCommandConfirm,
   onCommandResult,
@@ -60,6 +61,12 @@ export function useOverlayEvents({
     null
   );
   const degradedTimerRef = useRef<number | null>(null);
+
+  // Structured-Mode LLM lifecycle ("loading" | "ready" | "error: …") — lets
+  // the structuring pill say "Loading model" during a lazy load instead of
+  // appearing hung.  Load failures also emit structured-mode-degraded, so
+  // the banner covers the error case.
+  const [llmStatus, setLlmStatus] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -153,11 +160,16 @@ export function useOverlayEvents({
       }, 20000);
     });
 
+    const unlistenLlmStatus = onLlmStatus((status) => {
+      setLlmStatus(status);
+    });
+
     return () => {
       unlistenPreview.then((fn) => fn());
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
+      unlistenLlmStatus.then((fn) => fn());
     };
   }, []);
 
@@ -235,5 +247,6 @@ export function useOverlayEvents({
     setStructuredPayload,
     structuredDegraded,
     setStructuredDegraded,
+    llmStatus,
   };
 }

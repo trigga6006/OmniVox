@@ -7,6 +7,9 @@ interface PillContentProps {
   isRecording: boolean;
   isProcessing: boolean;
   isStructuring: boolean;
+  /** True while the LLM is still loading (llm-status event) — the
+   *  structuring stall is a model lazy-load, so label it honestly. */
+  llmLoading: boolean;
   isSuccess: boolean;
   isError: boolean;
   duration: number;
@@ -24,6 +27,7 @@ export function PillContent({
   isRecording,
   isProcessing,
   isStructuring,
+  llmLoading,
   isSuccess,
   isError,
   duration,
@@ -133,7 +137,7 @@ export function PillContent({
               animation: "structuring-shimmer 2.4s linear infinite",
             }}
           >
-            Structuring
+            {llmLoading ? "Loading model" : "Structuring"}
             <span
               aria-hidden="true"
               style={{
