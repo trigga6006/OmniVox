@@ -166,6 +166,9 @@ pub async fn update_settings(
     let prev_command_mode = crate::storage::settings::get_settings(&state.db)
         .map(|s| s.command_mode)
         .unwrap_or(false);
+    let prev_auto_start = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.auto_start)
+        .unwrap_or(false);
 
     // If Structured Mode is being enabled without an explicit active model,
     // auto-pick the best downloaded one so the app never enters a misleading
@@ -242,6 +245,21 @@ pub async fn update_settings(
         let key1 = hk.keys.first().copied().unwrap_or(0);
         let key2 = hk.keys.get(1).copied().unwrap_or(0);
         crate::hotkey::update_hotkey_keys(key1, key2);
+    }
+
+    // Sync launch-at-startup with the OS (registry Run key on Windows).
+    // Only touch the registry when the setting actually changed.
+    if settings.auto_start != prev_auto_start {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        let result = if settings.auto_start {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        if let Err(e) = result {
+            eprintln!("Failed to update launch-at-startup: {e}");
+        }
     }
 
     // Sync Command-Mode hotkey activation; warm the app index the first time

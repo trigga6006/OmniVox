@@ -80,11 +80,9 @@ export interface HotkeyConfig {
 
 export interface AppSettings {
   theme: string;
-  language: string;
+  /** Launch OmniVox automatically when the OS starts. */
   auto_start: boolean;
-  minimize_to_tray: boolean;
   output_mode: string;
-  sample_rate: number;
   active_model_id: string | null;
   hotkey: HotkeyConfig | null;
   gpu_acceleration: boolean;

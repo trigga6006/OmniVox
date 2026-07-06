@@ -25,23 +25,14 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
     let defaults = AppSettings::default();
 
     let theme = map.get("theme").cloned().unwrap_or(defaults.theme);
-    let language = map.get("language").cloned().unwrap_or(defaults.language);
     let auto_start = map
         .get("auto_start")
         .map(|v| v == "true")
         .unwrap_or(defaults.auto_start);
-    let minimize_to_tray = map
-        .get("minimize_to_tray")
-        .map(|v| v == "true")
-        .unwrap_or(defaults.minimize_to_tray);
     let output_mode = map
         .get("output_mode")
         .cloned()
         .unwrap_or(defaults.output_mode);
-    let sample_rate = map
-        .get("sample_rate")
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(defaults.sample_rate);
     let active_model_id = map
         .get("active_model_id")
         .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
@@ -160,11 +151,8 @@ pub fn get_settings(db: &Database) -> AppResult<AppSettings> {
 
     Ok(AppSettings {
         theme,
-        language,
         auto_start,
-        minimize_to_tray,
         output_mode,
-        sample_rate,
         active_model_id,
         hotkey,
         gpu_acceleration,
@@ -220,18 +208,14 @@ pub fn update_settings(db: &Database, settings: &AppSettings) -> AppResult<()> {
     }
 
     let hotkey_json = serde_json::to_string(&settings.hotkey).unwrap_or_default();
-    let sample_rate_str = settings.sample_rate.to_string();
     let ducking_amount_str = settings.ducking_amount.to_string();
     let llm_timeout_str = settings.llm_timeout_secs.to_string();
     let structured_min_chars_str = settings.structured_min_chars.to_string();
 
-    let pairs: [(&str, &str); 28] = [
+    let pairs: [(&str, &str); 25] = [
         ("theme", settings.theme.as_str()),
-        ("language", settings.language.as_str()),
         ("auto_start", b(settings.auto_start)),
-        ("minimize_to_tray", b(settings.minimize_to_tray)),
         ("output_mode", settings.output_mode.as_str()),
-        ("sample_rate", sample_rate_str.as_str()),
         (
             "active_model_id",
             settings.active_model_id.as_deref().unwrap_or(""),

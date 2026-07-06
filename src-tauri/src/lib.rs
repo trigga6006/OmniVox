@@ -393,7 +393,10 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
 
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -421,6 +424,27 @@ pub fn run() {
 
             // Load persisted settings (output mode, etc.) into in-memory state
             apply_persisted_settings(&state);
+
+            // Reconcile launch-at-startup with the persisted setting — the
+            // registry entry can drift (exe moved, user cleaned it manually).
+            // The setting is the source of truth.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let want = crate::storage::settings::get_settings(&state.db)
+                    .map(|s| s.auto_start)
+                    .unwrap_or(false);
+                let autolaunch = app.autolaunch();
+                if autolaunch.is_enabled().unwrap_or(false) != want {
+                    let result = if want {
+                        autolaunch.enable()
+                    } else {
+                        autolaunch.disable()
+                    };
+                    if let Err(e) = result {
+                        eprintln!("Launch-at-startup reconcile failed: {e}");
+                    }
+                }
+            }
 
             // Startup repair: drop vocabulary rows whose mode no longer
             // exists (possible in DBs predating FK enforcement). Orphans by

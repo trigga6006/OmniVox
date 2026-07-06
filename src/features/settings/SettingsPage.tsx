@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap } from "lucide-react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap, Power } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
@@ -263,6 +263,10 @@ export function SettingsPage() {
 
   const handleCommandModeToggle = useCallback(() => {
     patchSettings((current) => ({ command_mode: !current.command_mode })).catch(console.error);
+  }, [patchSettings]);
+
+  const handleAutoStartToggle = useCallback(() => {
+    patchSettings((current) => ({ auto_start: !current.auto_start })).catch(console.error);
   }, [patchSettings]);
 
   const currentTheme = settings?.theme ?? "dark";
@@ -538,6 +542,12 @@ export function SettingsPage() {
 
         {/* ── Behavior ── */}
         <GroupCard title="Behavior" delay={0.19}>
+          <Row
+            icon={Power}
+            title="Launch at startup"
+            description="Start OmniVox automatically when you sign in to Windows."
+            control={<Toggle checked={!!settings?.auto_start} onChange={handleAutoStartToggle} aria-label="Launch at startup" />}
+          />
           <Row
             icon={Layers}
             title="Auto context switching"

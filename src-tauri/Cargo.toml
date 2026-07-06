@@ -29,6 +29,9 @@ whisper-rs = "0.16"
 enigo = "0.2"
 arboard = "3"
 tauri-plugin-single-instance = "2.4.0"
+# Launch-at-startup (registry Run key on Windows) — wired to the
+# `auto_start` setting; enable/disable happens in commands/settings.rs.
+tauri-plugin-autostart = "2"
 nnnoiseless = { version = "0.5", default-features = false }
 # Local LLM inference (llama.cpp bindings) for Structured Mode slot extraction.
 # `default-features = false` disables openmp + android-shared-stdcxx so GPU backends

@@ -108,11 +108,11 @@ pub struct AppBinding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub theme: String,
-    pub language: String,
+    /// Launch OmniVox automatically when the OS starts (Windows registry
+    /// Run key via tauri-plugin-autostart).  Applied in
+    /// `commands::settings::update_settings` and reconciled at startup.
     pub auto_start: bool,
-    pub minimize_to_tray: bool,
     pub output_mode: String,
-    pub sample_rate: u32,
     pub active_model_id: Option<String>,
     pub hotkey: Option<crate::hotkey::HotkeyConfig>,
     /// Enable GPU acceleration for Whisper inference (requires Vulkan).
@@ -181,11 +181,8 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
-            language: "en".to_string(),
             auto_start: false,
-            minimize_to_tray: true,
             output_mode: "clipboard".to_string(),
-            sample_rate: 16000,
             active_model_id: None,
             hotkey: Some(crate::hotkey::HotkeyConfig::default()),
             gpu_acceleration: false,
