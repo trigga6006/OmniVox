@@ -119,6 +119,118 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Keep the always-on-top overlay pill reachable for the whole session.
+///
+/// `always_on_top(true)` is set once at window creation, but Windows demotes
+/// always-on-top windows over time: a fullscreen app, a UAC prompt, an
+/// explorer.exe restart, or a lock/unlock cycle can steal the z-order, and a
+/// monitor sleep/wake or unplug can leave the pill parked off every screen.
+/// The tray's "Reset Pill" item fixes both by hand; this watchdog does the
+/// same two corrections automatically on a low-frequency tick so the pill can
+/// never silently vanish mid-session (the bug: visible for hours, then gone).
+///
+/// Re-asserting HWND_TOPMOST without moving/sizing/activating is a visual
+/// no-op when the pill is already topmost, so there is no flicker or focus
+/// theft; the off-screen reposition only fires when the window intersects no
+/// connected monitor (a disconnected/slept display).
+fn start_overlay_watchdog(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+            let Some(window) = app.get_webview_window("overlay") else {
+                // Window destroyed entirely (WebView2 process kill) — nothing
+                // to re-assert; only a full relaunch recovers that.
+                continue;
+            };
+
+            // Ghost mode dims via CSS opacity, not an OS hide, so a genuinely
+            // hidden OS window is abnormal — restore it.
+            if matches!(window.is_visible(), Ok(false)) {
+                let _ = window.show();
+            }
+
+            #[cfg(target_os = "windows")]
+            overlay_watchdog_tick(&app, &window);
+        }
+    });
+}
+
+/// One Windows watchdog correction: re-assert topmost, and pull the pill back
+/// on-screen if it drifted off every connected monitor.
+#[cfg(target_os = "windows")]
+fn overlay_watchdog_tick(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+
+    let Ok(hwnd_raw) = window.hwnd() else { return };
+    let hwnd: HWND = hwnd_raw.0 as HWND;
+
+    // Does the window's rect intersect any connected monitor?  If it does,
+    // a plain topmost re-assert is all we need.  If it doesn't (parked on a
+    // now-disconnected/slept monitor), move it back to the primary work area.
+    let on_screen = overlay_intersects_a_monitor(app, window);
+    if on_screen {
+        // SAFETY: hwnd just retrieved from Tauri; NOMOVE|NOSIZE|NOACTIVATE
+        // touches only z-order, so this cannot move focus or resize the pill.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        return;
+    }
+
+    // Off every monitor — reposition to the primary work area, keeping the
+    // current size (SWP_NOSIZE) so we don't clip an expanded pill, and assert
+    // topmost in the same call.
+    let Ok(Some(primary)) = app.primary_monitor() else { return };
+    let Ok(size) = window.outer_size() else { return };
+    let wa = primary.work_area();
+    // 12px gap above the work-area bottom — matches setup_overlay_window.
+    let margin_phys = (12.0 * primary.scale_factor()).round() as i32;
+    let x = wa.position.x + ((wa.size.width as i32 - size.width as i32) / 2);
+    let y = wa.position.y + wa.size.height as i32 - size.height as i32 - margin_phys;
+
+    eprintln!("overlay watchdog: pill was off-screen — repositioning to primary monitor");
+    // SAFETY: as above; SWP_NOSIZE keeps the current size, we only move + topmost.
+    unsafe {
+        SetWindowPos(hwnd, HWND_TOPMOST, x, y.max(0), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+/// True if the overlay window's rect overlaps any connected monitor.
+#[cfg(target_os = "windows")]
+fn overlay_intersects_a_monitor(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> bool {
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        // Can't tell — assume on-screen so we never reposition on a bad read.
+        return true;
+    };
+    let (wx, wy) = (pos.x, pos.y);
+    let (ww, wh) = (size.width as i32, size.height as i32);
+
+    let monitors = match app.available_monitors() {
+        Ok(m) => m,
+        Err(_) => return true, // can't enumerate — don't reposition
+    };
+    monitors.iter().any(|m| {
+        let mp = m.position();
+        let ms = m.size();
+        let (mx, my) = (mp.x, mp.y);
+        let (mw, mh) = (ms.width as i32, ms.height as i32);
+        // Standard AABB overlap test.
+        wx < mx + mw && wx + ww > mx && wy < my + mh && wy + wh > my
+    })
+}
+
 /// Copy bundled model files from Tauri resources to user directories on first launch.
 /// Does NOT load any models — that's handled by `load_default_model_deferred`.
 ///
@@ -529,6 +641,12 @@ pub fn run() {
             // Create the floating overlay pill — always-on-top, transparent,
             // positioned just above the taskbar/dock.
             setup_overlay_window(app)?;
+
+            // Keep the pill reachable: Windows demotes always-on-top windows
+            // over a long session (fullscreen apps, lock/unlock, monitor
+            // sleep), which previously left the pill gone until a manual
+            // "Reset Pill".  This re-asserts topmost + on-screen automatically.
+            start_overlay_watchdog(app.handle().clone());
 
             // Install the hotkey via a low-level keyboard hook.
             hotkey::install(app.handle().clone());
