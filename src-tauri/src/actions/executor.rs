@@ -244,6 +244,16 @@ pub fn run_open_url(target: &str) -> Result<(), String> {
     } else {
         format!("https://{t}")
     };
+    // Reject embedded credentials (userinfo): `https://trusted.com@evil.example`
+    // navigates to evil.example, defeating URL grounding.  Inspect the authority
+    // (between `://` and the first `/`, `?`, or `#`).
+    let authority = url
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(rest))
+        .unwrap_or("");
+    if authority.contains('@') {
+        return Err("Refusing to open a URL with embedded credentials".into());
+    }
     open_in_default_browser(&url)
 }
 

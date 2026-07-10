@@ -255,11 +255,15 @@ fn is_non_sentence_period(text: &str, dot_pos: usize) -> bool {
     // Abbreviation: short word before the dot that's in our list
     // Walk backwards to find the word before the dot.
     let before = &text[..dot_pos];
-    let word_start = before
-        .rfind(|c: char| !c.is_alphabetic())
-        .map(|p| p + 1)
-        .unwrap_or(0);
-    let word = &before[word_start..];
+    // Take the trailing run of alphabetic chars before the dot. `rsplit` on a
+    // char predicate always yields substrings on char boundaries — unlike the
+    // old `rfind(..).map(|p| p + 1)`, where `p` is the *first byte* of the
+    // rightmost non-alphabetic char, so `p + 1` split mid-char and panicked on
+    // a multibyte apostrophe / dash / ellipsis (e.g. Whisper's "I don't.").
+    let word = before
+        .rsplit(|c: char| !c.is_alphabetic())
+        .next()
+        .unwrap_or("");
     if !word.is_empty() && word.len() <= 5 {
         let lower = word.to_lowercase();
         if ABBREVIATIONS.contains(&lower.as_str()) {
@@ -347,8 +351,13 @@ fn strip_leading_connector(s: &str) -> &str {
     for prefix in &[
         "and ", "then ", "also ", "plus ", "or ", "next ", "finally ", "lastly ",
     ] {
-        if trimmed.len() >= prefix.len() && trimmed[..prefix.len()].eq_ignore_ascii_case(prefix) {
-            return trimmed[prefix.len()..].trim_start();
+        // `get(..len)` yields None when `len` isn't a char boundary, so a
+        // multibyte char within the first bytes of the item can't panic the
+        // slice (an ASCII connector's byte length may land mid-char otherwise).
+        if let Some(head) = trimmed.get(..prefix.len()) {
+            if head.eq_ignore_ascii_case(prefix) {
+                return trimmed[prefix.len()..].trim_start();
+            }
         }
     }
     trimmed

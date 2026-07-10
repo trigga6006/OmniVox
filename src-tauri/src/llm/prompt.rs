@@ -197,6 +197,19 @@ pub fn format_prompt_with_context(
 }
 
 /// Profile-aware variant: identical ChatML wrapping around an arbitrary
+/// Neutralize ChatML control-token delimiters and control chars in an untrusted
+/// prompt field (the transcript, a foreground-app window title) so it can't
+/// escape its turn once tokenized with `parse_special=true`. Newlines and tabs
+/// are kept (legitimate in dictation); the `<|` / `|>` delimiters that form
+/// special tokens like `<|im_end|>` are defanged.
+fn sanitize_prompt_field(s: &str) -> String {
+    s.replace("<|", "<")
+        .replace("|>", ">")
+        .chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .collect()
+}
+
 /// system prompt.  With `SYSTEM_PROMPT` this is byte-identical to the legacy
 /// functions above — the KV-cache prefix contract depends on that.
 pub fn format_profile_prompt(
@@ -205,6 +218,10 @@ pub fn format_profile_prompt(
     screen_tokens: &[String],
     source_app: Option<&str>,
 ) -> String {
+    // Untrusted fields (transcript, foreground-app title) are tokenized with
+    // parse_special=true — defang before interpolation. Only touches the
+    // per-call variable tail, never the cached system-prompt prefix.
+    let user_text = sanitize_prompt_field(user_text);
     if screen_tokens.is_empty() {
         return format!(
             "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nACTUAL DICTATION:\n{input}\n\nReturn only the JSON object described above. /no_think<|im_end|>\n<|im_start|>assistant\n",
@@ -234,7 +251,7 @@ pub fn format_profile_prompt(
     }
 
     let app_label = source_app
-        .map(|a| format!(" (foreground app: {a})"))
+        .map(|a| format!(" (foreground app: {})", sanitize_prompt_field(a)))
         .unwrap_or_default();
     let token_list = sanitized.join(", ");
 
@@ -304,6 +321,8 @@ pub fn format_command_prompt(utterance: &str) -> String {
     format!(
         "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\nCOMMAND: {input}\n\nReturn only the JSON array. /no_think<|im_end|>\n<|im_start|>assistant\n",
         system = COMMAND_SYSTEM_PROMPT,
-        input = utterance,
+        // Untrusted utterance tokenized with parse_special=true — defang ChatML
+        // control-token delimiters so it can't escape the user turn.
+        input = sanitize_prompt_field(utterance),
     )
 }

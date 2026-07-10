@@ -268,12 +268,15 @@ mod state_machine {
         // Enter/Esc while a confirm pill is pending drives it from the
         // keyboard.  Guard rails against confirming something the user never
         // saw: a 250ms arming debounce (an Enter finishing their typing must
-        // not confirm) and a 15s freshness window (a forgotten pill must not
-        // swallow keys minutes later — the mouse buttons keep working).
+        // not confirm) and a 6s freshness window (a forgotten pill must not
+        // swallow keys later — the mouse buttons keep working).  NOTE: within
+        // this window a global Enter still both confirms and is swallowed; the
+        // full fix (bind the confirm to the arm-time foreground identity) is
+        // tracked separately — this shorter window just bounds the exposure.
         let since = CONFIRM_PENDING_SINCE_MS.load(Ordering::Acquire);
         if since != 0 && is_down && (vk == VK_RETURN || vk == VK_ESCAPE) {
             let age = now_ms().saturating_sub(since);
-            if (250..15_000).contains(&age) {
+            if (250..6_000).contains(&age) {
                 CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
                 let confirm = vk == VK_RETURN;
                 if let Some(handle) = APP_HANDLE.get() {

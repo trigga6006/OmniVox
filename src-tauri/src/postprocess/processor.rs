@@ -133,13 +133,9 @@ impl TextProcessor for ProcessorChain {
                 if !lower_result.contains(&lower_phrase) {
                     continue;
                 }
-                if let Some(replaced) = replace_case_insensitive_with_lower(
-                    &result,
-                    &lower_result,
-                    &entry.phrase,
-                    &lower_phrase,
-                    &entry.replacement,
-                ) {
+                if let Some(replaced) =
+                    replace_case_insensitive(&result, &entry.phrase, &entry.replacement)
+                {
                     corrections.push(Correction {
                         original: entry.phrase.clone(),
                         replacement: entry.replacement.clone(),
@@ -163,13 +159,9 @@ impl TextProcessor for ProcessorChain {
                 if !lower_result.contains(&lower_trigger) {
                     continue;
                 }
-                if let Some(replaced) = replace_case_insensitive_with_lower(
-                    &result,
-                    &lower_result,
-                    &snippet.trigger,
-                    &lower_trigger,
-                    &snippet.content,
-                ) {
+                if let Some(replaced) =
+                    replace_case_insensitive(&result, &snippet.trigger, &snippet.content)
+                {
                     corrections.push(Correction {
                         original: snippet.trigger.clone(),
                         replacement: snippet.content.clone(),
@@ -222,26 +214,34 @@ fn is_word_char(b: u8) -> bool {
     // prevent a replacement, never cause one).
 }
 
+/// Case-insensitive (ASCII) substring search returning the byte offset of the
+/// first match in `haystack`. Unlike `haystack.to_lowercase().find(needle)`,
+/// the offset is valid in the ORIGINAL string: `to_lowercase()` is not
+/// length-preserving (`İ`, Kelvin `K`, `Å`…), so an offset taken from a
+/// lowercased copy desyncs from the original and silently corrupts — or panics
+/// — the slice. A byte match always lands on char boundaries, so the caller can
+/// slice `haystack` at the returned offset (and offset + needle.len()) safely.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let (hay, ndl) = (haystack.as_bytes(), needle.as_bytes());
+    if ndl.is_empty() || hay.len() < ndl.len() {
+        return None;
+    }
+    (0..=hay.len() - ndl.len()).find(|&i| hay[i..i + ndl.len()].eq_ignore_ascii_case(ndl))
+}
+
 /// Case-insensitive whole-word replacement. Returns `Some(new_string)` if any
 /// replacement was made, `None` if nothing was replaced.
 ///
-/// Takes precomputed `lower_text` and `lower_phrase` from the caller so we
-/// don't redundantly lowercase the text for every dictionary entry checked.
-/// The caller should already have verified `lower_text.contains(lower_phrase)`
-/// via its own short-circuit — this function still handles not-found gracefully
-/// but assumes the happy path.
-fn replace_case_insensitive_with_lower(
-    text: &str,
-    lower_text: &str,
-    phrase: &str,
-    lower_phrase: &str,
-    replacement: &str,
-) -> Option<String> {
+/// Matches ASCII-case-insensitively directly against the original `text` via
+/// [`find_ascii_ci`], so match offsets stay valid for slicing (a lowercased
+/// copy would desync on length-changing chars). The caller's own
+/// `lower.contains(..)` short-circuit still skips absent entries cheaply.
+fn replace_case_insensitive(text: &str, phrase: &str, replacement: &str) -> Option<String> {
     let mut result = String::with_capacity(text.len());
     let mut search_start = 0;
     let mut any_replaced = false;
 
-    while let Some(pos) = lower_text[search_start..].find(lower_phrase) {
+    while let Some(pos) = find_ascii_ci(&text[search_start..], phrase) {
         let abs_pos = search_start + pos;
 
         // Check word boundaries to avoid replacing inside contractions
@@ -256,8 +256,12 @@ fn replace_case_insensitive_with_lower(
             search_start = end_pos;
             any_replaced = true;
         } else {
-            result.push_str(&text[search_start..abs_pos + 1]);
-            search_start = abs_pos + 1;
+            // Rejected embedded match: advance past the matched char, not one
+            // byte — a non-ASCII trigger (e.g. "éclair") starts with a multibyte
+            // char, so `abs_pos + 1` would split mid-codepoint and panic.
+            let step = text[abs_pos..].chars().next().map_or(1, char::len_utf8);
+            result.push_str(&text[search_start..abs_pos + step]);
+            search_start = abs_pos + step;
         }
     }
 
@@ -327,12 +331,13 @@ fn remove_fillers(text: &str) -> String {
 
     // 1. Remove multi-word filler phrases first (before splitting into words)
     for phrase in PHRASE_FILLERS {
-        // Case-insensitive removal with word boundaries
-        let lower = result.to_lowercase();
+        // Case-insensitive removal with word boundaries. Match ASCII-ci against
+        // the original so offsets stay boundary-valid — a lowercased copy can
+        // desync on length-changing chars (İ, Kelvin K…) and panic the slice.
         let mut new = String::with_capacity(result.len());
         let mut search_start = 0;
 
-        while let Some(pos) = lower[search_start..].find(phrase) {
+        while let Some(pos) = find_ascii_ci(&result[search_start..], phrase) {
             let abs_pos = search_start + pos;
             let end_pos = abs_pos + phrase.len();
 
@@ -441,8 +446,7 @@ fn remove_contextual_fillers(text: &str) -> String {
     for pattern in &[", like,", ", like ", ",like,", ",like "] {
         let replacement = if pattern.ends_with(',') { "," } else { " " };
         loop {
-            let lower = cleaned.to_lowercase();
-            let Some(pos) = lower.find(pattern) else {
+            let Some(pos) = find_ascii_ci(&cleaned, pattern) else {
                 break;
             };
             cleaned = format!(
@@ -626,6 +630,34 @@ fn normalize_whitespace(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── UTF-8 boundary safety (to_lowercase() index desync) ─────
+    #[test]
+    fn find_ascii_ci_offset_valid_in_original_with_length_changing_char() {
+        // İ (U+0130) lowercases to two code units, so a to_lowercase()-based
+        // search desyncs its offset from the original. find_ascii_ci returns an
+        // offset valid in the ORIGINAL string — safe to slice.
+        let text = "\u{0130} you know done";
+        let pos = find_ascii_ci(text, "you know").unwrap();
+        assert_eq!(&text[pos..pos + "you know".len()], "you know");
+    }
+
+    #[test]
+    fn replace_case_insensitive_no_panic_on_rejected_multibyte_match() {
+        // "éclair" embedded in "xéclair" is a rejected (non-word-boundary)
+        // match; advancing must step over the whole 'é', not one byte.
+        assert_eq!(
+            replace_case_insensitive("x\u{e9}clair here", "\u{e9}clair", "X"),
+            None
+        );
+    }
+
+    #[test]
+    fn remove_fillers_no_corruption_on_length_changing_char() {
+        // Before the fix, lowercased-copy offsets indexed the original and
+        // produced "İ ydone" (eating the space + half a word) or panicked.
+        assert_eq!(remove_fillers("\u{0130} you know done"), "\u{0130} done");
+    }
 
     // ── Filler removal ──────────────────────────────────────────
     #[test]

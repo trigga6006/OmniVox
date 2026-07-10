@@ -1450,24 +1450,35 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         }
 
         // A bare LLM-produced URL the utterance never named is a fabrication
-        // risk (the model invents a plausible domain) — confirm it instead of
-        // opening blind.  A grounded URL ("open github dot com") stays auto.
-        if let [crate::actions::CommandIntent::OpenUrl(url)] = intents.as_slice() {
-            if !url_grounded_in_utterance(&utterance, url) {
-                let summary = format!("Open {url}?");
-                if let Ok(mut pending) = state.pending_command.lock() {
-                    *pending = Some(crate::state::PendingCommand::Chain { intents });
-                }
-                crate::hotkey::set_confirm_pending(true);
-                let _ = app_handle.emit(
-                    "command-confirm",
-                    &CommandConfirmPayload {
-                        summary,
-                        editable_text: None,
-                    },
-                );
-                return;
+        // risk (the model invents a plausible domain) — confirm the whole
+        // sequence instead of opening blind.  A grounded URL ("open github dot
+        // com") stays auto.  Applies to a URL ANYWHERE in a chain, not just a
+        // lone OpenUrl (a two-step "open chrome then go to <invented>" used to
+        // bypass this and open unconfirmed).
+        let has_ungrounded_url = intents.iter().any(|i| {
+            matches!(
+                i,
+                crate::actions::CommandIntent::OpenUrl(url)
+                    if !url_grounded_in_utterance(&utterance, url)
+            )
+        });
+        if has_ungrounded_url {
+            let summary = match intents.as_slice() {
+                [crate::actions::CommandIntent::OpenUrl(url)] => format!("Open {url}?"),
+                _ => confirm_chain_summary(state, &intents),
+            };
+            if let Ok(mut pending) = state.pending_command.lock() {
+                *pending = Some(crate::state::PendingCommand::Chain { intents });
             }
+            crate::hotkey::set_confirm_pending(true);
+            let _ = app_handle.emit(
+                "command-confirm",
+                &CommandConfirmPayload {
+                    summary,
+                    editable_text: None,
+                },
+            );
+            return;
         }
         if intents.len() == 1 {
             run_intent(app_handle, state, intents.into_iter().next().unwrap()).await;
@@ -1567,8 +1578,17 @@ fn url_grounded_in_utterance(utterance: &str, url: &str) -> bool {
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_start_matches("www.");
-    let first_label = host.split(['.', '/', ':']).next().unwrap_or("");
-    first_label.len() >= 3 && norm.contains(&first_label.to_lowercase())
+    // Ground on the registrable label (the one before the TLD), not the first
+    // subdomain label — otherwise "github.evil.com" would be treated as
+    // grounded by the spoken word "github" while actually navigating to evil.
+    let host_only = host.split(['/', '?', '#', ':']).next().unwrap_or("");
+    let labels: Vec<&str> = host_only.split('.').filter(|l| !l.is_empty()).collect();
+    let registrable = match labels.as_slice() {
+        [.., name, _tld] => *name,
+        [single] => *single,
+        _ => "",
+    };
+    registrable.len() >= 3 && norm.contains(&registrable.to_lowercase())
 }
 
 #[cfg(test)]
@@ -1595,6 +1615,17 @@ mod url_grounding_tests {
         ));
         // Too-short labels never count as grounded.
         assert!(!url_grounded_in_utterance("open x", "https://x.com"));
+    }
+
+    #[test]
+    fn subdomain_spoof_is_not_grounded() {
+        // The registrable label is "evil", not the spoken "github".
+        assert!(!url_grounded_in_utterance(
+            "open github",
+            "https://github.evil.com"
+        ));
+        // A genuinely grounded registrable domain still passes.
+        assert!(url_grounded_in_utterance("go to github", "https://github.com"));
     }
 }
 
@@ -2128,6 +2159,9 @@ pub async fn confirm_pending_command(
         .and_then(|mut g| g.take());
     crate::hotkey::set_confirm_pending(false);
     let Some(p) = pending else {
+        // Nothing parked (already consumed, raced, or a stale confirm) — still
+        // emit a terminal state so the pill can't wedge in "confirm".
+        let _ = app_handle.emit("command-state-change", "idle");
         return;
     };
     match p {

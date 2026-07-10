@@ -512,3 +512,24 @@ fn ordinal_only_run_still_stays_prose() {
     assert!(!result.contains("- "), "ordinal-only runs stay prose: {result}");
     assert!(!result.contains("1. "), "ordinal-only runs stay prose: {result}");
 }
+
+// ── UTF-8 boundary safety ──────────────────────────────────────
+// Regression: a multibyte char immediately before a sentence-final period
+// (Whisper emits typographic apostrophes/dashes/ellipses constantly) made the
+// old `rfind(..).map(|p| p + 1)` slice mid-char and panic.
+
+#[test]
+fn multibyte_before_period_does_not_panic() {
+    for input in [
+        "I don\u{2019}t.",                // curly apostrophe
+        "She can\u{2019}t. Really.",
+        "Wait \u{2014} I can\u{2019}t.",  // em-dash + curly apostrophe
+        "Well\u{2026}. Fine.",            // ellipsis then period
+        "It costs 20\u{00b0}. Hot.",      // degree sign
+        "Caf\u{00e9}. Yes.",              // multibyte alphabetic before period
+    ] {
+        // Must not panic; we only assert it produces *some* output.
+        let out = format_lists(input);
+        assert!(!out.is_empty(), "empty output for {input:?}");
+    }
+}

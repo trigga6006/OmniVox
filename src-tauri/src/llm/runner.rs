@@ -158,7 +158,17 @@ impl LlmRunner {
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
 
-                    let _busy_reset = BusyReset(Arc::clone(&worker_busy));
+                    // Held only for requests that actually acquired the busy
+                    // slot in `submit`. `Prewarm` bypasses `submit` (it never
+                    // sets `busy`), so it must NOT create a guard — otherwise
+                    // its drop at end-of-iteration would clear a *concurrent*
+                    // extraction's busy flag and defeat single-flight
+                    // backpressure (a second request could then queue behind
+                    // the in-flight native decode).
+                    let _busy_reset = match &req {
+                        LlmRequest::Prewarm => None,
+                        _ => Some(BusyReset(Arc::clone(&worker_busy))),
+                    };
 
                     // Reconcile with the desired profile before any session
                     // use.  A switch drops the old session (its KV prefix is
