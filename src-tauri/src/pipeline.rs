@@ -2665,11 +2665,23 @@ async fn run_chain(
                 None => None,
             };
             match settled {
-                Some(s) if s.identity_proven => {
+                // A window stabilized as the launched app's foreground — aim the
+                // chain's later focus-dependent steps at it.  For AppsFolder /
+                // Store launches identity is "unproven" (LaunchIdentity::Package
+                // is an AUMID we don't PID-correlate), but we still retarget: the
+                // per-primitive execution-time check in `execute_intent_now`
+                // (foreground + pid must match `target` right before firing) is
+                // the real gate, and a hard refusal here broke the flagship
+                // "open <app> and send/type …" flow for every Store app (e.g.
+                // "tell Claude to …").  `identity_proven` still gates UNDO
+                // recording, so "undo that" never WM_CLOSEs an unproven window.
+                Some(s) => {
                     target = Some(s.target);
                     target_unverified = false;
                 }
-                _ => target_unverified = true,
+                // Nothing stabilized (launch failed / no new window) — refuse
+                // focus-dependent steps rather than fire into the wrong place.
+                None => target_unverified = true,
             }
         } else if i + 1 < total {
             // Brief settle so the prior action lands before the next fires.

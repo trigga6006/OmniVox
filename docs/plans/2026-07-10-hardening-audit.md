@@ -226,6 +226,18 @@ Resolved by round 2: B2-4 (fail-closed), B2-5 (PSL), B2-7 (documented), B2-9, M6
 - **B2-16 [Med]** `runner_for_model` reads `active_llm_model_id` + `llm_runner` under separate mutexes (`llm.rs:216`) → a concurrent switch returns X for Y. Store `(model_id, Arc<runner>)` atomically under one mutex; remove the fast-path that bypasses the keyed check.
 - **B2-17 [Med]** the LaunchApp toggle gates only inline custom Launch, not Command Mode OpenApp (`pipeline.rs:1122`) — but gating "open Spotify" would cripple the core feature, so RELABEL the toggle to state it controls custom Launch voice-commands only (owner prefers OpenApp stays on).
 
+## Post-test fix — B2-4 relaxation (2026-07-10)
+
+Live testing showed B2-4's fail-closed refusal broke the flagship "tell <app> to …" flow: AppsFolder/Store
+launches (Claude, etc.) go through `explorer.exe`, which never exposes the child pid, so `settle_after_launch`
+always returns `identity_proven=false` and `run_chain` refused the send ("couldn't confirm the launched app's
+window"). Relaxed: retarget to the settled window regardless of `identity_proven`, and let the per-primitive
+execution-time verify (`execute_intent_now` / `run_type_text`: foreground+pid immediately before firing) be the
+gate; only refuse when NO window stabilizes. `identity_proven` still gates undo recording. Verified: "open Notepad
+and type hello world" lands. **Residual:** apps whose text input isn't focused on activation (e.g. Claude's
+composer — Electron, UIA-skipped) still receive keystrokes into an unfocused field; the rigorous fix is AUMID
+window-identity correlation + composer focusing.
+
 ## Verification baseline
 `cd src-tauri && cargo test` · `cargo clippy --all-targets` · `npm run build` · manual: dictate `"I don't."` into
 Notepad (Batch-1 crash regression); Right-Ctrl "open notepad and type hello".
