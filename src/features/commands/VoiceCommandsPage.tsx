@@ -86,6 +86,111 @@ const SCOPE_OPTIONS: { value: TriggerScope; label: string }[] = [
   { value: "end_of_utterance", label: "At end" },
 ];
 
+interface CommandRowProps {
+  cmd: VoiceCommand;
+  isEditing: boolean;
+  editPhrase: string;
+  onEditPhraseChange: (value: string) => void;
+  onSubmitEdit: () => void;
+  onCancelEdit: () => void;
+  onStartEdit: () => void;
+  onToggleEnabled: (enabled: boolean) => void;
+  onScopeChange: (scope: TriggerScope) => void;
+  onDelete: () => void;
+}
+
+/**
+ * One command row.  Defined at module scope (not nested in VoiceCommandsPage)
+ * so typing in the rename input doesn't remount it on every keystroke, which
+ * jumped the caret to the end and made mid-string edits unusable.
+ */
+function CommandRow({
+  cmd,
+  isEditing,
+  editPhrase,
+  onEditPhraseChange,
+  onSubmitEdit,
+  onCancelEdit,
+  onStartEdit,
+  onToggleEnabled,
+  onScopeChange,
+  onDelete,
+}: CommandRowProps) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 py-2.5 transition-opacity",
+        !cmd.enabled && "opacity-55 hover:opacity-100"
+      )}
+    >
+      <Toggle
+        checked={cmd.enabled}
+        onChange={onToggleEnabled}
+        aria-label={`${cmd.phrase} ${cmd.enabled ? "enabled" : "disabled"}`}
+      />
+
+      {isEditing ? (
+        <Input
+          value={editPhrase}
+          onChange={(e) => onEditPhraseChange(e.target.value)}
+          className="h-8 flex-1"
+          placeholder="Spoken phrase…"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onSubmitEdit();
+            if (e.key === "Escape") onCancelEdit();
+          }}
+          autoFocus
+        />
+      ) : (
+        <>
+          <Kbd className="shrink-0">{cmd.phrase}</Kbd>
+          <span className="flex-1 truncate text-[13px] text-text-secondary">
+            {actionLabel(cmd.action)}
+          </span>
+        </>
+      )}
+
+      {isEditing ? (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button size="sm" variant="primary" icon={<Check />} onClick={onSubmitEdit}>
+            Save
+          </Button>
+          <Button size="sm" variant="ghost" icon={<X />} onClick={onCancelEdit}>
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <>
+          <Segmented
+            options={SCOPE_OPTIONS}
+            value={cmd.trigger_scope}
+            onChange={onScopeChange}
+            className="shrink-0"
+          />
+          <div className="flex w-[52px] shrink-0 items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <button
+              onClick={onStartEdit}
+              title="Rename phrase"
+              className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+            >
+              <Pencil size={13} />
+            </button>
+            {!cmd.built_in && (
+              <button
+                onClick={onDelete}
+                title="Delete"
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function VoiceCommandsPage() {
   const [commands, setCommands] = useState<VoiceCommand[]>([]);
 
@@ -220,83 +325,21 @@ export function VoiceCommandsPage() {
     return { editing, pointer, custom };
   }, [commands]);
 
-  /** One command row. */
-  const Row = ({ cmd }: { cmd: VoiceCommand }) => {
-    const isEditing = editId === cmd.id;
-    return (
-      <div
-        className={cn(
-          "group flex items-center gap-3 py-2.5 transition-opacity",
-          !cmd.enabled && "opacity-55 hover:opacity-100"
-        )}
-      >
-        <Toggle
-          checked={cmd.enabled}
-          onChange={(v) => patch(cmd, { enabled: v })}
-          aria-label={`${cmd.phrase} ${cmd.enabled ? "enabled" : "disabled"}`}
-        />
-
-        {isEditing ? (
-          <Input
-            value={editPhrase}
-            onChange={(e) => setEditPhrase(e.target.value)}
-            className="h-8 flex-1"
-            placeholder="Spoken phrase…"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleUpdatePhrase(cmd);
-              if (e.key === "Escape") setEditId(null);
-            }}
-            autoFocus
-          />
-        ) : (
-          <>
-            <Kbd className="shrink-0">{cmd.phrase}</Kbd>
-            <span className="flex-1 truncate text-[13px] text-text-secondary">
-              {actionLabel(cmd.action)}
-            </span>
-          </>
-        )}
-
-        {isEditing ? (
-          <div className="flex shrink-0 items-center gap-1">
-            <Button size="sm" variant="primary" icon={<Check />} onClick={() => handleUpdatePhrase(cmd)}>
-              Save
-            </Button>
-            <Button size="sm" variant="ghost" icon={<X />} onClick={() => setEditId(null)}>
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <>
-            <Segmented
-              options={SCOPE_OPTIONS}
-              value={cmd.trigger_scope}
-              onChange={(scope) => patch(cmd, { trigger_scope: scope })}
-              className="shrink-0"
-            />
-            <div className="flex w-[52px] shrink-0 items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-              <button
-                onClick={() => startEdit(cmd)}
-                title="Rename phrase"
-                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-              >
-                <Pencil size={13} />
-              </button>
-              {!cmd.built_in && (
-                <button
-                  onClick={() => handleDelete(cmd.id)}
-                  title="Delete"
-                  className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
-                >
-                  <Trash2 size={13} />
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    );
-  };
+  const renderRow = (cmd: VoiceCommand) => (
+    <CommandRow
+      key={cmd.id}
+      cmd={cmd}
+      isEditing={editId === cmd.id}
+      editPhrase={editPhrase}
+      onEditPhraseChange={setEditPhrase}
+      onSubmitEdit={() => handleUpdatePhrase(cmd)}
+      onCancelEdit={() => setEditId(null)}
+      onStartEdit={() => startEdit(cmd)}
+      onToggleEnabled={(enabled) => patch(cmd, { enabled })}
+      onScopeChange={(scope) => patch(cmd, { trigger_scope: scope })}
+      onDelete={() => handleDelete(cmd.id)}
+    />
+  );
 
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-10">
@@ -329,9 +372,7 @@ export function VoiceCommandsPage() {
             </div>
           </CardHeader>
           <CardBody className="divide-y divide-border pt-0">
-            {groups.editing.map((cmd) => (
-              <Row key={cmd.id} cmd={cmd} />
-            ))}
+            {groups.editing.map(renderRow)}
           </CardBody>
         </Card>
 
@@ -346,9 +387,7 @@ export function VoiceCommandsPage() {
             <span className="text-[11.5px] text-text-muted">Off by default</span>
           </CardHeader>
           <CardBody className="divide-y divide-border pt-0">
-            {groups.pointer.map((cmd) => (
-              <Row key={cmd.id} cmd={cmd} />
-            ))}
+            {groups.pointer.map(renderRow)}
           </CardBody>
         </Card>
 
@@ -369,9 +408,7 @@ export function VoiceCommandsPage() {
           <CardBody className="pt-0">
             {groups.custom.length > 0 && (
               <div className="divide-y divide-border">
-                {groups.custom.map((cmd) => (
-                  <Row key={cmd.id} cmd={cmd} />
-                ))}
+                {groups.custom.map(renderRow)}
               </div>
             )}
 

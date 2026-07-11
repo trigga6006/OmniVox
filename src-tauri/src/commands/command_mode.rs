@@ -9,26 +9,32 @@ use tauri::State;
 
 use crate::state::AppState;
 
-/// Execute the command currently awaiting confirmation.  `edited_text`
-/// carries the pill textarea's content when the user revised a message
-/// before accepting.
+/// Execute the command currently awaiting confirmation.  `confirm_id` is the id
+/// the pill received on the `command-confirm` event: it must match the parked
+/// command's id or this is a no-op (a stale pill can't consume a newer command's
+/// confirm).  `edited_text` carries the pill textarea's content when the user
+/// revised a message before accepting.
 #[tauri::command]
 pub async fn confirm_command(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
+    confirm_id: u64,
     edited_text: Option<String>,
 ) -> Result<(), String> {
-    crate::pipeline::confirm_pending_command(&app_handle, &state, edited_text).await;
+    crate::pipeline::confirm_pending_command(&app_handle, &state, Some(confirm_id), edited_text)
+        .await;
     Ok(())
 }
 
-/// Discard the command currently awaiting confirmation.
+/// Discard the command currently awaiting confirmation.  Only the matching
+/// `confirm_id` clears it.
 #[tauri::command]
 pub async fn cancel_command(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
+    confirm_id: u64,
 ) -> Result<(), String> {
-    crate::pipeline::cancel_pending_command(&app_handle, &state);
+    crate::pipeline::cancel_pending_command(&app_handle, &state, Some(confirm_id));
     Ok(())
 }
 

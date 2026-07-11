@@ -178,6 +178,54 @@ Notable findings (deferred — outside the original deep scope):
 - **SS6 [Info] Overlay watchdog re-asserts `HWND_TOPMOST` + `show()` every 3 s unconditionally** (`lib.rs:139-215`)
   — sound (no spin, `SWP_NOACTIVATE`), but by design fights fullscreen apps/games. Judgment call.
 
+## Batch 2 Codex review — follow-up fixes (round 2)
+
+Codex gpt-5.6-sol @ xhigh reviewed the Batch 2 diff and found real defects (green tests can't catch these).
+M6 fully resolved; runner self-heal + Rust↔TS contract correct. To fix:
+
+- **B2-1 [High] cancellation floor** (`pipeline.rs:1471`): uses `store(ctx.id)` — an older delayed stop can LOWER a
+  newer floor; also clears the pending slot unconditionally (incl. newer commands); not re-checked before the
+  actual launch (`:1970`). Fix: `fetch_max`; clear only pending ids `<= stop_id`; re-check cancellation inside
+  every side-effecting sink.
+- **B2-2 [High] confirm-ID TOCTOU** (`pipeline.rs:2451/2465`): peek under one lock, then re-lock and take whatever
+  is present → a stale confirm can consume a newer command. Hook spawns `confirm_id=None` matching ANY pending
+  (`hotkey.rs:318`). Fix: compare-and-take atomically under one guard; arm the hook with the exact pending id;
+  enforce a deadline; generation-tag `emit_command_idle_if_free`.
+- **B2-3 [High] inline Send blind-fire** (`router.rs:390` proceeds when target `None`; `:421` sleeps 150 ms then
+  Enter): capture immutable `WindowTarget{hwnd,pid}` at dictation START (`pipeline.rs:1076` captures pid late);
+  reject absent targets for consequential actions; re-verify immediately before Enter / each pointer primitive.
+- **B2-4 [High] launched-app identity** (`pipeline.rs:2393`): accepts any real non-own window; never correlates
+  PID/AUMID with the launched app. Fix: launch returns expected pid/package; accept only matching windows; else
+  abort focus steps + skip undo. (Hard for AppsFolder launches — do best-feasible + document residual.)
+- **B2-5 [High] URL grounding uses a home-grown suffix subset** (`pipeline.rs:1699`): `com.my` etc. omitted →
+  `github.evil.com.my` grounds. Fix: use the `publicsuffix` crate (embedded PSL) for eTLD+1.
+- **B2-6 [Med] focus identity** (`focus.rs:28` accepts `expected_pid=None`; `:314` sends deselection arrows before
+  verifying `:316`): require pid for Windows primitives; verify BEFORE the arrow keys and immediately before the
+  primitive.
+- **B2-7 [Med] hook-thread Win32** (`hotkey.rs:305` `GetForegroundWindow` on the WH_KEYBOARD_LL thread): it's a
+  cheap non-blocking read (unlike the banned UIA/GetWindowText), but violates the stated invariant — mitigate via a
+  WinEvent-hook atomic snapshot, or document why the cheap read is acceptable.
+- **B2-8 [Med] M3 async-safety** (`commands/llm.rs:216`): `std::sync::Mutex` held across the blocking load+join from
+  async paths (stalls tokio workers); double-check returns any runner without checking the active model id. Fix:
+  run wait/load on blocking infra; key single-flight on the canonical model id.
+- **B2-9 [Low] runner init panic** (`runner.rs:129`): initial `new_session_for` is outside `catch_unwind`. Wrap
+  init / recreate on init-panic.
+- **B2-10 [Low] LaunchApp opt-in** (`settings.rs:290` reads a hidden key nothing writes; UI still creates Launch
+  actions): add a real typed setting + UI toggle. **OWNER DECISION: default ON** (owner prefers features full-on;
+  the B2-3 identity-binding makes inline commands safe) — flag for confirmation.
+- **Contract nit:** TS confirm helpers accept `number | null`; tighten to `number`.
+
+## Batch 2 Codex sign-off — closing fixes (round 3)
+
+Resolved by round 2: B2-4 (fail-closed), B2-5 (PSL), B2-7 (documented), B2-9, M6. Closing round:
+- **B2-11 [High]** dictation target lives in shared `state.dictation_target` and is reread late (`pipeline.rs:1104`) — an overlapping dictation can overwrite it → A sends into B's window. Thread the `WindowTarget` through the stopping dictation's LOCAL context; drop the late pid recapture fallback.
+- **B2-12 [High]** only Send/Enter/KeyCombo/pointer verify identity; `DeleteLastWord`/Cut/Undo/Redo/SelectAll/Tab/Escape don't (`router.rs:402`). Verify EVERY focus-dependent inline primitive.
+- **B2-13 [High]** cancellation floor not checked INSIDE the `spawn_blocking` closures for KeyChord/Media/Window/WebSearch/OpenUrl/TypeText (`pipeline.rs:2343+`); stop between paste and Enter not consulted; undo bypasses the floor. Pass the cancel token into every closure + recheck before each primitive.
+- **B2-14 [High, narrow]** hook reads foreground then ID as separate atomics (`hotkey.rs:327`) — a sub-ms window lets a newly-armed pending be confirmed by a stale Enter. Pack the hook state / `compare_exchange` the id. (Very narrow; document if a clean pack isn't cheap.)
+- **B2-15 [Med]** `restore_foreground_window` verifies only HWND before the deselection arrows (`focus.rs:332`); a recycled HWND in another process gets arrows before PID rejection. Verify HWND+PID before deselection.
+- **B2-16 [Med]** `runner_for_model` reads `active_llm_model_id` + `llm_runner` under separate mutexes (`llm.rs:216`) → a concurrent switch returns X for Y. Store `(model_id, Arc<runner>)` atomically under one mutex; remove the fast-path that bypasses the keyed check.
+- **B2-17 [Med]** the LaunchApp toggle gates only inline custom Launch, not Command Mode OpenApp (`pipeline.rs:1122`) — but gating "open Spotify" would cripple the core feature, so RELABEL the toggle to state it controls custom Launch voice-commands only (owner prefers OpenApp stays on).
+
 ## Verification baseline
 `cd src-tauri && cargo test` · `cargo clippy --all-targets` · `npm run build` · manual: dictate `"I don't."` into
 Notepad (Batch-1 crash regression); Right-Ctrl "open notepad and type hello".

@@ -11,6 +11,7 @@ import {
   getActiveContextMode,
   onContextModeChanged,
   onTranscriptionPreview,
+  onTranscriptionResult,
   onStructuredOutputReady,
   onStructuredModeDegraded,
   onWhisperGpuFallback,
@@ -33,6 +34,7 @@ interface OverlayEventsOptions {
   settingsRef: MutableRefObject<AppSettings | null>;
   setShowModeSelector: Dispatch<SetStateAction<boolean>>;
   setShowShipPopup: Dispatch<SetStateAction<boolean>>;
+  setShowLeyLinePopup: Dispatch<SetStateAction<boolean>>;
 }
 
 // Tauri event wiring for the overlay pill: transcription preview, structured
@@ -44,9 +46,15 @@ export function useOverlayEvents({
   settingsRef,
   setShowModeSelector,
   setShowShipPopup,
+  setShowLeyLinePopup,
 }: OverlayEventsOptions) {
   // Live preview state
   const [previewText, setPreviewText] = useState<string | null>(null);
+
+  // Overlay-local last transcription — the main window's store
+  // `lastTranscription` is never populated in this isolated runtime, so the
+  // pill's success flash is driven straight from `transcription-result`. (M7)
+  const [lastTranscript, setLastTranscript] = useState<string | null>(null);
 
   // Mode selector state
   const [modes, setModes] = useState<ContextMode[]>([]);
@@ -113,6 +121,10 @@ export function useOverlayEvents({
       setPreviewText(tail.replace(/^\s+/, ""));
     });
 
+    const unlistenResult = onTranscriptionResult((text) => {
+      setLastTranscript(text);
+    });
+
     const unlistenStructured = onStructuredOutputReady((payload) => {
       // If the user is dictating into the existing panel's textarea, this
       // event is the by-product of that dictation run — drop it so we don't
@@ -123,6 +135,7 @@ export function useOverlayEvents({
       // Close any other floating UI — the panel takes priority.
       setShowModeSelector(false);
       setShowShipPopup(false);
+      setShowLeyLinePopup(false);
       setStructuredDegraded(null);
       // Respect ghost mode: if the user has hidden the pill, they explicitly
       // don't want UI popping up.  History still records the structured
@@ -166,6 +179,7 @@ export function useOverlayEvents({
 
     return () => {
       unlistenPreview.then((fn) => fn());
+      unlistenResult.then((fn) => fn());
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
@@ -202,7 +216,7 @@ export function useOverlayEvents({
       }
       useCommandStore
         .getState()
-        .setState("confirm", p.summary, p.editable_text ?? null);
+        .setState("confirm", p.summary, p.editable_text ?? null, p.id);
     });
     const unResult = onCommandResult((p) => {
       useCommandStore
@@ -219,27 +233,28 @@ export function useOverlayEvents({
     };
   }, []);
 
-  // Close the structured panel if the user starts a new recording — unless
-  // the recording is the panel's own in-place dictation, in which case we
-  // keep the panel mounted so the appended text can land in the textarea.
+  // A recording started while the structured panel is open always routes INTO
+  // the panel: the StructuredPanel claims any recording begun while it's
+  // mounted as in-place dictation and appends the result to its textarea.  We
+  // deliberately do NOT close the panel here — the old close-on-recording
+  // effect raced the `dictatingInPanelRef` flip on the global-hotkey path and
+  // orphaned the recording (H8).
+
+  // Clear per-recording UI on status change.  Not recording → drop the live
+  // preview.  Entering a fresh recording → drop the previous transcript so an
+  // empty dictation (which emits idle with no `transcription-result`) can't
+  // re-flash stale text on the pill. (M7)
   useEffect(() => {
-    if (
-      status === "recording" &&
-      structuredPayload &&
-      !dictatingInPanelRef.current
-    ) {
-      setStructuredPayload(null);
-    }
-  }, [status, structuredPayload]);
-  // Clear preview text when not recording
-  useEffect(() => {
-    if (status !== "recording") {
+    if (status === "recording") {
+      setLastTranscript(null);
+    } else {
       setPreviewText(null);
     }
   }, [status]);
 
   return {
     previewText,
+    lastTranscript,
     modes,
     activeModId,
     setActiveModId,

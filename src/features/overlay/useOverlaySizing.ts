@@ -117,7 +117,7 @@ export function useOverlaySizing({
     const needsSettle = interW !== targetW || interH !== targetH;
 
     setShowContent(false);
-    resizeOverlay(interW, interH);
+    resizeOverlay(interW, interH).catch(() => {});
 
     showContentTimerRef.current = window.setTimeout(() => {
       setShowContent(true);
@@ -128,7 +128,7 @@ export function useOverlaySizing({
     // window back to the exact target. Only needed when collapsing.
     if (needsSettle) {
       settleTimerRef.current = window.setTimeout(() => {
-        resizeOverlay(targetW, targetH);
+        resizeOverlay(targetW, targetH).catch(() => {});
         settleTimerRef.current = null;
       }, 320);
     }

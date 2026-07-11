@@ -550,15 +550,21 @@ pub fn run() {
                     .map(|s| s.auto_start)
                     .unwrap_or(false);
                 let autolaunch = app.autolaunch();
-                if autolaunch.is_enabled().unwrap_or(false) != want {
-                    let result = if want {
-                        autolaunch.enable()
-                    } else {
-                        autolaunch.disable()
-                    };
-                    if let Err(e) = result {
-                        eprintln!("Launch-at-startup reconcile failed: {e}");
-                    }
+                // `is_enabled()` only checks Run-key *presence*, not that the
+                // stored command points at the current exe — a moved binary
+                // leaves a stale entry it still reports as enabled.  `enable()`
+                // is idempotent and rewrites the key to the current path, so
+                // call it unconditionally when the setting wants autostart;
+                // only disable when a key is actually present.
+                let result = if want {
+                    Some(autolaunch.enable())
+                } else if autolaunch.is_enabled().unwrap_or(false) {
+                    Some(autolaunch.disable())
+                } else {
+                    None
+                };
+                if let Some(Err(e)) = result {
+                    eprintln!("Launch-at-startup reconcile failed: {e}");
                 }
             }
 
@@ -625,8 +631,17 @@ pub fn run() {
 
                 // Restore Structured Mode if it was on at last shutdown.
                 // Runs after the Whisper model so it doesn't compete with
-                // that load for the background pool's first slot.
-                load_default_llm_deferred(&handle, &st);
+                // that load for the background pool's first slot.  The LLM load
+                // holds LLM_LOAD_LOCK across a blocking GGUF load + thread join,
+                // so it runs on the blocking pool, not this tokio worker (B2-8).
+                {
+                    let h = handle.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let st = h.state::<state::AppState>();
+                        load_default_llm_deferred(&h, &st);
+                    })
+                    .await;
+                }
 
                 // Pre-warm the Command-Mode app index so the first "open <app>"
                 // resolves instantly instead of spawning PowerShell mid-command.

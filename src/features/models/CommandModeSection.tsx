@@ -93,6 +93,7 @@ export function CommandModeSection() {
   );
 
   const commandMode = settings?.command_mode ?? false;
+  const launchAppEnabled = settings?.launch_app_voice_commands_enabled ?? true;
 
   const handleTest = useCallback(
     async (text?: string) => {
@@ -135,6 +136,27 @@ export function CommandModeSection() {
             checked={commandMode}
             onChange={() => applyPatch({ command_mode: !commandMode })}
             aria-label="Toggle Command Mode"
+          />
+        </div>
+
+        {/* Opt-in for CUSTOM "Launch" voice-commands (your own dictation
+            commands that start a program). This does NOT affect Command Mode's
+            built-in "open <app>" — that always works. */}
+        <div className="mt-3.5 flex items-center justify-between border-t border-border/60 pt-3">
+          <div className="min-w-0 flex-1 pr-3">
+            <p className="text-[14px] text-text-primary">Allow custom Launch voice-commands</p>
+            <p className="mt-0.5 text-[11.5px] leading-snug text-text-muted">
+              Lets your own “Launch” voice-commands start programs. Command Mode’s built-in
+              “open …” isn’t affected. Off = your Launch commands do nothing.
+            </p>
+          </div>
+          <Toggle
+            accent="amber"
+            checked={launchAppEnabled}
+            onChange={() =>
+              applyPatch({ launch_app_voice_commands_enabled: !launchAppEnabled })
+            }
+            aria-label="Allow custom Launch voice-commands"
           />
         </div>
 

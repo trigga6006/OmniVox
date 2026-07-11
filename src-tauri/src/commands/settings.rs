@@ -281,6 +281,17 @@ pub async fn update_settings(
     Ok(())
 }
 
+/// Opt-in gate: whether a voice command may launch a program (Command Mode
+/// "open <app>" and the inline dictation `LaunchApp`).  Reads the canonical
+/// typed `launch_app_voice_commands_enabled` setting — default ON (the
+/// identity-bound command path makes launches safe).  Falls back to the default
+/// (true) if settings can't be read.
+pub fn launch_app_voice_command_enabled(db: &crate::storage::database::Database) -> bool {
+    crate::storage::settings::get_settings(db)
+        .map(|s| s.launch_app_voice_commands_enabled)
+        .unwrap_or(true)
+}
+
 /// Suspend or resume the hotkey hook.
 /// Called by the frontend before entering "listening" mode for key recording.
 #[tauri::command]

@@ -94,6 +94,12 @@ export interface AppSettings {
   command_send: boolean;
   /** Command Mode: hold Right Ctrl and speak a command (launch app, key chord, media). */
   command_mode: boolean;
+  /**
+   * Gate for the "Launch"/"open app" command action.  When false, voice
+   * commands that would start an application are refused by the backend.
+   * Default true.
+   */
+  launch_app_voice_commands_enabled: boolean;
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
@@ -309,18 +315,23 @@ export interface CommandResult {
   summary: string;
 }
 export interface CommandConfirm {
+  /** Backend-issued id for this confirm, echoed back to confirm_command /
+   *  cancel_command so a stale pill can't consume a newer command's confirm. */
+  id: number;
   summary: string;
   /** Present when the pending action sends a typed message — shown in an
    *  editable textarea so a mishearing can be fixed before it sends. */
   editable_text?: string;
 }
 
-/** Execute the command currently awaiting confirmation.  Pass `editedText`
- *  when the user revised the message in the confirm pill's textarea. */
-export const confirmCommand = (editedText?: string) =>
-  invoke<void>("confirm_command", { editedText: editedText ?? null });
+/** Execute the command currently awaiting confirmation.  `confirmId` is the id
+ *  from the `command-confirm` event; pass `editedText` when the user revised
+ *  the message in the confirm pill's textarea. */
+export const confirmCommand = (confirmId: number, editedText?: string) =>
+  invoke<void>("confirm_command", { confirmId, editedText: editedText ?? null });
 /** Discard the command currently awaiting confirmation. */
-export const cancelCommand = () => invoke<void>("cancel_command");
+export const cancelCommand = (confirmId: number) =>
+  invoke<void>("cancel_command", { confirmId });
 
 /** Resolved result of a "Test command" dry-run (no execution). */
 export interface CommandTestResult {

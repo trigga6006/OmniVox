@@ -49,7 +49,6 @@ export function FloatingPill() {
 
   const status = useRecordingStore((s) => s.status);
   const duration = useRecordingStore((s) => s.duration);
-  const lastTranscription = useRecordingStore((s) => s.lastTranscription);
   const commandState = useCommandStore((s) => s.state);
 
   const [pillState, setPillState] = useState<PillState>("idle");
@@ -96,6 +95,7 @@ export function FloatingPill() {
 
   const {
     previewText,
+    lastTranscript,
     modes,
     activeModId,
     setActiveModId,
@@ -112,6 +112,7 @@ export function FloatingPill() {
     settingsRef,
     setShowModeSelector,
     setShowShipPopup,
+    setShowLeyLinePopup,
   });
 
   const commandEditableConfirm = useCommandStore((s) => s.editableText !== null);
@@ -157,23 +158,33 @@ export function FloatingPill() {
       }
       return;
     }
-    if (status === "idle" && lastTranscription && pillState === "processing") {
+    if (status === "idle" && lastTranscript && pillState === "processing") {
       setFlashText(
-        lastTranscription.length > 30
-          ? lastTranscription.slice(0, 30) + "…"
-          : lastTranscription
+        lastTranscript.length > 30
+          ? lastTranscript.slice(0, 30) + "…"
+          : lastTranscript
       );
       setPillState("success");
-      const timer = setTimeout(() => {
-        setPillState("idle");
-        setFlashText(null);
-      }, 2500);
-      return () => clearTimeout(timer);
+      // The auto-reset is handled by its own pillState-keyed effect below, so
+      // an unrelated re-render can't cancel the timer and wedge "success".
+      return;
     }
     if (status !== "idle" || pillState !== "success") {
       setPillState(status);
     }
-  }, [status, lastTranscription, dictatingInPanel, structuredPayload]);
+  }, [status, lastTranscript, dictatingInPanel, structuredPayload]);
+
+  // Auto-reset the success flash after 2.5 s.  Keyed solely on entering the
+  // success state so re-renders from unrelated overlay state (preview text,
+  // panel, etc.) can't clear the reset timer and leave the pill stuck. (M7)
+  useEffect(() => {
+    if (pillState !== "success") return;
+    const timer = setTimeout(() => {
+      setPillState("idle");
+      setFlashText(null);
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [pillState]);
 
   useEffect(() => {
     return () => {
@@ -196,7 +207,7 @@ export function FloatingPill() {
     document.body.style.padding = "0";
     document.body.style.overflow = "hidden";
     document.body.classList.add("overlay-window");
-    resizeOverlay(IDLE_WIN_W, IDLE_WIN_H);
+    resizeOverlay(IDLE_WIN_W, IDLE_WIN_H).catch(() => {});
   }, []);
 
   // Load settings and stay in sync with changes from any window — one apply

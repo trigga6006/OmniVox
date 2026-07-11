@@ -317,10 +317,14 @@ impl<'m> LlamaSession<'m> {
         Ok(())
     }
 
-    /// Bring the KV cache to exactly the tokenization of `prompt`, reusing
-    /// the longest common token prefix from the previous call.  Returns the
-    /// prompt token count (== the position where generation starts).
-    fn ensure_prompt(&mut self, prompt: &str) -> AppResult<usize> {
+    /// Tokenize `prompt` and verify it fits the context (leaving room for at
+    /// least one generated token) WITHOUT touching the KV cache.
+    ///
+    /// Over-length and tokenizer failures are surfaced here — before any cache
+    /// mutation — so callers can degrade while leaving the warm prefix intact.
+    /// A dense or CJK dictation that tokenizes past `n_ctx` must NOT force a
+    /// full re-warm of the next, normal-length dictation.
+    fn tokenize_prompt(&self, prompt: &str) -> AppResult<Vec<LlamaToken>> {
         let full = self
             .engine
             .model
@@ -336,7 +340,14 @@ impl<'m> LlamaSession<'m> {
                 n_ctx
             )));
         }
+        Ok(full)
+    }
 
+    /// Bring the KV cache to exactly `full` (a prompt's tokenization from
+    /// [`tokenize_prompt`]), reusing the longest common token prefix from the
+    /// previous call.  Returns the prompt token count (== the position where
+    /// generation starts).  This mutates the cache.
+    fn decode_prompt(&mut self, full: Vec<LlamaToken>) -> AppResult<usize> {
         // Longest common prefix with what's already in the cache.  When the
         // prompt is identical (warm + warm, or a repeated dictation), keep
         // one token back so the decode below refreshes the sampler's logits.
@@ -384,6 +395,15 @@ impl<'m> LlamaSession<'m> {
 
         self.cached_tokens = full;
         Ok(self.cached_tokens.len())
+    }
+
+    /// Bring the KV cache to exactly the tokenization of `prompt`.  Convenience
+    /// wrapper used by [`warm`](Self::warm); the extraction/command paths call
+    /// the two halves directly so an over-length prompt is rejected (via
+    /// [`tokenize_prompt`]) before the cache-mutating [`decode_prompt`] runs.
+    fn ensure_prompt(&mut self, prompt: &str) -> AppResult<usize> {
+        let full = self.tokenize_prompt(prompt)?;
+        self.decode_prompt(full)
     }
 
     /// Grammar-constrained greedy generation from position `n_prompt`.
@@ -462,7 +482,12 @@ impl<'m> LlamaSession<'m> {
         let prompt =
             format_profile_prompt(self.profile.system_prompt, user_text, tokens, source_app);
 
-        let result = self.ensure_prompt(&prompt).and_then(|n_prompt| {
+        // Tokenize + length-check first: this does NOT touch the KV cache, so
+        // an over-length dictation degrades gracefully while leaving the warm
+        // system-prompt prefix intact.  Only the cache-mutating decode/generate
+        // steps below trigger a cache reset on failure.
+        let full = self.tokenize_prompt(&prompt)?;
+        let result = self.decode_prompt(full).and_then(|n_prompt| {
             self.generate(n_prompt, self.profile.grammar, self.profile.grammar_root)
         });
 
@@ -478,8 +503,11 @@ impl<'m> LlamaSession<'m> {
     /// disturbs the warmed slot-extraction KV cache.
     fn generate_command_json(&mut self, utterance: &str) -> AppResult<String> {
         let prompt = crate::llm::prompt::format_command_prompt(utterance);
+        // See `generate_json`: reject an over-length prompt before mutating the
+        // cache so a too-long command utterance can't thrash the session.
+        let full = self.tokenize_prompt(&prompt)?;
         let result = self
-            .ensure_prompt(&prompt)
+            .decode_prompt(full)
             .and_then(|n_prompt| self.generate(n_prompt, COMMAND_INTENT_V1, COMMAND_INTENT_ROOT));
         if result.is_err() {
             self.ctx.clear_kv_cache();

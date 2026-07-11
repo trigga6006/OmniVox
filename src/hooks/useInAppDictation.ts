@@ -83,8 +83,16 @@ export function useInAppDictation() {
 
   useEffect(() => {
     const unlisten = onDictationInsert((text) => {
+      // The snapshotted editable can detach if its subtree unmounts mid-record
+      // (e.g. navigating pages).  Inserting into a detached node silently drops
+      // the dictation, so fall back to the live focused editable. (SS4)
+      const snapshot = targetRef.current;
       const target =
-        targetRef.current ?? (isEditable(document.activeElement) ? document.activeElement : null);
+        snapshot && snapshot.isConnected
+          ? snapshot
+          : isEditable(document.activeElement)
+            ? document.activeElement
+            : null;
       if (target) {
         insertAtCaret(target, text);
         window.dispatchEvent(new Event(DICTATION_INSERTED_EVENT));

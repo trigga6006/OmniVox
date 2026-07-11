@@ -21,7 +21,15 @@ interface CommandState {
   /** In `confirm` state: the message text of a pending send, editable in the
    *  pill before it fires.  Null for non-message confirms (open/close). */
   editableText: string | null;
-  setState: (state: CommandUiState, summary?: string | null, editableText?: string | null) => void;
+  /** Backend-issued id for the pending confirm, echoed back to confirm_command
+   *  / cancel_command.  Null outside the confirm state. */
+  confirmId: number | null;
+  setState: (
+    state: CommandUiState,
+    summary?: string | null,
+    editableText?: string | null,
+    confirmId?: number | null
+  ) => void;
   reset: () => void;
 }
 
@@ -29,7 +37,9 @@ export const useCommandStore = create<CommandState>((set) => ({
   state: "idle",
   summary: null,
   editableText: null,
-  setState: (state, summary = null, editableText = null) =>
-    set({ state, summary, editableText }),
-  reset: () => set({ state: "idle", summary: null, editableText: null }),
+  confirmId: null,
+  setState: (state, summary = null, editableText = null, confirmId = null) =>
+    set({ state, summary, editableText, confirmId }),
+  reset: () =>
+    set({ state: "idle", summary: null, editableText: null, confirmId: null }),
 }));

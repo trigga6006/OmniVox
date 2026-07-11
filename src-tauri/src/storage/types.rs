@@ -137,6 +137,12 @@ pub struct AppSettings {
     /// command (launch app, key chord, media key, window action) instead of
     /// dictated text.  Disabled by default.
     pub command_mode: bool,
+    /// Gate for voice commands that launch an application (Command Mode
+    /// "open <app>" and the inline dictation `LaunchApp`).  When false, the
+    /// backend refuses to start a process from a voice command.  Default ON —
+    /// the identity-bound command path makes launches safe, and the owner
+    /// prefers features full-on.
+    pub launch_app_voice_commands_enabled: bool,
     /// Automatically press Enter after transcription to send the message (TypeSimulation/Both only).
     pub ship_mode: bool,
     /// Hide the floating pill overlay (invisible but still interactive).
@@ -197,6 +203,7 @@ impl Default for AppSettings {
             voice_commands: true,
             command_send: true,
             command_mode: false,
+            launch_app_voice_commands_enabled: true,
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),

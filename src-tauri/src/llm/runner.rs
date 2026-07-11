@@ -126,12 +126,25 @@ impl LlmRunner {
                 // background, right after model activation.  On failure the
                 // per-request rebuild below retries.
                 let mut profile: &'static Profile = *lock_profile(&worker_desired);
-                let mut session = match engine.new_session_for(profile) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
+                // Wrap the initial session build in `catch_unwind` too (B2-9): a
+                // PANIC here (not just an Err) would otherwise unwind the whole
+                // worker thread, leaving a dead runner installed with a
+                // disconnected channel and no self-heal.  On panic/err we start
+                // with no session; the per-request rebuild (also guarded) retries.
+                let mut session = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || engine.new_session_for(profile),
+                )) {
+                    Ok(Ok(s)) => Some(s),
+                    Ok(Err(e)) => {
                         crate::llm::diaglog::log(&format!(
                             "runner: session init failed (will retry per-request): {e}"
                         ));
+                        None
+                    }
+                    Err(_) => {
+                        crate::llm::diaglog::log(
+                            "runner: session init PANICKED (will retry per-request); worker alive",
+                        );
                         None
                     }
                 };
@@ -183,6 +196,12 @@ impl LlmRunner {
                         ));
                     }
 
+                    // Self-heal: run each request's work under `catch_unwind`
+                    // so a Rust-side panic (a binding assertion, a postprocess
+                    // bug, a bad decode) unwinds into an error for the waiting
+                    // caller instead of tearing down the worker thread.  Once
+                    // the thread dies the channel disconnects and every future
+                    // `submit` returns "LLM worker has stopped" forever.
                     match req {
                         LlmRequest::Extract {
                             text,
@@ -190,42 +209,74 @@ impl LlmRunner {
                             source_app,
                             reply_tx,
                         } => {
-                            // Rebuild the session if it was idle-dropped,
-                            // profile-switched, or failed at init.  The
-                            // request then pays one full warm-up.
-                            if session.is_none() {
-                                session = engine.new_session_for(profile).ok();
-                            }
-                            let result = match session.as_mut() {
-                                Some(s) => s
-                                    .generate_raw(
-                                        &text,
-                                        &screen_tokens,
-                                        source_app.as_deref(),
-                                    )
-                                    .and_then(|raw| (profile.postprocess)(&raw, &text)),
-                                None => Err(AppError::Llm(
-                                    "LLM session unavailable".into(),
-                                )),
-                            };
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    // Rebuild the session if it was idle-dropped,
+                                    // profile-switched, or failed at init.  The
+                                    // request then pays one full warm-up.
+                                    if session.is_none() {
+                                        session = engine.new_session_for(profile).ok();
+                                    }
+                                    match session.as_mut() {
+                                        Some(s) => s
+                                            .generate_raw(
+                                                &text,
+                                                &screen_tokens,
+                                                source_app.as_deref(),
+                                            )
+                                            .and_then(|raw| (profile.postprocess)(&raw, &text)),
+                                        None => Err(AppError::Llm(
+                                            "LLM session unavailable".into(),
+                                        )),
+                                    }
+                                }));
                             // Release the busy slot BEFORE delivering the
                             // reply: the native decode is done, and a caller
                             // that observes the result must never race a
                             // still-set busy flag (spurious rejections).
                             drop(_busy_reset);
+                            let result = outcome.unwrap_or_else(|_| {
+                                // A panic leaves llama.cpp state suspect — drop
+                                // the session so the next request rebuilds it
+                                // fresh, and keep the worker alive.
+                                session = None;
+                                crate::llm::diaglog::log(
+                                    "runner: extraction panicked — session reset, worker alive",
+                                );
+                                Err(AppError::Llm("LLM worker recovered from a panic".into()))
+                            });
                             // Receiver may have been dropped by a timeout — ignore.
                             let _ = reply_tx.send(result);
                         }
                         LlmRequest::Classify { utterance, reply_tx } => {
                             // Runs on a throwaway context inside `classify_command`
                             // so the warmed extraction session is left intact.
-                            let result = engine.classify_command(&utterance);
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    engine.classify_command(&utterance)
+                                }));
                             drop(_busy_reset);
+                            let result = outcome.unwrap_or_else(|_| {
+                                crate::llm::diaglog::log(
+                                    "runner: classify panicked — worker alive",
+                                );
+                                Err(AppError::Llm("LLM worker recovered from a panic".into()))
+                            });
                             let _ = reply_tx.send(result);
                         }
                         LlmRequest::Prewarm => {
                             if session.is_none() {
-                                session = engine.new_session_for(profile).ok();
+                                session = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| {
+                                        engine.new_session_for(profile).ok()
+                                    }),
+                                )
+                                .unwrap_or_else(|_| {
+                                    crate::llm::diaglog::log(
+                                        "runner: prewarm panicked — worker alive",
+                                    );
+                                    None
+                                });
                                 crate::llm::diaglog::log(&format!(
                                     "runner: prewarmed session ({})",
                                     profile.id
@@ -436,6 +487,51 @@ mod tests {
         assert_eq!(first_result.slots["goal"], "first");
         assert!(first_result.markdown.contains("first"));
         assert!(!runner.is_busy());
+    }
+
+    /// Engine whose first extraction panics, then succeeds — exercises the
+    /// worker's per-request `catch_unwind` self-heal.
+    struct PanicOnceEngine {
+        panicked: Arc<AtomicBool>,
+    }
+
+    impl LlmEngine for PanicOnceEngine {
+        fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction> {
+            if !self.panicked.swap(true, Ordering::SeqCst) {
+                panic!("simulated decode panic");
+            }
+            Ok(SlotExtraction {
+                goal: user_text.to_string(),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_survives_a_panicking_request() {
+        let runner = LlmRunner::spawn(
+            PanicOnceEngine {
+                panicked: Arc::new(AtomicBool::new(false)),
+            },
+            profiles::get(profiles::DEFAULT_PROFILE_ID),
+        )
+        .unwrap();
+
+        // First extraction panics inside the worker; it must come back as an
+        // error, not a dropped reply or a dead worker.
+        let first = runner
+            .extract_with_timeout("first".into(), Duration::from_secs(2))
+            .await;
+        assert!(first.is_err(), "panicking request should surface an error");
+
+        // The worker must still be alive: a second request succeeds and the
+        // busy slot was released after the panic.
+        assert!(!runner.is_busy());
+        let second = runner
+            .extract_with_timeout("second".into(), Duration::from_secs(2))
+            .await
+            .expect("worker should survive the earlier panic");
+        assert_eq!(second.slots["goal"], "second");
     }
 
     /// Engine that records which profile each session was built for, so the

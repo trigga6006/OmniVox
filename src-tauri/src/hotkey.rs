@@ -55,11 +55,29 @@ pub const COMMAND_HOTKEY_VK: u16 = 0xA3;
 // independent hotkeys (dictation + command).
 
 mod state_machine {
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering};
     use std::sync::OnceLock;
     use std::time::Instant;
 
     use tauri::Manager;
+
+    /// The foreground window (as an isize handle) at the moment a confirm pill
+    /// armed.  The Enter/Esc hijack fires ONLY while the live foreground still
+    /// matches this — if the user tabbed to another app, their Enter is meant for
+    /// that app, not our confirm (H4).  `0` = unknown / not on Windows.
+    static CONFIRM_ARM_FG: AtomicIsize = AtomicIsize::new(0);
+
+    /// The current foreground window as an isize handle (`0` when unavailable).
+    #[cfg(target_os = "windows")]
+    fn current_foreground_isize() -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        (unsafe { GetForegroundWindow() }) as isize
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn current_foreground_isize() -> isize {
+        0
+    }
 
     /// Time window for a double-press to count as "toggle" mode.
     const DOUBLE_TAP_MS: u64 = 400;
@@ -118,16 +136,34 @@ mod state_machine {
     /// on the hook thread so Enter/Esc can drive the confirm without focus.
     static CONFIRM_PENDING_SINCE_MS: AtomicU64 = AtomicU64::new(0);
 
+    /// The EXACT pending command id the pill was armed with (0 = none).  The
+    /// keyboard Enter/Esc path echoes THIS id back to the pipeline so it can't
+    /// confirm a newer command that replaced the parked one in the interim
+    /// (B2-2b).
+    static CONFIRM_PENDING_ID: AtomicU64 = AtomicU64::new(0);
+
     const VK_RETURN: u16 = 0x0D;
     const VK_ESCAPE: u16 = 0x1B;
 
     /// Arm (or clear) the hook's Enter/Esc confirm path.  Called wherever a
-    /// `PendingCommand` is parked or consumed.
-    pub fn set_confirm_pending(pending: bool) {
-        // max(1): a pill armed in the very first millisecond after launch
-        // must not encode as the "none" sentinel.
-        let v = if pending { now_ms().max(1) } else { 0 };
-        CONFIRM_PENDING_SINCE_MS.store(v, Ordering::Release);
+    /// `PendingCommand` is parked or consumed.  `Some(id)` arms for that exact
+    /// pending command (and snapshots the current foreground so the hijack is
+    /// bound to it — H4); `None` clears.
+    pub fn set_confirm_pending(pending_id: Option<u64>) {
+        match pending_id {
+            Some(id) => {
+                CONFIRM_PENDING_ID.store(id, Ordering::Release);
+                CONFIRM_ARM_FG.store(current_foreground_isize(), Ordering::Release);
+                // max(1): a pill armed in the very first millisecond after launch
+                // must not encode as the "none" sentinel.
+                CONFIRM_PENDING_SINCE_MS.store(now_ms().max(1), Ordering::Release);
+            }
+            None => {
+                CONFIRM_PENDING_ID.store(0, Ordering::Release);
+                CONFIRM_ARM_FG.store(0, Ordering::Release);
+                CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
+            }
+        }
     }
 
     fn now_ms() -> u64 {
@@ -268,31 +304,69 @@ mod state_machine {
         // Enter/Esc while a confirm pill is pending drives it from the
         // keyboard.  Guard rails against confirming something the user never
         // saw: a 250ms arming debounce (an Enter finishing their typing must
-        // not confirm) and a 6s freshness window (a forgotten pill must not
-        // swallow keys later — the mouse buttons keep working).  NOTE: within
-        // this window a global Enter still both confirms and is swallowed; the
-        // full fix (bind the confirm to the arm-time foreground identity) is
-        // tracked separately — this shorter window just bounds the exposure.
-        let since = CONFIRM_PENDING_SINCE_MS.load(Ordering::Acquire);
-        if since != 0 && is_down && (vk == VK_RETURN || vk == VK_ESCAPE) {
+        // not confirm), a 6s freshness window (a forgotten pill must not swallow
+        // keys later — the mouse buttons keep working), AND an identity gate —
+        // the hijack fires ONLY while the live foreground is still the window
+        // that was foreground when the pill armed.  If the user tabbed away,
+        // their Enter is meant for the current app, so we pass it through
+        // untouched (H4).
+        // Read the armed id FIRST as the anchor for a compare-and-consume.  The
+        // pill's freshness window + arm-time foreground are validated below, but
+        // the id (which the keyboard path echoes back) is consumed via
+        // `compare_exchange` so a pending newly (re)armed in the sub-ms gap
+        // between these separate atomic reads can't be confirmed by an Enter
+        // meant for the PREVIOUS pill (B2-14).  `armed_id != 0` and `since != 0`
+        // are set/cleared together in `set_confirm_pending`, so either gates the
+        // "a pill is armed" check.
+        let armed_id = CONFIRM_PENDING_ID.load(Ordering::Acquire);
+        if armed_id != 0 && is_down && (vk == VK_RETURN || vk == VK_ESCAPE) {
+            let since = CONFIRM_PENDING_SINCE_MS.load(Ordering::Acquire);
             let age = now_ms().saturating_sub(since);
-            if (250..6_000).contains(&age) {
-                CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
-                let confirm = vk == VK_RETURN;
-                if let Some(handle) = APP_HANDLE.get() {
-                    let h = handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let st = h.state::<crate::state::AppState>();
-                        if confirm {
-                            // Keyboard confirm sends the message as heard —
-                            // editing goes through the pill's textarea (mouse).
-                            crate::pipeline::confirm_pending_command(&h, &st, None).await;
-                        } else {
-                            crate::pipeline::cancel_pending_command(&h, &st);
-                        }
-                    });
+            let arm_fg = CONFIRM_ARM_FG.load(Ordering::Acquire);
+            // B2-7: `GetForegroundWindow` (via `current_foreground_isize`) is a
+            // cheap, non-blocking user32 read of a value the window manager
+            // already holds — it does NOT send cross-process messages the way
+            // the banned `GetWindowText`/UIA calls do, so it's safe to call on
+            // the serialized WH_KEYBOARD_LL hook thread.  No blocking Win32 call
+            // is ever made here.
+            let fg_matches = current_foreground_isize() == arm_fg;
+            if since != 0 && (250..6_000).contains(&age) && fg_matches {
+                // Atomically consume THIS exact arming.  A failed CAS means the
+                // id changed since we anchored it (a newer pending armed, or
+                // another path consumed it) — pass the key through rather than
+                // confirm a command the user never saw (B2-14).  The residual
+                // (validating the prior arm's fg/timestamp while its still-in-
+                // flight store to the other two atomics races) is sub-µs and can
+                // only *reject*, never confirm the wrong command — the pipeline
+                // side re-checks the id under the pending lock regardless (B2-2).
+                if CONFIRM_PENDING_ID
+                    .compare_exchange(armed_id, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
+                    CONFIRM_ARM_FG.store(0, Ordering::Release);
+                    let confirm = vk == VK_RETURN;
+                    if let Some(handle) = APP_HANDLE.get() {
+                        let h = handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let st = h.state::<crate::state::AppState>();
+                            if confirm {
+                                // Keyboard confirm sends the message as heard —
+                                // editing goes through the pill's textarea (mouse).
+                                crate::pipeline::confirm_pending_command(
+                                    &h,
+                                    &st,
+                                    Some(armed_id),
+                                    None,
+                                )
+                                .await;
+                            } else {
+                                crate::pipeline::cancel_pending_command(&h, &st, Some(armed_id));
+                            }
+                        });
+                    }
+                    return true; // swallow
                 }
-                return true; // swallow
             }
         }
 
@@ -630,10 +704,11 @@ pub fn set_suspended(suspended: bool) {
 }
 
 /// Arm (or clear) the hook's Enter/Esc handling for a pending command
-/// confirm.  Call with `true` when a `PendingCommand` is parked and the
-/// confirm pill shown; with `false` whenever it is consumed or cleared.
-pub fn set_confirm_pending(pending: bool) {
-    state_machine::set_confirm_pending(pending);
+/// confirm.  Call with `Some(id)` (the parked command's exact id) when a
+/// `PendingCommand` is parked and the confirm pill shown; with `None` whenever
+/// it is consumed or cleared.
+pub fn set_confirm_pending(pending_id: Option<u64>) {
+    state_machine::set_confirm_pending(pending_id);
 }
 
 /// Feed a key event from the frontend (WebView) into the hotkey state machine.

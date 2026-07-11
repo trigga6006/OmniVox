@@ -254,19 +254,40 @@ fn load_entries() -> Vec<AppEntry> {
     Vec::new()
 }
 
-/// Launch (or activate) an app by its AppsFolder AppID.
+/// The identity we can attribute to an app we just launched, so a settle can
+/// prove the window that appears really belongs to it (B2-4).
+///
+/// AppsFolder launches go through `explorer.exe shell:AppsFolder\…`, which
+/// activates the target app in a SEPARATE process whose pid we never see — so
+/// those resolve to `Package` (the AUMID).  We do not correlate an AUMID to a
+/// window (that needs the shell property store), so a `Package` identity is
+/// treated as UNPROVEN downstream: the launch still happens, but focus-dependent
+/// retargeting and undo recording are skipped.
+#[derive(Debug, Clone)]
+pub enum LaunchIdentity {
+    /// The launched process id — correlated against a candidate window's owner.
+    Pid(u32),
+    /// The app's AUMID/package — not correlated to a window (unproven identity).
+    Package(String),
+}
+
+/// Launch (or activate) an app by its AppsFolder AppID.  Returns the launched
+/// app's expected identity so a settle can verify the window that appears
+/// belongs to it.  `explorer.exe` is only the launcher — its child pid is not
+/// the app's — so the best correlator here is the AUMID (`Package`, unproven;
+/// see [`LaunchIdentity`]).
 #[cfg(windows)]
-pub fn launch(app_id: &str) -> Result<(), String> {
+pub fn launch(app_id: &str) -> Result<LaunchIdentity, String> {
     use std::process::Command;
     Command::new("explorer.exe")
         .arg(format!("shell:AppsFolder\\{app_id}"))
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Failed to launch app: {e}"))
+        .map_err(|e| format!("Failed to launch app: {e}"))?;
+    Ok(LaunchIdentity::Package(app_id.to_string()))
 }
 
 #[cfg(not(windows))]
-pub fn launch(_app_id: &str) -> Result<(), String> {
+pub fn launch(_app_id: &str) -> Result<LaunchIdentity, String> {
     Err("App launching is only supported on Windows".into())
 }
 

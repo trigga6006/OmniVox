@@ -3,7 +3,11 @@ import { renderHook, act } from "@testing-library/react";
 
 const resizeOverlay = vi.fn();
 vi.mock("@/lib/tauri", () => ({
-  resizeOverlay: (w: number, h: number) => resizeOverlay(w, h),
+  // Return a thenable so the hook's fire-and-forget `.catch(() => {})` works.
+  resizeOverlay: (w: number, h: number) => {
+    resizeOverlay(w, h);
+    return Promise.resolve();
+  },
 }));
 
 import {

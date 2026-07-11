@@ -22,6 +22,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
   const state = useCommandStore((s) => s.state);
   const summary = useCommandStore((s) => s.summary);
   const editableText = useCommandStore((s) => s.editableText);
+  const confirmId = useCommandStore((s) => s.confirmId);
 
   const isListening = state === "listening";
   const isRecognizing = state === "recognizing";
@@ -36,6 +37,15 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
   useEffect(() => {
     setDraft(editableText ?? "");
   }, [editableText]);
+
+  // A valid confirm always carries an id; guard so we never fire the backend
+  // command with a null id (which it rejects at deserialization anyway).
+  const doConfirm = (text?: string) => {
+    if (confirmId !== null) confirmCommand(confirmId, text).catch(() => {});
+  };
+  const doCancel = () => {
+    if (confirmId !== null) cancelCommand(confirmId).catch(() => {});
+  };
 
   const borderClass = isError
     ? "border-recording-500/40"
@@ -85,7 +95,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
                 onMouseDown={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  confirmCommand(draft).catch(() => {});
+                  doConfirm(draft);
                 }}
                 title="Send (Ctrl+Enter)"
                 className="flex items-center justify-center h-6 w-6 rounded-full border border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/25 transition-colors"
@@ -96,7 +106,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
                 onMouseDown={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  cancelCommand().catch(() => {});
+                  doCancel();
                 }}
                 title="Dismiss (Esc)"
                 className="flex items-center justify-center h-6 w-6 rounded-full border border-white/15 text-text-secondary/80 hover:bg-white/10 transition-colors"
@@ -111,13 +121,14 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
-                confirmCommand(draft).catch(() => {});
+                doConfirm(draft);
               } else if (e.key === "Escape") {
                 e.preventDefault();
-                cancelCommand().catch(() => {});
+                doCancel();
               }
             }}
             rows={2}
+            autoFocus
             className="w-full resize-none rounded-lg border border-border/60 bg-surface-2/60 px-2.5 py-1.5 text-[11px] leading-snug text-text-primary outline-none focus:border-amber-500/40"
             spellCheck={false}
           />
@@ -186,7 +197,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
             onMouseDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
-              confirmCommand().catch(() => {});
+              doConfirm();
             }}
             title="Yes"
             className="flex items-center justify-center h-7 w-7 rounded-full border border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/25 transition-colors"
@@ -197,7 +208,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
             onMouseDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
-              cancelCommand().catch(() => {});
+              doCancel();
             }}
             title="Dismiss"
             className="flex items-center justify-center h-7 w-7 rounded-full border border-white/15 text-text-secondary/80 hover:bg-white/10 transition-colors"

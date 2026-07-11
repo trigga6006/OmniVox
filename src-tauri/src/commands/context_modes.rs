@@ -193,7 +193,12 @@ fn sync_structured_profile(state: &AppState, profile_id: &str) {
     if let Ok(mut active) = state.active_structured_profile.lock() {
         *active = profile;
     }
-    if let Some(runner) = state.llm_runner.lock().ok().and_then(|g| g.clone()) {
+    if let Some(runner) = state
+        .llm_runner
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(_, r)| std::sync::Arc::clone(r)))
+    {
         runner.set_profile(profile);
     }
 }

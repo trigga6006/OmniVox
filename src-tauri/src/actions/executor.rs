@@ -188,20 +188,54 @@ pub fn window_title(_hwnd: isize) -> String {
     String::new()
 }
 
-/// Type text into the focused app via the dictation path's clipboard-verified
-/// paste (prior clipboard restored). Focus restoration is the caller's job —
-/// same contract as `run_chord`. With `submit` the text is also sent with
-/// Enter; the pipeline confirms with the user before any submitting intent
-/// runs, so this never fires a message blind.
-pub fn run_type_text(text: &str, submit: bool) -> Result<(), String> {
+/// Type text into `target` via the dictation path's clipboard-verified paste
+/// (prior clipboard restored).  Restores focus to the bound target and VERIFIES
+/// its identity (IsWindow + foreground + PID) before touching the clipboard, and
+/// RE-VERIFIES between the paste and the submitting Enter — a submit is the whole
+/// risk, so the window must still be the one we confirmed at both gates.
+///
+/// `should_cancel` is polled before the paste and again between the paste and the
+/// submitting Enter: a "stop"/"cancel" spoken while we restore focus or hold the
+/// post-paste guard must abort before the (consequential) Enter fires — the
+/// caller's pre-check alone can't see a stop that lands during this blocking
+/// work (B2-13).
+pub fn run_type_text(
+    text: &str,
+    submit: bool,
+    target: crate::focus::WindowTarget,
+    should_cancel: impl Fn() -> bool,
+) -> Result<(), String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("No text to type".into());
+    }
+    if should_cancel() {
+        return Err("stopped".into());
+    }
+    // Bind + verify the target before pasting: refuse to type into a window that
+    // isn't the one this command was aimed at.
+    crate::focus::restore_foreground_window(target.hwnd, target.pid);
+    if !crate::focus::verify_foreground_target(target.hwnd, target.pid) {
+        return Err("Target window is not in focus — refusing to type".into());
+    }
+    // Re-check cancellation immediately before the paste (focus restore slept).
+    if should_cancel() {
+        return Err("stopped".into());
     }
     crate::output::router::OutputRouter::new()
         .paste_text(text, true)
         .map_err(|e| e.to_string())?;
     if submit {
+        // A stop spoken during the paste + post-paste guard must abort the
+        // submit (B2-13) before we re-verify identity and press Enter.
+        if should_cancel() {
+            return Err("stopped".into());
+        }
+        // Re-check identity between the paste and the Enter: a focus change in
+        // that window must not turn the paste into a submit somewhere else.
+        if !crate::focus::verify_foreground_target(target.hwnd, target.pid) {
+            return Err("Target window changed before send — not pressing Enter".into());
+        }
         // paste_text already held the post-paste guard, so the text has landed
         // by the time Enter fires.
         let mut enigo = Enigo::new(&Settings::default())
@@ -232,33 +266,49 @@ pub fn run_web_search(_query: &str) -> Result<(), String> {
     Err("Web search is only supported on Windows".into())
 }
 
-/// Open a URL / website in the user's DEFAULT browser.
-#[cfg(windows)]
-pub fn run_open_url(target: &str) -> Result<(), String> {
+/// Normalize + validate a spoken/LLM URL before opening it.  Prefixes `https://`
+/// when no scheme is present, then parses with the `url` crate and REFUSES
+/// anything that isn't a plain http/https URL with a host and no embedded
+/// credentials.  Userinfo (`https://trusted.com@evil.example`) is the key attack:
+/// it navigates to `evil.example` while reading as `trusted.com`, defeating URL
+/// grounding.  Pure + platform-independent so it can be unit tested.
+pub(crate) fn validate_open_url(target: &str) -> Result<String, String> {
     let t = target.trim();
     if t.is_empty() {
         return Err("No URL to open".into());
     }
-    let url = if t.starts_with("http://") || t.starts_with("https://") {
+    let normalized = if t.starts_with("http://") || t.starts_with("https://") {
         t.to_string()
     } else {
         format!("https://{t}")
     };
-    // Reject embedded credentials (userinfo): `https://trusted.com@evil.example`
-    // navigates to evil.example, defeating URL grounding.  Inspect the authority
-    // (between `://` and the first `/`, `?`, or `#`).
-    let authority = url
-        .split_once("://")
-        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(rest))
-        .unwrap_or("");
-    if authority.contains('@') {
+    let parsed =
+        url::Url::parse(&normalized).map_err(|_| "Not a valid URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Refusing to open a non-web URL".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("Refusing to open a URL with embedded credentials".into());
     }
+    match parsed.host_str() {
+        Some(host) if !host.is_empty() => {}
+        _ => return Err("URL has no host".into()),
+    }
+    Ok(normalized)
+}
+
+/// Open a URL / website in the user's DEFAULT browser.
+#[cfg(windows)]
+pub fn run_open_url(target: &str) -> Result<(), String> {
+    let url = validate_open_url(target)?;
     open_in_default_browser(&url)
 }
 
 #[cfg(not(windows))]
-pub fn run_open_url(_target: &str) -> Result<(), String> {
+pub fn run_open_url(target: &str) -> Result<(), String> {
+    // Validate on every platform (keeps the checks/tests honest) but only
+    // Windows can actually launch the browser.
+    let _ = validate_open_url(target)?;
     Err("Opening URLs is only supported on Windows".into())
 }
 
@@ -289,4 +339,33 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_open_url;
+
+    #[test]
+    fn accepts_plain_domain_and_prefixes_https() {
+        assert_eq!(validate_open_url("github.com").unwrap(), "https://github.com");
+        assert_eq!(
+            validate_open_url("https://youtube.com").unwrap(),
+            "https://youtube.com"
+        );
+    }
+
+    #[test]
+    fn rejects_embedded_credentials() {
+        // The M1 attack: reads as github.com, navigates to evil.example.
+        assert!(validate_open_url("github.com@evil.example").is_err());
+        assert!(validate_open_url("https://github.com@evil.example").is_err());
+        assert!(validate_open_url("http://user:pass@evil.example").is_err());
+    }
+
+    #[test]
+    fn rejects_non_web_and_malformed() {
+        assert!(validate_open_url("javascript:alert(1)").is_err());
+        assert!(validate_open_url("").is_err());
+        assert!(validate_open_url("   ").is_err());
+    }
 }

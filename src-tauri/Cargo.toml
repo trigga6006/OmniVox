@@ -40,6 +40,16 @@ llama-cpp-2 = { version = "0.1.143", default-features = false }
 # Transitive of llama-cpp-2 — pinned directly so `token_to_piece` can be fed a
 # stateful UTF-8 decoder (multi-byte characters can span token boundaries).
 encoding_rs = "0.8"
+# URL parsing/validation for Command Mode `open_url` grounding — rejects
+# embedded credentials (userinfo) and non-web schemes, and normalizes the host
+# so grounding compares against a real registrable label. Already in the tree as
+# a transitive dependency; pinned directly here for the grounding checks.
+url = "2"
+# Public Suffix List (compiled-in / embedded, offline) for eTLD+1 resolution in
+# Command Mode `open_url` grounding — resolves the real registrable domain so a
+# `github.evil.com.my`-style multi-part-suffix spoof can't ground on "github".
+# Replaces the hand-maintained multi-part-TLD table.
+psl = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
