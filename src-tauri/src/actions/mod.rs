@@ -14,5 +14,5 @@ pub mod executor;
 pub mod intent;
 pub mod matcher;
 
-pub use intent::{CommandIntent, KeyChord, MediaAction, WindowAction};
+pub use intent::{CommandIntent, KeyChord, MediaAction, ScratchpadAction, WindowAction};
 pub use matcher::match_command;

@@ -11,6 +11,7 @@
 //! query against the index (exact → token/substring containment → edit-distance)
 //! and returns a confidence the caller uses to decide auto-launch vs. confirm.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// One launchable app from the AppsFolder index.
@@ -46,16 +47,57 @@ const AMBIGUITY_MARGIN: f32 = 0.06;
 
 static INDEX: OnceLock<Mutex<Option<Vec<AppEntry>>>> = OnceLock::new();
 
+/// Unix-seconds of the last successful enumeration. 0 = never refreshed via
+/// [`refresh`] (a lazy [`snapshot`] load doesn't stamp it, so the first
+/// [`refresh_if_stale`] after a lazy load will re-enumerate once).
+static LAST_REFRESH: AtomicU64 = AtomicU64::new(0);
+
+/// Minimum seconds between self-heal re-enumerations (they spawn PowerShell).
+const REFRESH_TTL_SECS: u64 = 300;
+
 fn cell() -> &'static Mutex<Option<Vec<AppEntry>>> {
     INDEX.get_or_init(|| Mutex::new(None))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Force a fresh enumeration (call once at startup, off the main thread).
 pub fn refresh() {
     let entries = load_entries();
+    let got_apps = !entries.is_empty();
     if let Ok(mut guard) = cell().lock() {
-        *guard = Some(entries);
+        // A transient Get-StartApps / JSON failure returns an empty Vec. Never
+        // let that clobber a previously-good index — otherwise the self-heal
+        // rescan fired from the "no app found" path could lock out EVERY "open
+        // app" for the TTL. Caching an empty result is only acceptable when we
+        // have nothing yet (keeps snapshot() from reloading synchronously).
+        let keep_old =
+            !got_apps && guard.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
+        if !keep_old {
+            *guard = Some(entries);
+        }
     }
+    // Only stamp on a successful (non-empty) enumeration, so a transient failure
+    // is retried by the next refresh_if_stale instead of suppressed for the TTL.
+    if got_apps {
+        LAST_REFRESH.store(now_secs(), Ordering::Relaxed);
+    }
+}
+
+/// Re-enumerate at most once per [`REFRESH_TTL_SECS`]. Fired (non-blocking, off
+/// the async runtime) from the "no app found" path so an app installed while
+/// OmniVox is running becomes launchable on the user's NEXT attempt — without a
+/// restart or a manual rescan. A no-op while within the TTL.
+pub fn refresh_if_stale() {
+    if now_secs().saturating_sub(LAST_REFRESH.load(Ordering::Relaxed)) < REFRESH_TTL_SECS {
+        return;
+    }
+    refresh();
 }
 
 /// Snapshot the index, loading it on first use.

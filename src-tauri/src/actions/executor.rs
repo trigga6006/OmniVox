@@ -43,13 +43,23 @@ pub fn run_chord(c: KeyChord) -> Result<(), String> {
         KeyChord::Paste => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('v')),
         KeyChord::Cut => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('x')),
         KeyChord::Undo => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('z')),
-        KeyChord::Redo => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('y')),
+        // Ctrl/Cmd+Shift+Z — matches the inline-dictation redo and has the
+        // widest modern-editor coverage (Ctrl+Y no-ops in Chrome/ProseMirror inputs).
+        KeyChord::Redo => chord(&mut enigo, &[PRIMARY_MOD, Key::Shift], Key::Unicode('z')),
         KeyChord::SelectAll => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('a')),
         KeyChord::Save => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('s')),
         KeyChord::NewTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('t')),
         KeyChord::CloseTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('w')),
         KeyChord::Screenshot => screenshot(&mut enigo),
         KeyChord::ShowDesktop => show_desktop(&mut enigo),
+        KeyChord::Refresh => chord(&mut enigo, &[], Key::F5),
+        KeyChord::Find => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('f')),
+        KeyChord::NewWindow => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('n')),
+        KeyChord::ReopenTab => chord(&mut enigo, &[PRIMARY_MOD, Key::Shift], Key::Unicode('t')),
+        KeyChord::NextTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Tab),
+        KeyChord::PrevTab => chord(&mut enigo, &[PRIMARY_MOD, Key::Shift], Key::Tab),
+        KeyChord::PageDown => chord(&mut enigo, &[], Key::PageDown),
+        KeyChord::PageUp => chord(&mut enigo, &[], Key::PageUp),
     }
 }
 
@@ -83,18 +93,68 @@ pub fn run_media(a: MediaAction) -> Result<(), String> {
         keybd_event, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
     };
 
+    // Mute/Unmute are set deterministically via WASAPI (below) rather than the
+    // VK_VOLUME_MUTE toggle, so a directional request ("unmute", "sound on")
+    // can't invert the state and silence audio that's already on.
+    match a {
+        MediaAction::Mute => return set_system_mute(true),
+        MediaAction::Unmute => return set_system_mute(false),
+        _ => {}
+    }
+
     // VK_MEDIA_* / VK_VOLUME_* codes.
     let vk: u8 = match a {
         MediaAction::PlayPause => 0xB3,
         MediaAction::NextTrack => 0xB0,
         MediaAction::PrevTrack => 0xB1,
-        MediaAction::Mute => 0xAD,
         MediaAction::VolumeUp => 0xAF,
         MediaAction::VolumeDown => 0xAE,
+        MediaAction::Mute | MediaAction::Unmute => unreachable!("handled above"),
+    };
+    // Windows moves master volume only ~2% per VK_VOLUME_UP/DOWN press, so a
+    // single press reads as "nothing happened". Repeat for an audible step
+    // (~8%). Transport keys stay single-press.
+    let repeats = if matches!(a, MediaAction::VolumeUp | MediaAction::VolumeDown) {
+        4
+    } else {
+        1
     };
     unsafe {
-        keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0);
-        keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+        for _ in 0..repeats {
+            keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0);
+            keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+        }
+    }
+    Ok(())
+}
+
+/// Set the default render endpoint's mute state deterministically via WASAPI.
+/// Unlike VK_VOLUME_MUTE (a blind toggle), this honors the requested direction —
+/// `set_system_mute(false)` can never silence audio that's already on. Mirrors
+/// the COM setup in `audio::ducking`.
+#[cfg(windows)]
+fn set_system_mute(muted: bool) -> Result<(), String> {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| format!("audio endpoint enumerate failed: {e}"))?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eMultimedia)
+            .map_err(|e| format!("no default audio endpoint: {e}"))?;
+        let vol = device
+            .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
+            .map_err(|e| format!("activate endpoint volume failed: {e}"))?;
+        vol.SetMute(muted, std::ptr::null())
+            .map_err(|e| format!("set mute failed: {e}"))?;
     }
     Ok(())
 }
