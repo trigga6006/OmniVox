@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BarChart3, CalendarDays, RefreshCw, Zap } from "lucide-react";
 import { getAnalyticsRecords, type AnalyticsRecord } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Button, Card, EmptyState as KitEmptyState } from "@/components/ui";
+import { Button, Card, EmptyState as KitEmptyState, PageHeader, Spinner } from "@/components/ui";
 import {
   computeAnalytics,
   compact,
@@ -56,28 +56,24 @@ export function UserAnalyticsPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-            Analytics
-          </h1>
-          <p className="mt-1 text-sm text-text-muted">
-            Your dictation, by the numbers
-          </p>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={load}
-          title="Refresh"
-          aria-label="Refresh"
-          icon={<RefreshCw strokeWidth={1.75} />}
-        />
-      </div>
+      <PageHeader
+        title="Analytics"
+        subtitle="Your dictation, by the numbers"
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={load}
+            title="Refresh"
+            aria-label="Refresh"
+            icon={<RefreshCw strokeWidth={1.75} />}
+          />
+        }
+      />
 
       {loading && !data ? (
         <div className="flex flex-1 items-center justify-center">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-text-muted/25 border-t-amber-400" />
+          <Spinner />
         </div>
       ) : !data || data.totalMessages === 0 ? (
         <div className="flex flex-1 items-center justify-center">
@@ -175,7 +171,7 @@ function LedgerColumn({
 }) {
   return (
     <div className={className}>
-      <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+      <div className="mb-1 eyebrow">
         {title}
       </div>
       <div className="flex flex-col">
@@ -227,7 +223,7 @@ function SectionCard({
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Icon size={14} strokeWidth={2} className="text-text-muted" />
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+          <span className="eyebrow">
             {title}
           </span>
         </div>

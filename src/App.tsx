@@ -7,6 +7,7 @@ import { useRecordingStore } from "@/stores/recordingStore";
 import { DictationPanel } from "@/features/dictation/DictationPanel";
 import { ToastContainer } from "@/components/ToastContainer";
 import { ClickPulse } from "@/components/ClickPulse";
+import { Spinner } from "@/components/ui";
 import { useToastStore } from "@/stores/toastStore";
 import { recentHistory, onTranscriptionResult, onRecordingError, openMicSettings } from "@/lib/tauri";
 import { useInAppDictation } from "@/hooks/useInAppDictation";
@@ -105,7 +106,7 @@ function PageRouter() {
     <Suspense
       fallback={
         <div className="flex h-full items-center justify-center">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-text-muted/25 border-t-amber-400" />
+          <Spinner />
         </div>
       }
     >

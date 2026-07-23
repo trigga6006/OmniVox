@@ -7,6 +7,7 @@ export { Segmented } from "./Segmented";
 export { Input } from "./Input";
 export { Badge } from "./Badge";
 export { Kbd } from "./Kbd";
-export { Field } from "./Field";
 export { EmptyState } from "./EmptyState";
 export { Modal } from "./Modal";
+export { Spinner, LoadingState } from "./Spinner";
+export { PageHeader } from "./PageHeader";

@@ -32,6 +32,7 @@ import {
   Kbd,
   Badge,
   EmptyState,
+  PageHeader,
 } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -344,22 +345,17 @@ export function VoiceCommandsPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-10">
       {/* Header */}
-      <div
-        className="flex items-start justify-between animate-slide-up"
+      <PageHeader
+        title="Voice Commands"
+        subtitle="Spoken triggers that run keystrokes while you dictate — enable, re-scope, or add your own."
+        action={
+          <Button variant="ghost" size="sm" icon={<RotateCcw />} onClick={handleReset}>
+            Reset to defaults
+          </Button>
+        }
+        className="animate-slide-up"
         style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
-      >
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] text-text-primary">
-            Voice Commands
-          </h1>
-          <p className="mt-1 text-sm text-text-muted">
-            Spoken triggers that run keystrokes while you dictate — enable, re-scope, or add your own.
-          </p>
-        </div>
-        <Button variant="ghost" size="sm" icon={<RotateCcw />} onClick={handleReset}>
-          Reset to defaults
-        </Button>
-      </div>
+      />
 
       <div className="mt-6 flex max-w-3xl flex-col gap-4">
         {/* Editing keystrokes */}

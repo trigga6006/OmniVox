@@ -419,7 +419,7 @@ export function LlmModelsSection() {
             <Card
               key={m.id}
               className={cn(
-                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-all duration-200 hover:border-border-hover animate-slide-up",
+                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-colors duration-200 hover:border-border-hover animate-slide-up",
                 isActive && "border-l-[3px] border-l-violet-400/80",
                 m.is_default && !isActive && "border-l-[3px] border-l-violet-500/45"
               )}

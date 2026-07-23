@@ -195,7 +195,12 @@ impl Default for AppSettings {
             output_mode: "clipboard".to_string(),
             active_model_id: None,
             hotkey: Some(crate::hotkey::HotkeyConfig::default()),
-            gpu_acceleration: false,
+            // Default ON when the binary was compiled with a GPU backend, so a
+            // GPU build uses the GPU out of the box instead of running Whisper +
+            // the LLM entirely on CPU until the user finds the Settings toggle.
+            // CPU-only builds default OFF. (Only the DEFAULT changes — a user who
+            // has explicitly saved gpu_acceleration keeps their choice.)
+            gpu_acceleration: cfg!(any(feature = "vulkan", feature = "cuda")),
             active_context_mode_id: None,
             live_preview: false,
             noise_reduction: false,

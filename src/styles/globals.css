@@ -29,7 +29,6 @@
   --border: var(--color-border);
   --input: var(--color-border);
   --ring: var(--color-amber-500);
-  --radius: 0.75rem;
 }
 
 [data-theme="light"] {
@@ -75,6 +74,19 @@ body {
 .tnum,
 [data-tnum] {
   font-variant-numeric: tabular-nums;
+}
+
+/* Section eyebrow — the small mono uppercase label above form sections /
+   cards. One class so the recipe can't drift (it had already forked to two
+   variants). Replaces `font-mono text-[10px] font-semibold uppercase
+   tracking-[0.2em] text-text-muted`. */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--color-text-muted);
 }
 
 /* ── Overlay window ──────────────────────────────────────── */
@@ -208,4 +220,21 @@ input[type="range"]::-webkit-slider-thumb {
 
 input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.15);
+}
+
+/* ── Reduced motion ───────────────────────────────────────────
+   Respect the OS "reduce motion" setting across the whole app —
+   the overlay runs many perpetual animations (structuring shimmer/
+   spark/pulse/dot, the processing sweep, recording-pulse, the pill
+   size tweens). Only CommandDither honored this before. Functional
+   loading spinners still read as "working" at near-zero duration. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

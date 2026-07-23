@@ -8,7 +8,7 @@ import {
   type TranscriptionRecord,
 } from "@/lib/tauri";
 import { formatDuration } from "@/lib/utils";
-import { Button, Card, Input, EmptyState } from "@/components/ui";
+import { Button, Card, Input, EmptyState, PageHeader } from "@/components/ui";
 
 const PAGE_SIZE = 50;
 
@@ -122,22 +122,20 @@ export function HistoryPage() {
   return (
     <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-            History
-          </h1>
-          <p className="mt-1 text-sm text-text-muted">Transcription archive</p>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<RefreshCw />}
-          onClick={() => load()}
-          aria-label="Refresh"
-          title="Refresh"
-        />
-      </div>
+      <PageHeader
+        title="History"
+        subtitle="Transcription archive"
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<RefreshCw />}
+            onClick={() => load()}
+            aria-label="Refresh"
+            title="Refresh"
+          />
+        }
+      />
 
       {/* Search */}
       <div className="relative mt-4">
@@ -196,12 +194,13 @@ export function HistoryPage() {
                     title="Copy"
                   />
                   <Button
-                    variant="danger"
+                    variant="ghost"
                     size="sm"
                     icon={<Trash2 />}
                     onClick={() => handleDelete(rec.id)}
                     aria-label="Delete"
                     title="Delete"
+                    className="text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
                   />
                 </div>
               </div>

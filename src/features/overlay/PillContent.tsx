@@ -1,6 +1,15 @@
 import { Loader2, Sparkles } from "lucide-react";
 import { formatDuration } from "@/lib/utils";
+import { useRecordingStore } from "@/stores/recordingStore";
 import { PillWaveform } from "./PillWaveform";
+
+// Isolated duration ticker. `duration` bumps every 100ms; subscribing to it
+// here (instead of in FloatingPill) keeps the 10Hz re-render scoped to this
+// tiny text node rather than the whole pill + waveform subtree.
+function RecordingTimer() {
+  const duration = useRecordingStore((s) => s.duration);
+  return <>{formatDuration(duration)}</>;
+}
 
 interface PillContentProps {
   showContent: boolean;
@@ -12,7 +21,6 @@ interface PillContentProps {
   llmLoading: boolean;
   isSuccess: boolean;
   isError: boolean;
-  duration: number;
   previewText: string | null;
   flashText: string | null;
   modeColor: string;
@@ -30,7 +38,6 @@ export function PillContent({
   llmLoading,
   isSuccess,
   isError,
-  duration,
   previewText,
   flashText,
   modeColor,
@@ -77,7 +84,7 @@ export function PillContent({
       <div className="shrink-0 flex items-center justify-center min-w-[28px]">
         {isRecording && (
           <span className="font-mono text-[11px] tabular-nums text-recording-300/80 tracking-wide">
-            {formatDuration(duration)}
+            <RecordingTimer />
           </span>
         )}
         {isStructuring && (
@@ -120,7 +127,7 @@ export function PillContent({
             </span>
           </div>
         )}
-        {isRecording && !previewText && <PillWaveform active color={modeColor} />}
+        {isRecording && !previewText && <PillWaveform color={modeColor} />}
         {isProcessing && (
           <Loader2 size={13} className="text-amber-400/70 animate-spin" strokeWidth={2.5} />
         )}
@@ -190,10 +197,9 @@ export function PillContent({
       <div className="shrink-0 w-[16px] flex items-center justify-end">
         {isRecording && (
           <div className="relative flex items-center justify-center">
-            <span
-              className="absolute h-3.5 w-3.5 rounded-full bg-recording-500/15"
-              style={{ animation: "recording-pulse 2s ease-in-out infinite" }}
-            />
+            {/* Bound to the --animate-recording-pulse token (2.4s) so the pulse
+                tempo stays in sync with RecordButton and any future retune. */}
+            <span className="absolute h-3.5 w-3.5 rounded-full bg-recording-500/15 animate-recording-pulse" />
             <span className="relative h-1.5 w-1.5 rounded-full bg-recording-500" />
           </div>
         )}

@@ -132,7 +132,7 @@ function TranscriptionCard({ text }: { text: string }) {
     <Card className="mt-4 flex min-h-0 w-full max-w-lg flex-col px-5 py-4 opacity-0 animate-slide-up">
       <div className="mb-2.5 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+          <span className="eyebrow">
             Last transcription
           </span>
           <button

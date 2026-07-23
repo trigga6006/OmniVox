@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap, Power } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -13,7 +13,7 @@ import {
   type PlatformInfo,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Button, Card, Toggle, Segmented, Badge } from "@/components/ui";
+import { Button, Card, Toggle, Segmented, Badge, PageHeader } from "@/components/ui";
 import { useAppStore } from "@/stores/appStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
@@ -69,7 +69,7 @@ function GroupCard({
       style={{ opacity: 0, animationDelay: `${delay}s`, animationFillMode: "forwards" }}
     >
       <div className="mb-2.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+        <span className="eyebrow">
           {title}
         </span>
       </div>
@@ -119,6 +119,26 @@ export function SettingsPage() {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
+  const deviceMenuRef = useRef<HTMLDivElement>(null);
+  // Close the custom input-device dropdown on click-outside / Escape, matching
+  // the kit Modal's dismissal affordances (the bare <div> menu had neither).
+  useEffect(() => {
+    if (!deviceMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDeviceMenuOpen(false);
+    };
+    const onDown = (e: PointerEvent) => {
+      if (deviceMenuRef.current && !deviceMenuRef.current.contains(e.target as Node)) {
+        setDeviceMenuOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [deviceMenuOpen]);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
   const setPage = useAppStore((s) => s.setPage);
   const { replaceSettings, patchSettings } = useSettingsPatch(setSettings);
@@ -185,12 +205,11 @@ export function SettingsPage() {
     [patchSettings, settings?.writing_style]
   );
 
+  // Return the write promise so the GPU section can AWAIT the settings save
+  // before reloading the models — otherwise the reload can read a stale
+  // gpu_acceleration from the DB and apply the old backend.
   const handleGpuToggle = useCallback(
-    (enabled: boolean) => {
-      patchSettings({ gpu_acceleration: enabled }).catch((e) =>
-        console.error("Failed to save settings:", e)
-      );
-    },
+    (enabled: boolean) => patchSettings({ gpu_acceleration: enabled }),
     [patchSettings]
   );
 
@@ -275,17 +294,12 @@ export function SettingsPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-10">
       {/* Header */}
-      <div
+      <PageHeader
+        title="Settings"
+        subtitle="Configure how OmniVox listens, transcribes, and behaves."
         className="animate-slide-up"
         style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
-      >
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] text-text-primary">
-          Settings
-        </h1>
-        <p className="mt-1 text-sm text-text-muted">
-          Configure how OmniVox listens, transcribes, and behaves.
-        </p>
-      </div>
+      />
 
       {/* Two-column masonry — essentials first, width-filling */}
       <div className="mt-5 max-w-5xl gap-x-4 [column-fill:balance] columns-1 lg:columns-2">
@@ -344,7 +358,7 @@ export function SettingsPage() {
         {/* ── Audio ── */}
         <GroupCard title="Audio" delay={0.13}>
           <Row icon={Volume2} title="Input device" description="Sample rate: 16,000 Hz">
-            <div className="relative">
+            <div className="relative" ref={deviceMenuRef}>
               <button
                 onClick={() => setDeviceMenuOpen((p) => !p)}
                 className="flex w-full items-center gap-2 rounded-[9px] border border-border-hover bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"

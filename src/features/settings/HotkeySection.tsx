@@ -140,7 +140,7 @@ export function HotkeySection({
       style={{ opacity: 0, animationDelay: "0.06s", animationFillMode: "forwards" }}
     >
       <div className="mb-2.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+        <span className="eyebrow">
           Shortcut
         </span>
       </div>

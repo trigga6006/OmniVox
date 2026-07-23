@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { StickyNote, Plus, Trash2, ArrowLeft, Check } from "lucide-react";
-import { Button, Card, EmptyState } from "@/components/ui";
+import { Button, Card, EmptyState, PageHeader, LoadingState } from "@/components/ui";
 import {
   listNotes,
   addNote,
@@ -183,7 +183,7 @@ export function NotesPage() {
         {/* Toolbar — slim, utility-focused */}
         <div className="flex items-center justify-between border-b border-border/55 px-8 py-3">
           <Button variant="ghost" size="sm" icon={<ArrowLeft />} onClick={handleBack}>
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em]">
+            <span className="eyebrow">
               Notes
             </span>
           </Button>
@@ -235,28 +235,24 @@ export function NotesPage() {
   return (
     <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-            Notes
-          </h1>
-          <p className="mt-1 text-sm text-text-muted">
-            {notes.length > 0
-              ? `${notes.length} note${notes.length === 1 ? "" : "s"}`
-              : "Your saved notes"}
-          </p>
-        </div>
-        <Button variant="primary" size="sm" icon={<Plus />} onClick={handleNew}>
-          New
-        </Button>
-      </div>
+      <PageHeader
+        title="Notes"
+        subtitle={
+          notes.length > 0
+            ? `${notes.length} note${notes.length === 1 ? "" : "s"}`
+            : "Your saved notes"
+        }
+        action={
+          <Button variant="primary" size="sm" icon={<Plus />} onClick={handleNew}>
+            New
+          </Button>
+        }
+      />
 
       {/* Grid */}
       <div className="mt-6 flex-1 overflow-auto pr-1">
         {loading && notes.length === 0 ? (
-          <div className="flex h-48 items-center justify-center text-sm text-text-muted">
-            Loading…
-          </div>
+          <LoadingState />
         ) : notes.length === 0 ? (
           /* ── Empty state ── */
           <div className="flex h-64 items-center justify-center">
@@ -307,18 +303,18 @@ export function NotesPage() {
                     {formatDate(note.updated_at)}
                   </span>
 
-                  <div
-                    role="button"
-                    tabIndex={0}
+                  {/* Real <button> — interactive-inside-interactive (role=button
+                      card + role=button delete) is invalid ARIA and only handled
+                      Enter, not Space. A native button activates on both and
+                      handleDelete stopPropagations so the card doesn't also open. */}
+                  <button
+                    type="button"
+                    aria-label="Delete note"
                     onClick={(e) => handleDelete(e, note.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter")
-                        handleDelete(e as unknown as React.MouseEvent, note.id);
-                    }}
-                    className="rounded-md p-1 text-text-muted opacity-0 transition-all hover:bg-recording-500/12 hover:text-recording-400 group-hover:opacity-100"
+                    className="rounded-md p-1 text-text-muted opacity-0 transition-all hover:bg-recording-500/10 hover:text-recording-400 group-hover:opacity-100"
                   >
                     <Trash2 size={11} />
-                  </div>
+                  </button>
                 </div>
               </Card>
             ))}

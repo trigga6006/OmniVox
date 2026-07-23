@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Mic, Sparkles, Terminal } from "lucide-react";
-import { Segmented } from "@/components/ui";
+import { PageHeader, Segmented } from "@/components/ui";
 import { SpeechModelsSection } from "./SpeechModelsSection";
 import { LlmModelsSection } from "./LlmModelsSection";
 import { CommandModeSection } from "./CommandModeSection";
@@ -26,17 +26,12 @@ export function ModelsPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-8">
       {/* Header */}
-      <div
+      <PageHeader
+        title="Models"
+        subtitle="Speech recognition, structured output, and voice commands."
         className="opacity-0 animate-slide-up"
         style={{ animationDelay: "0.05s", animationFillMode: "forwards" }}
-      >
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-          Models
-        </h1>
-        <p className="mt-1 text-sm text-text-muted">
-          Speech recognition, structured output, and voice commands.
-        </p>
-      </div>
+      />
 
       {/* Tab bar — speech & LLM catalogs. Per-tab accent (amber / violet)
           lives on the cards' stripes and chips below. */}

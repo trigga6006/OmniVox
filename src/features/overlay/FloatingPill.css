@@ -329,10 +329,6 @@
           0% { transform: translateX(-100%); }
           100% { transform: translateX(200%); }
         }
-        @keyframes structuring-halo {
-          0%, 100% { transform: scale(0.85); opacity: 0.5; }
-          50% { transform: scale(1.15); opacity: 1; }
-        }
         @keyframes structuring-pulse {
           0%, 100% { transform: scale(0.92); }
           50% { transform: scale(1.08); }
@@ -353,4 +349,61 @@
 @keyframes idle-wave {
           0%, 100% { transform: scaleY(0.4); opacity: 0.15; }
           50% { transform: scaleY(1); opacity: 0.35; }
+        }
+
+        /* ── Scratchpad proximity bud ── */
+        /* Edge is an inset box-shadow ring, NOT a border — the .overlay-window
+           rule forces every descendant's border-color to transparent. */
+        .scratchpad-bud {
+          position: absolute;
+          left: 100%;
+          top: 50%;
+          margin-left: 7px;
+          width: 16px;
+          height: 16px;
+          border-radius: 999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(180deg, rgba(44,42,40,0.96) 0%, rgba(28,26,24,0.96) 100%);
+          box-shadow:
+            0 2px 8px -3px rgba(0,0,0,0.7),
+            inset 0 0 0 1px rgba(255,255,255,0.12),
+            inset 0 1px 0 rgba(255,255,255,0.06);
+          cursor: pointer;
+          transform: translateY(-50%);
+          transform-origin: left center;
+          /* Spring out from under the pill. */
+          animation: bud-in 280ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+          transition: background 180ms ease, box-shadow 220ms ease;
+        }
+        .scratchpad-bud:hover {
+          background: linear-gradient(180deg, rgba(250,173,40,0.98) 0%, rgba(217,119,6,0.94) 100%);
+          box-shadow:
+            0 3px 12px -2px rgba(245,158,11,0.45),
+            inset 0 0 0 1px rgba(245,158,11,0.5),
+            inset 0 1px 0 rgba(255,255,255,0.18);
+        }
+        .scratchpad-bud:active { transform: translateY(-50%) scale(0.9); }
+        .scratchpad-bud-icon {
+          color: rgba(255,255,255,0);
+          transform: scale(0.7);
+          transition: color 160ms ease, transform 200ms ease;
+        }
+        .scratchpad-bud:hover .scratchpad-bud-icon {
+          color: #1c1305;
+          transform: scale(1);
+        }
+
+        @keyframes bud-in {
+          from { opacity: 0; transform: translateY(-50%) translateX(-7px) scale(0.35); }
+          to   { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
+        }
+
+        /* Transient degraded banner entrance — a clean fade + rise, distinct
+           from the StructuredPanel's clip-path `sp-in` (which is tuned for a
+           tall 420×480 surface and unfurled oddly on this short wide banner). */
+        @keyframes fp-banner-in {
+          from { opacity: 0; transform: translateY(6px) scale(0.97); filter: blur(2px); }
+          to   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
         }

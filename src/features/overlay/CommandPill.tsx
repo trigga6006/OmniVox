@@ -60,15 +60,20 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
           ? "w-[340px] h-[92px] rounded-2xl"
           : isConfirm
             ? "w-[300px] h-[44px] rounded-full"
-            : "w-[260px] h-[34px] rounded-full",
+            : isDone || isError
+              ? "w-[320px] h-[34px] rounded-full"
+              : "w-[260px] h-[34px] rounded-full",
         "relative flex items-center overflow-hidden shrink-0 border px-3.5",
-        "bg-[var(--color-pill-bg)] transition-[border-color] duration-200 ease-out",
+        "bg-[var(--color-pill-bg)]",
         borderClass
       )}
       style={{
         opacity: showContent ? 1 : 0,
+        // Include border-color here — an inline `transition` shorthand overrides
+        // the Tailwind transition-* utility, so without this the accent border
+        // snaps amber→green/red on completion instead of easing.
         transition: showContent
-          ? "opacity 220ms cubic-bezier(0.4, 0, 0.2, 1) 40ms"
+          ? "opacity 220ms cubic-bezier(0.4, 0, 0.2, 1) 40ms, border-color 200ms ease-out"
           : "none",
         boxShadow: "0 8px 24px -10px rgba(0,0,0,0.65)",
       }}
@@ -170,7 +175,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
             >
               Command
             </span>
-            <PillWaveform active color={ACCENT} />
+            <PillWaveform color={ACCENT} />
           </div>
         )}
         {isRecognizing && (
@@ -218,13 +223,20 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
         </div>
       )}
 
-      {/* Listening indicator dot on the right. */}
+      {/* Listening indicator — same pulsing halo + solid dot as the dictation
+          pill's record dot, so both "mic is live" states read identically. */}
       {isListening && (
         <div className="shrink-0 w-[16px] flex items-center justify-end">
-          <span
-            className="relative h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: ACCENT, boxShadow: `0 0 6px ${ACCENT}` }}
-          />
+          <div className="relative flex items-center justify-center">
+            <span
+              className="absolute h-3.5 w-3.5 rounded-full animate-recording-pulse"
+              style={{ backgroundColor: `rgba(${ACCENT_RGB},0.15)` }}
+            />
+            <span
+              className="relative h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: ACCENT }}
+            />
+          </div>
         </div>
       )}
       </div>
