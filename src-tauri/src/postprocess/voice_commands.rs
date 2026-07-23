@@ -48,7 +48,7 @@ pub enum VoiceCommand {
     Cut,
     /// Undo (Ctrl/Cmd+Z).
     Undo,
-    /// Redo (Ctrl/Cmd+Shift+Z).
+    /// Redo (Ctrl/Cmd+Shift+Z — matches Command Mode's redo chord).
     Redo,
     /// Press Tab.
     PressTab,

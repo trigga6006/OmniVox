@@ -414,10 +414,22 @@ fn remove_contextual_fillers(text: &str) -> String {
 
     // Process the text as a series of sentences
     while !remainder.is_empty() {
-        // Find next sentence boundary
+        // Find next sentence boundary. Only treat a '.'/'!'/'?' as a boundary
+        // when it ends the text or is followed by whitespace — otherwise a
+        // period inside a decimal ("3.5"), filename ("config.json"), IP
+        // ("10.0.0.1"), or abbreviation ("U.S.A.") would split the token and
+        // the re-join below would inject a space ("3. 5"). A sentence-start
+        // filler can only follow whitespace anyway, so this never misses one.
         let boundary = remainder
-            .find(|c: char| c == '.' || c == '!' || c == '?')
-            .map(|pos| pos + 1)
+            .char_indices()
+            .find(|&(idx, c)| {
+                (c == '.' || c == '!' || c == '?')
+                    && remainder[idx + c.len_utf8()..]
+                        .chars()
+                        .next()
+                        .map_or(true, |n| n.is_whitespace())
+            })
+            .map(|(idx, c)| idx + c.len_utf8())
             .unwrap_or(remainder.len());
 
         let sentence = &remainder[..boundary];
@@ -703,6 +715,20 @@ mod tests {
     fn keeps_so_in_middle() {
         let result = remove_contextual_fillers("I was so tired.");
         assert_eq!(result.trim(), "I was so tired.");
+    }
+
+    #[test]
+    fn does_not_split_decimals_or_filenames() {
+        // A period inside a number/filename/IP/abbreviation is NOT a sentence
+        // boundary, so no space may be injected into the token.
+        let result = remove_contextual_fillers("increase by 3.5 percent and config.json");
+        assert!(result.contains("3.5"), "decimal was split: {result:?}");
+        assert!(result.contains("config.json"), "filename was split: {result:?}");
+        assert_eq!(remove_contextual_fillers("ping 10.0.0.1 now").trim(), "ping 10.0.0.1 now");
+        // Genuine sentence boundaries (period + space) still split, so leading
+        // fillers on the second sentence are still removed.
+        let two = remove_contextual_fillers("I left. So I came back.");
+        assert_eq!(two.trim(), "I left. I came back.");
     }
 
     #[test]

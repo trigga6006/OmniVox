@@ -180,7 +180,16 @@ fn screen_context_default_has_empty_tokens() {
 
 #[test]
 fn screen_context_skips_codex_app_before_uia_capture() {
-    for process_name in ["Codex.exe", "codex.exe"] {
+    // The ChatGPT desktop app (which also hosts the Codex agent) and Codex's
+    // code-mode host must be skipped alongside standalone Codex — all hang the
+    // target app when their UIA tree is walked. Match is case-insensitive.
+    for process_name in [
+        "Codex.exe",
+        "codex.exe",
+        "ChatGPT.exe",
+        "chatgpt.exe",
+        "codex-code-mode-host.exe",
+    ] {
         assert!(
             should_skip_app(process_name),
             "expected {process_name} to skip screen-context capture"

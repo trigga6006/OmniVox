@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioDevice;
@@ -60,11 +60,20 @@ pub struct PlatformInfo {
 }
 
 #[tauri::command]
-pub async fn start_recording(
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    crate::pipeline::start_recording(&app_handle, &state);
+pub async fn start_recording(app_handle: tauri::AppHandle) -> Result<(), String> {
+    // pipeline::start_recording is fully synchronous — a SQLite settings read,
+    // auto-switch queries, cross-process COM ducking, and opening the mic device.
+    // Run it on the blocking pool so it never stalls this tokio worker.
+    let app = app_handle.clone();
+    // Propagate a panic from the blocking body as a command error instead of
+    // swallowing the JoinError — otherwise a mic/COM failure that unwinds would
+    // return Ok(()) and the UI would show a stuck "recording" that never started.
+    tokio::task::spawn_blocking(move || {
+        let st = app.state::<AppState>();
+        crate::pipeline::start_recording(&app, &st);
+    })
+    .await
+    .map_err(|e| format!("start_recording failed: {e}"))?;
     Ok(())
 }
 

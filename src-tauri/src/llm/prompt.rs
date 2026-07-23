@@ -281,9 +281,18 @@ ACTIONS (choose one per array object):
 - copy, paste, cut, undo, redo, select_all, save, new_tab, screenshot: keyboard actions. target = \"\".
 - show_desktop: minimize everything / show the desktop (Win+D). target = \"\".
 - close_tab: close the current browser/editor TAB only (Ctrl+W). target = \"\".
+- refresh: reload the current page or view (F5). target = \"\".
+- find_in_page: open the in-page find bar (Ctrl+F). target = \"\".
+- new_window: open a new window (Ctrl+N). target = \"\".
+- reopen_tab: reopen the last closed tab (Ctrl+Shift+T). target = \"\".
+- next_tab, prev_tab: switch to the next / previous tab. target = \"\".
+- page_down, page_up: scroll the page down / up. target = \"\".
 - play_pause, next_track, prev_track, mute, volume_up, volume_down: media keys. target = \"\".
 - minimize, maximize: act on the current window. target = \"\".
 - close_window: close the CURRENT foreground window (graceful — the app may prompt to save). target = \"\".
+- open_scratchpad: open/show the assistant's built-in scratchpad pad. target = \"\".
+- close_scratchpad: close/hide the scratchpad pad. target = \"\".
+- clear_scratchpad: erase everything saved in the scratchpad (asks to confirm). target = \"\".
 - none: the input is not a recognizable command. target = \"\".
 
 RULES
@@ -293,6 +302,7 @@ RULES
 - \"type X\" / \"write X\" -> type_text (no Enter). Only use send_message when the user clearly wants it SENT (tell / send / ask / message).
 - close_tab is ONLY a browser/editor TAB (Ctrl+W). close_window closes the CURRENT foreground window (\"close this window\", \"close this\"). For \"close <app name>\" / \"quit X\" (a specific NAMED app), use \"none\" — closing a named app isn't supported yet. Never substitute close_tab for a window/app close.
 - For searching the web or \"google something\", prefer web_search (it uses the user's default browser) over opening a specific browser app.
+- \"scratchpad\" / \"scratch pad\" always means the built-in scratchpad pad — use the scratchpad actions, never open_app. A scratchpad action must be the ONLY action in the array — never combine it with other steps.
 - If any part of the request does not clearly match an action above, use \"none\" for the whole command. Do NOT substitute a near-miss action.
 
 EXAMPLES
@@ -302,9 +312,16 @@ EXAMPLES
 \"search for the weather in denver\" -> [{\"action\":\"web_search\",\"target\":\"weather in denver\"}]
 \"go to youtube\" -> [{\"action\":\"open_url\",\"target\":\"youtube.com\"}]
 \"turn it down\" -> [{\"action\":\"volume_down\",\"target\":\"\"}]
+\"turn up the volume\" -> [{\"action\":\"volume_up\",\"target\":\"\"}]
+\"skip this song\" -> [{\"action\":\"next_track\",\"target\":\"\"}]
+\"go back to the last song\" -> [{\"action\":\"prev_track\",\"target\":\"\"}]
+\"pause the music\" -> [{\"action\":\"play_pause\",\"target\":\"\"}]
 \"copy that\" -> [{\"action\":\"copy\",\"target\":\"\"}]
 \"shrink this window\" -> [{\"action\":\"minimize\",\"target\":\"\"}]
 \"close this window\" -> [{\"action\":\"close_window\",\"target\":\"\"}]
+\"open up my scratch pad\" -> [{\"action\":\"open_scratchpad\",\"target\":\"\"}]
+\"get rid of the scratch pad\" -> [{\"action\":\"close_scratchpad\",\"target\":\"\"}]
+\"wipe the scratchpad clean\" -> [{\"action\":\"clear_scratchpad\",\"target\":\"\"}]
 \"show me the desktop\" -> [{\"action\":\"show_desktop\",\"target\":\"\"}]
 \"minimize everything\" -> [{\"action\":\"show_desktop\",\"target\":\"\"}]
 \"open spotify and play it\" -> [{\"action\":\"open_app\",\"target\":\"Spotify\"},{\"action\":\"play_pause\",\"target\":\"\"}]

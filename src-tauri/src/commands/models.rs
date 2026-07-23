@@ -165,7 +165,10 @@ pub fn load_and_activate_model(
         n_threads,
         use_gpu,
         initial_prompt,
-        beam_size: None,       // default: 5 (beam search)
+        // GPU: full 5-way beam (accuracy). CPU: beam 2 — beam search runs the
+        // decoder ~beam_size× per step and dominates CPU decode latency, so on
+        // CPU we trade a sliver of accuracy for noticeably snappier push-to-talk.
+        beam_size: Some(if use_gpu { 5 } else { 2 }),
         temperature: None,     // default: 0.0 (deterministic)
         temperature_inc: None, // default: 0.2 (fallback on low confidence)
     };

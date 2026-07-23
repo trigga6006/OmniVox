@@ -469,24 +469,30 @@ pub fn rank_tokens(text: &str, max: usize) -> Vec<String> {
         }
     }
 
-    // Dedupe case-insensitively, keep the most-frequent original casing.
-    let mut by_lower: HashMap<String, (String, Category, u32)> = HashMap::new();
+    // Dedupe case-insensitively, keeping the most-frequent original casing.
+    // The 4th field tracks the stored casing's OWN count; `.2` stays the
+    // cumulative total (used for scoring below). Comparing this occurrence's
+    // count against the stored casing's count — not against half the running
+    // total — is what actually keeps the most-frequent variant (e.g. the real
+    // `useEffect`, not a stray `usEffect` label).
+    let mut by_lower: HashMap<String, (String, Category, u32, u32)> = HashMap::new();
     for (orig, (cat, count)) in counts {
         let lower = orig.to_lowercase();
         by_lower
             .entry(lower)
             .and_modify(|entry| {
-                entry.2 += count;
-                if count > entry.2 / 2 {
+                entry.2 += count; // cumulative total (scoring)
+                if count > entry.3 {
                     entry.0 = orig.clone();
+                    entry.3 = count; // remember the winning casing's own count
                 }
             })
-            .or_insert((orig, cat, count));
+            .or_insert((orig, cat, count, count));
     }
 
     let mut ranked: Vec<(String, f32)> = by_lower
         .into_iter()
-        .map(|(_, (orig, cat, count))| {
+        .map(|(_, (orig, cat, count, _))| {
             let score = cat.weight() * (1.0 + (count as f32).ln());
             (orig, score)
         })

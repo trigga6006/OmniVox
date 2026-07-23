@@ -77,10 +77,17 @@ const WHISPER_SCREEN_TOKEN_CAP: usize = 15;
 /// their UIA tree while their own browser automation is active. For those
 /// targets, plain dictation is much safer than cross-process accessibility
 /// inspection.
+///
+/// `chatgpt.exe` is the OpenAI desktop app — it now also hosts the Codex agent,
+/// so dictating into either "ChatGPT" or "Codex" there hits this same process.
+/// `codex-code-mode-host.exe` is its code-mode helper. Both walk like the
+/// standalone `codex.exe` and hang the same way, so they get the same guard.
 const SKIP_APPS: &[&str] = &[
     "omnivox.exe",
     "omnivoice.exe",
     "codex.exe",
+    "codex-code-mode-host.exe",
+    "chatgpt.exe",
     "claude.exe",
     "msedgewebview2.exe",
 ];
