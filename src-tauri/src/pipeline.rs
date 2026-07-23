@@ -38,6 +38,23 @@ struct ErrorPayload {
 }
 
 /// Emit a typed error event so the frontend can show specific guidance.
+/// Which OmniVox window owns `hwnd` (the HWND snapshotted at record start), if
+/// any — used to scope in-app dictation delivery to the exact target window
+/// without a frontend focus race.
+#[cfg(windows)]
+fn window_label_for_hwnd(app: &tauri::AppHandle, hwnd: isize) -> Option<String> {
+    use tauri::Manager;
+    app.webview_windows()
+        .into_iter()
+        .find(|(_, w)| w.hwnd().ok().map(|h| h.0 as isize) == Some(hwnd))
+        .map(|(label, _)| label)
+}
+
+#[cfg(not(windows))]
+fn window_label_for_hwnd(_app: &tauri::AppHandle, _hwnd: isize) -> Option<String> {
+    None
+}
+
 fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into<String>) {
     let payload = ErrorPayload {
         state: "error",
@@ -335,6 +352,11 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
 
     if let Err(e) = audio.start() {
         eprintln!("Failed to start recording: {e}");
+        // Restore system volume — we ducked above but never got to record, so
+        // the stop path that normally un-ducks won't run. Unconditional: unduck
+        // take()s the saved level and no-ops when nothing was ducked, and it
+        // also clears any duck leaked by a prior aborted start.
+        crate::audio::ducking::unduck();
         // Release the ownership we just claimed so the mic isn't left stuck.
         release_capture(state);
         emit_error(
@@ -824,10 +846,33 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         voxify_said, voice_command_gate, structured_enabled
     ));
 
+    // Route this dictation to the scratchpad when EITHER its window was the
+    // record-start foreground, OR the scratchpad is open with capture on (so you
+    // can read in one window and dictate answers into the pad). Gated on the
+    // window being visible, so a closed pad never hijacks normal dictation.
+    // Either way it's PLAIN capture — never Structured Mode, which yields a slot
+    // panel, not text to append.
+    let route_to_scratchpad = {
+        use tauri::Manager;
+        let foreground_is_scratchpad = dictation_target
+            .and_then(|t| window_label_for_hwnd(app_handle, t.hwnd))
+            .as_deref()
+            == Some("scratchpad");
+        let capturing = state
+            .scratchpad_capture
+            .load(std::sync::atomic::Ordering::Acquire)
+            && app_handle
+                .get_webview_window("scratchpad")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+        foreground_is_scratchpad || capturing
+    };
+
     // Resolve whether the LLM should run for THIS utterance.  With the
     // gate on, it's an explicit opt-in per utterance.  With the gate off,
     // the global setting governs (every qualifying transcription runs).
-    let should_structure = structured_enabled && (!voice_command_gate || voxify_said);
+    let should_structure =
+        structured_enabled && (!voice_command_gate || voxify_said) && !route_to_scratchpad;
 
     let configured_llm_id = settings
         .as_ref()
@@ -1106,11 +1151,23 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         Err(poisoned) => poisoned.into_inner().clone(),
     };
     if structured.is_none() {
-        if target_is_self {
-            // Dictating into OmniVox itself — hand the text to the focused
-            // window so it can insert at the caret of whatever field the user
-            // is in.  (OS Ctrl+V into our own WebView2 control doesn't land.)
-            let _ = app_handle.emit("dictation-insert", &final_text);
+        if route_to_scratchpad {
+            // The scratchpad is the target (its window was foreground at record
+            // start, OR it's open with capture on). Route the plain transcript
+            // there regardless of which app is focused — never paste into some
+            // other window the user was only reading.
+            let _ = app_handle.emit(
+                "dictation-insert",
+                serde_json::json!({ "text": final_text, "target": "scratchpad" }),
+            );
+        } else if target_is_self {
+            // A different OmniVox window (main/overlay) — caret-insert there. The
+            // "main" label lets the main window stand its Notes-append down when
+            // the dictation was actually aimed at another OmniVox window.
+            let _ = app_handle.emit(
+                "dictation-insert",
+                serde_json::json!({ "text": final_text, "target": "main" }),
+            );
         } else {
             let output_result = if let Some(ref segments) = voice_segments {
                 // Inline voice commands that fire OS input (Send/Enter, mouse,
@@ -1135,7 +1192,27 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                     .output
                     .send_segments(segments, &output_config, target, allow_launch)
             } else {
-                state.output.send(&final_text, &output_config)
+                // Plain paste (Ctrl+V) is focus-dependent. restore_foreground_window
+                // can fail silently (Windows foreground lock, HWND recycle, another
+                // app grabbing focus) — its own doc says a failed restore must not be
+                // treated as success (H2). Re-verify identity right at paste time so a
+                // failed restore can't land the dictation in the wrong window. This is
+                // the same gate the segment/command path applies. verify_foreground_target
+                // returns true on non-Windows and when the target was already foreground,
+                // so normal dictation is unaffected; a refusal still saves to history below.
+                let target_ok = dictation_target
+                    .map(|t| crate::focus::verify_foreground_target(t.hwnd, t.pid))
+                    .unwrap_or(true);
+                if target_ok {
+                    state.output.send(&final_text, &output_config)
+                } else {
+                    emit_error(
+                        app_handle,
+                        crate::error::ErrorCode::KeystrokeError,
+                        "Paste skipped — the target window lost focus. Your dictation is saved to history.",
+                    );
+                    Ok(())
+                }
             };
             if let Err(e) = output_result {
                 eprintln!("Output failed: {e}");
@@ -1164,6 +1241,7 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         .unwrap_or(false);
     if structured.is_none()
         && !target_is_self
+        && !route_to_scratchpad
         && output_config.ship_mode
         && !command_send_active
         && matches!(
@@ -1172,7 +1250,8 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 | crate::output::types::OutputMode::Both
         )
     {
-        let _ = tokio::task::spawn_blocking(|| {
+        let ship_target = dictation_target;
+        let _ = tokio::task::spawn_blocking(move || {
             // The router's send/send_segments are synchronous and already
             // include the 250ms post-paste guard, so by this point the paste
             // keystroke has been delivered and the clipboard held stable.
@@ -1182,9 +1261,29 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             // process paste on a renderer tick — while still 900ms faster
             // than the old blind 1500ms.  Native edit controls need far less.
             std::thread::sleep(std::time::Duration::from_millis(600));
-            if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
-                let _ =
-                    enigo::Keyboard::key(&mut enigo, enigo::Key::Return, enigo::Direction::Click);
+            // Re-verify foreground AFTER the settle: focus may have changed
+            // during the 600ms, and Enter == "send" in Ship Mode's chat/agent
+            // targets — firing it into a window we KNOW is no longer the target
+            // could submit somewhere else. Skip ONLY when we have a target that
+            // fails verification. When no target was captured (None), fall back
+            // to the pre-change behavior and fire — there's no identity to check
+            // against, and refusing would leave the message pasted-but-unsent.
+            let send_ok = match ship_target {
+                Some(t) => crate::focus::verify_foreground_target(t.hwnd, t.pid),
+                None => true,
+            };
+            if send_ok {
+                if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
+                    let _ = enigo::Keyboard::key(
+                        &mut enigo,
+                        enigo::Key::Return,
+                        enigo::Direction::Click,
+                    );
+                }
+            } else {
+                crate::llm::diaglog::log(
+                    "ship mode: auto-send Enter skipped — target window changed after paste",
+                );
             }
         })
         .await;
@@ -1525,10 +1624,20 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
     // spoken during classification still prevents that command's execution while
     // later commands (higher ids) proceed.  Also clears any parked confirm.
     let norm = crate::actions::matcher::normalize(&utterance);
-    if matches!(
-        norm.as_str(),
-        "stop" | "stop it" | "cancel" | "cancel that" | "never mind" | "nevermind" | "abort"
-    ) {
+    // Also test the politeness-peeled form so "please stop", "can you stop",
+    // "stop please", "undo that please" still hit these tier-0 phrases — Whisper
+    // very commonly returns the polite wrapper, and a cancel that only matched
+    // the bare word could watch a queued send fire anyway. peel_politeness only
+    // strips leading/trailing politeness, so "stop music" stays "stop music"
+    // (still a transport command, not a cancel).
+    let peeled = crate::actions::matcher::peel_politeness(&norm);
+    let is_cancel = |s: &str| {
+        matches!(
+            s,
+            "stop" | "stop it" | "cancel" | "cancel that" | "never mind" | "nevermind" | "abort"
+        )
+    };
+    if is_cancel(norm.as_str()) || is_cancel(peeled.as_str()) {
         // `fetch_max`, never `store` (B2-1): an older delayed stop must not
         // LOWER a floor a newer command already raised.  The floor only ever
         // rises, so a "stop" for an earlier command can't un-cancel a later one.
@@ -1551,18 +1660,44 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
 
     // Tier-0 undo — before the matcher so bare "undo" (Ctrl+Z chord) never
     // shadows it.  Reverses the assistant's own last action, not the app's.
-    if matches!(
-        norm.as_str(),
-        "undo that" | "undo it" | "undo last command" | "undo the last command"
-    ) {
+    let is_undo = |s: &str| {
+        matches!(
+            s,
+            "undo that" | "undo it" | "undo last command" | "undo the last command"
+        )
+    };
+    if is_undo(norm.as_str()) || is_undo(peeled.as_str()) {
         run_undo(app_handle, state, ctx).await;
         return;
     }
 
     // Fast path: deterministic grammar match (microseconds, no LLM).
     if let Some(intent) = crate::actions::match_command(&utterance) {
-        run_intent(app_handle, state, ctx, intent).await;
-        return;
+        if let crate::actions::CommandIntent::OpenApp(name) = intent {
+            // Resolve ONCE here — dispatch_open_app reuses this result instead of
+            // re-resolving. The open-verb matcher is greedy ("show me the desktop",
+            // "run the tests", "go to youtube.com" all become OpenApp(<tail>)); when
+            // the tail doesn't resolve to an installed app, defer to the LLM so it
+            // can be reinterpreted (show_desktop, web_search, open_url, …) — but
+            // ONLY when an LLM is actually installed. With no LLM, dispatch straight
+            // to the precise "No app found" instead of a misleading "install a model".
+            let lookup = name.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                crate::actions::app_index::resolve(&lookup)
+            })
+            .await
+            .ok()
+            .flatten();
+            if resolved.is_none() && any_llm_configured(state) {
+                // fall through to classify_command_via_llm below
+            } else {
+                dispatch_open_app(app_handle, state, ctx, name, resolved).await;
+                return;
+            }
+        } else {
+            run_intent(app_handle, state, ctx, intent).await;
+            return;
+        }
     }
 
     // Slow path: free-form phrasing the grammar didn't catch → Qwen fallback.
@@ -1669,6 +1804,19 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         } else {
             run_chain(app_handle, state, ctx, intents).await;
         }
+        return;
+    }
+
+    // Distinguish "not a command" from "Command Mode is on but no LLM is
+    // installed to interpret free-form phrasings". Without a model, everything
+    // the deterministic matcher misses (search, "tell X …", multi-step) would
+    // otherwise report as a generic non-command — tell the user the real cause.
+    if !utterance.is_empty() && !any_llm_configured(state) {
+        emit_command_result(
+            app_handle,
+            "error",
+            "No language model installed — add one in Models for free-form commands",
+        );
         return;
     }
 
@@ -2067,6 +2215,19 @@ fn ensure_llm_runner(
     }
 }
 
+/// True when some LLM model is configured or downloaded (does NOT load it).
+/// Mirrors `ensure_llm_runner`'s id-resolution chain so Command Mode can tell
+/// "not a command" apart from "no model installed to interpret free-form speech".
+fn any_llm_configured(state: &AppState) -> bool {
+    crate::storage::settings::get_settings(&state.db)
+        .ok()
+        .and_then(|s| s.active_llm_model_id)
+        .filter(|id| !id.is_empty())
+        .or_else(|| state.active_llm_model_id.lock().ok().and_then(|g| g.clone()))
+        .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state))
+        .is_some()
+}
+
 async fn classify_command_via_llm(
     app_handle: &tauri::AppHandle,
     state: &AppState,
@@ -2108,6 +2269,72 @@ async fn classify_command_via_llm(
     }
 }
 
+/// Dispatch a resolved (or unresolved) `OpenApp`, given an already-computed
+/// resolution. Shared by `run_intent` and the fast path so the app index is
+/// resolved exactly once per command (not twice).
+async fn dispatch_open_app(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    ctx: crate::state::CommandContext,
+    name: String,
+    resolved: Option<crate::actions::app_index::ResolveResult>,
+) {
+    match resolved {
+        None => {
+            // The app may have been installed after our last enumeration — kick a
+            // throttled background rescan so a retry can find it.
+            tokio::task::spawn_blocking(crate::actions::app_index::refresh_if_stale);
+            emit_command_result(
+                app_handle,
+                "error",
+                format!("No app found for \u{201c}{name}\u{201d}"),
+            )
+        }
+        Some(r) if r.score >= crate::actions::app_index::AUTO && !r.ambiguous => {
+            // Re-check the cancel floor AFTER the async app-resolution step and
+            // immediately before the launch (B2-1): a "stop" spoken while we
+            // resolved must abort the launch.
+            if command_superseded(
+                state
+                    .command_cancel_floor
+                    .load(std::sync::atomic::Ordering::Acquire),
+                ctx.id,
+            ) {
+                emit_command_result(app_handle, "done", "Stopped");
+                return;
+            }
+            match crate::actions::app_index::launch(&r.app_id) {
+                Ok(identity) => {
+                    record_launch_for_undo(app_handle, r.name.clone(), ctx.target_hwnd, identity);
+                    emit_command_result(app_handle, "done", format!("Opened {}", r.name))
+                }
+                Err(e) => emit_command_result(app_handle, "error", e),
+            }
+        }
+        Some(r) => {
+            // Low confidence or ambiguous (close runner-up) — ask first.
+            if let Ok(mut pending) = state.pending_command.lock() {
+                *pending = Some((
+                    ctx,
+                    crate::state::PendingCommand::OpenApp {
+                        app_id: r.app_id,
+                        name: r.name.clone(),
+                    },
+                ));
+            }
+            crate::hotkey::set_confirm_pending(Some(ctx.id));
+            let _ = app_handle.emit(
+                "command-confirm",
+                &CommandConfirmPayload {
+                    id: ctx.id,
+                    summary: format!("Open {}?", r.name),
+                    editable_text: None,
+                },
+            );
+        }
+    }
+}
+
 async fn run_intent(
     app_handle: &tauri::AppHandle,
     state: &AppState,
@@ -2140,60 +2367,7 @@ async fn run_intent(
             .await
             .ok()
             .flatten();
-            match resolved {
-                None => emit_command_result(
-                    app_handle,
-                    "error",
-                    format!("No app found for \u{201c}{name}\u{201d}"),
-                ),
-                Some(r) if r.score >= crate::actions::app_index::AUTO && !r.ambiguous => {
-                    // Re-check the cancel floor AFTER the async app-resolution
-                    // step and immediately before the launch (B2-1): a "stop"
-                    // spoken while we resolved must abort the launch.
-                    if command_superseded(
-                        state
-                            .command_cancel_floor
-                            .load(std::sync::atomic::Ordering::Acquire),
-                        ctx.id,
-                    ) {
-                        emit_command_result(app_handle, "done", "Stopped");
-                        return;
-                    }
-                    match crate::actions::app_index::launch(&r.app_id) {
-                        Ok(identity) => {
-                            record_launch_for_undo(
-                                app_handle,
-                                r.name.clone(),
-                                ctx.target_hwnd,
-                                identity,
-                            );
-                            emit_command_result(app_handle, "done", format!("Opened {}", r.name))
-                        }
-                        Err(e) => emit_command_result(app_handle, "error", e),
-                    }
-                }
-                Some(r) => {
-                    // Low confidence or ambiguous (close runner-up) — ask first.
-                    if let Ok(mut pending) = state.pending_command.lock() {
-                        *pending = Some((
-                            ctx,
-                            crate::state::PendingCommand::OpenApp {
-                                app_id: r.app_id,
-                                name: r.name.clone(),
-                            },
-                        ));
-                    }
-                    crate::hotkey::set_confirm_pending(Some(ctx.id));
-                    let _ = app_handle.emit(
-                        "command-confirm",
-                        &CommandConfirmPayload {
-                            id: ctx.id,
-                            summary: format!("Open {}?", r.name),
-                            editable_text: None,
-                        },
-                    );
-                }
-            }
+            dispatch_open_app(app_handle, state, ctx, name, resolved).await;
         }
         // Consequential — never fire blind. Stash the BOUND window (captured at
         // command start, not the live foreground) + its pid and route through
@@ -2224,6 +2398,44 @@ async fn run_intent(
                         &CommandConfirmPayload {
                             id: ctx.id,
                             summary,
+                            editable_text: None,
+                        },
+                    );
+                }
+            }
+        }
+        // OmniVox's own scratchpad window — dispatched here rather than in the
+        // OS-only executor because it needs the Tauri AppHandle.  Open/close
+        // are harmless and run immediately; clear wipes saved content, so it
+        // parks behind the same Enter/Esc confirm pill as CloseWindow.
+        CommandIntent::Scratchpad(action) => {
+            use crate::actions::ScratchpadAction;
+            match action {
+                ScratchpadAction::Open => {
+                    match crate::commands::scratchpad::open_scratchpad_impl(app_handle).await {
+                        Ok(()) => {
+                            emit_command_result(app_handle, "done", "Opened the scratchpad")
+                        }
+                        Err(e) => emit_command_result(app_handle, "error", e),
+                    }
+                }
+                ScratchpadAction::Close => {
+                    if crate::commands::scratchpad::close_scratchpad_impl(app_handle) {
+                        emit_command_result(app_handle, "done", "Closed the scratchpad");
+                    } else {
+                        emit_command_result(app_handle, "error", "The scratchpad isn't open");
+                    }
+                }
+                ScratchpadAction::Clear => {
+                    if let Ok(mut pending) = state.pending_command.lock() {
+                        *pending = Some((ctx, crate::state::PendingCommand::ClearScratchpad));
+                    }
+                    crate::hotkey::set_confirm_pending(Some(ctx.id));
+                    let _ = app_handle.emit(
+                        "command-confirm",
+                        &CommandConfirmPayload {
+                            id: ctx.id,
+                            summary: "Clear everything in the scratchpad?".to_string(),
                             editable_text: None,
                         },
                     );
@@ -2397,11 +2609,15 @@ async fn execute_intent_now(
                 ok: false,
                 launched: None,
             },
-            None => IntentResult {
-                summary: format!("No app found for \u{201c}{name}\u{201d}"),
-                ok: false,
-                launched: None,
-            },
+            None => {
+                // Installed-after-enumeration self-heal (see run_intent).
+                tokio::task::spawn_blocking(crate::actions::app_index::refresh_if_stale);
+                IntentResult {
+                    summary: format!("No app found for \u{201c}{name}\u{201d}"),
+                    ok: false,
+                    launched: None,
+                }
+            }
         };
     }
 
@@ -2491,6 +2707,13 @@ async fn execute_intent_now(
             "Closing a window isn't supported inside a multi-step command".to_string(),
             false,
         ),
+        // Scratchpad control needs the Tauri AppHandle (pipeline-level, like
+        // CloseWindow's confirm) — and clear must never run un-confirmed — so
+        // scratchpad steps aren't supported inside multi-step chains yet.
+        CommandIntent::Scratchpad(_) => (
+            "The scratchpad isn't supported inside a multi-step command".to_string(),
+            false,
+        ),
         // Focus-dependent like a key chord: `run_type_text` restores + verifies
         // the bound target, pastes, RE-verifies, then (for a confirmed send)
         // presses Enter.  A submitting TypeText only ever reaches here after the
@@ -2551,6 +2774,11 @@ fn confirm_chain_summary(
             WebSearch(q) => format!("search for \u{201c}{q}\u{201d}"),
             OpenUrl(u) => format!("open {u}"),
             CloseWindow => "close the window".to_string(),
+            Scratchpad(a) => match a {
+                crate::actions::ScratchpadAction::Open => "open the scratchpad".to_string(),
+                crate::actions::ScratchpadAction::Close => "close the scratchpad".to_string(),
+                crate::actions::ScratchpadAction::Clear => "clear the scratchpad".to_string(),
+            },
             TypeText { text, submit: true } => format!("send \u{201c}{text}\u{201d}"),
             TypeText { text, submit: false } => format!("type \u{201c}{text}\u{201d}"),
         })
@@ -2724,7 +2952,7 @@ struct SettledWindow {
     identity_proven: bool,
 }
 
-/// Poll (up to ~2.4s) for a freshly launched app to take the foreground.
+/// Poll (up to ~4.2s) for a freshly launched app to take the foreground.
 ///
 /// Accepts a candidate only when it is NOT `prev`, NOT one of OmniVox's own
 /// windows, is a real visible titled app window, AND stays foreground across two
@@ -2740,7 +2968,13 @@ async fn settle_after_launch(
 ) -> Option<SettledWindow> {
     use crate::actions::app_index::LaunchIdentity;
     let mut candidate: Option<isize> = None;
-    for _ in 0..16 {
+    // 28 × 150ms ≈ 4.2s. Cold Store/Electron apps (the "tell claude to …" /
+    // "open slack then …" chains) can take longer than the old ~2.4s ceiling to
+    // present a stable window; without the headroom the next focus-dependent
+    // chain step was refused with "couldn't confirm the launched app's window".
+    // Warm apps still return on their first stable pair, so this costs nothing
+    // in the common case.
+    for _ in 0..28 {
         tokio::time::sleep(Duration::from_millis(150)).await;
         match capture_foreground_window() {
             Some(h)
@@ -2886,6 +3120,12 @@ pub async fn confirm_pending_command(
                 Err(e) => emit_command_result(app_handle, "error", e),
             }
         }
+        crate::state::PendingCommand::ClearScratchpad => {
+            match crate::commands::scratchpad::clear_scratchpad_impl(app_handle) {
+                Ok(()) => emit_command_result(app_handle, "done", "Cleared the scratchpad"),
+                Err(e) => emit_command_result(app_handle, "error", e),
+            }
+        }
         crate::state::PendingCommand::Chain { mut intents } => {
             // Apply an edit from the pill's textarea to the single submitting
             // TypeText (the only editable pending shape the pill offers).
@@ -2961,6 +3201,13 @@ fn describe_intent(intent: &crate::actions::CommandIntent) -> String {
         WebSearch(q) => format!("Web search: {q}"),
         OpenUrl(u) => format!("Open URL: {u}"),
         CloseWindow => "Close current window (will ask to confirm)".to_string(),
+        Scratchpad(a) => match a {
+            crate::actions::ScratchpadAction::Open => "Open the scratchpad".to_string(),
+            crate::actions::ScratchpadAction::Close => "Close the scratchpad".to_string(),
+            crate::actions::ScratchpadAction::Clear => {
+                "Clear the scratchpad (will ask to confirm)".to_string()
+            }
+        },
         TypeText { text, submit: false } => format!("Type: \u{201c}{text}\u{201d}"),
         TypeText { text, submit: true } => {
             format!("Send message: \u{201c}{text}\u{201d} (will ask to confirm)")

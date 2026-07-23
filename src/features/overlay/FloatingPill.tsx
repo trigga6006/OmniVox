@@ -6,8 +6,10 @@ import {
   stopRecording,
   resizeOverlay,
   setActiveContextMode,
+  openScratchpad,
   type AppSettings,
 } from "@/lib/tauri";
+import { ScratchpadBud } from "./ScratchpadBud";
 import { cn } from "@/lib/utils";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
 import { useSettingsSync } from "@/hooks/useSettingsSync";
@@ -48,7 +50,9 @@ export function FloatingPill() {
   useRecordingState();
 
   const status = useRecordingStore((s) => s.status);
-  const duration = useRecordingStore((s) => s.duration);
+  // NOTE: `duration` is intentionally NOT subscribed here — it ticks every
+  // 100ms and would re-render the whole pill + subtree 10×/s during recording.
+  // PillContent's <RecordingTimer/> subscribes to it in isolation instead.
   const commandState = useCommandStore((s) => s.state);
 
   const [pillState, setPillState] = useState<PillState>("idle");
@@ -70,6 +74,9 @@ export function FloatingPill() {
 
   // Mode selector state
   const [showModeSelector, setShowModeSelector] = useState(false);
+  // Idle-pill hover affordance (the idle glow is an inline style, so a CSS
+  // :hover can't reach it — track hover in React and brighten the glow).
+  const [pillHovered, setPillHovered] = useState(false);
 
   const { settingsRef, replaceSettings, patchSettings } = useSettingsPatch();
 
@@ -116,6 +123,11 @@ export function FloatingPill() {
   });
 
   const commandEditableConfirm = useCommandStore((s) => s.editableText !== null);
+  // The scratchpad bud shows only when the idle pill is hovered (cursor near it)
+  // and nothing else is going on. Pure CSS reveal — the idle window is a fixed
+  // size, so this never resizes the overlay (which would flicker the pill).
+  const budRevealed =
+    pillState === "idle" && !showModeSelector && !ghostMode && pillHovered;
   const showContent = useOverlaySizing({
     pillState,
     hasStructuredPayload: Boolean(structuredPayload),
@@ -406,7 +418,14 @@ export function FloatingPill() {
   }
 
   return (
-    <div className="w-screen h-screen flex flex-col justify-end items-center">
+    <div
+      className="w-screen h-screen flex flex-col justify-end items-center"
+      // Hover anywhere in the (small) idle window = cursor near the pill → reveal
+      // the scratchpad bud. Kept on the window, not the 42px pill, so a "small
+      // reasonable distance" triggers it.
+      onMouseEnter={() => setPillHovered(true)}
+      onMouseLeave={() => setPillHovered(false)}
+    >
       {/* Structured Mode panel — sits flush on top of the pill, forming a
           single unified surface.  Zero bottom margin is deliberate (the
           "reverse Dynamic Island" expansion effect): the panel's flat
@@ -438,7 +457,10 @@ export function FloatingPill() {
               "linear-gradient(180deg, rgba(26,26,30,0.96) 0%, rgba(16,15,18,0.96) 100%)",
             border: "1px solid rgba(245,158,11,0.30)",
             boxShadow: "0 10px 28px -14px rgba(0,0,0,0.8)",
-            animation: "sp-in 220ms cubic-bezier(0.16,1,0.3,1) both",
+            // Dedicated banner keyframe — `sp-in` is the StructuredPanel's
+            // clip-path grow tuned for a 420×480 surface; on a short wide banner
+            // it unfurled oddly from a center slit. This is a clean fade+rise.
+            animation: "fp-banner-in 220ms cubic-bezier(0.16,1,0.3,1) both",
           }}
         >
           <span
@@ -511,6 +533,12 @@ export function FloatingPill() {
         </div>
       )}
 
+    <div
+      className={cn(
+        "relative flex items-center shrink-0",
+        !showModeSelector && isIdle && "mb-[2px]"
+      )}
+    >
     <button
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -529,11 +557,19 @@ export function FloatingPill() {
         // findable on a black UI behind it. It bleeds into the transparent
         // margin the idle window reserves around the pill (IDLE_GLOW_PAD); kept
         // off in every active state (the content itself marks the spot there).
+        // Brightens on hover so the idle pill has a click affordance like every
+        // other interactive overlay control.
         boxShadow:
           isIdle && !showModeSelector
-            ? "0 0 3px rgba(251,191,36,0.34), 0 0 9px 1px rgba(251,191,36,0.20)"
+            ? pillHovered
+              ? "0 0 4px rgba(251,191,36,0.5), 0 0 12px 1px rgba(251,191,36,0.30)"
+              : "0 0 3px rgba(251,191,36,0.34), 0 0 9px 1px rgba(251,191,36,0.20)"
             : undefined,
-        transition: "opacity 0.25s ease, box-shadow 0.3s ease",
+        // Full property list — an inline `transition` shorthand overrides the
+        // Tailwind transition-* utility entirely, so width/height/border/
+        // background must be listed HERE or they snap instead of tweening.
+        transition:
+          "width 280ms cubic-bezier(0.32,0.72,0,1), height 280ms cubic-bezier(0.32,0.72,0,1), border-color 200ms ease, background-color 200ms ease, box-shadow 300ms ease, opacity 250ms ease",
       }}
       className={cn(
         // The pill — sized to match resizeOverlay dimensions.  Every
@@ -544,9 +580,7 @@ export function FloatingPill() {
         // producing a visible one-frame jolt.  Colour + background
         // transitions below pick up those same class changes and
         // smooth them over 200 ms.
-        !showModeSelector && isIdle && "mb-[2px]",
         "relative flex items-center overflow-hidden shrink-0 border border-transparent rounded-full",
-        "transition-[border-color,background-color,box-shadow,width,height] duration-[280ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
         isProcessing ? "cursor-default" : "cursor-pointer",
 
         // Idle — a small black slit with a faint hairline so it stays findable.
@@ -580,13 +614,21 @@ export function FloatingPill() {
           llmLoading={llmStatus === "loading"}
           isSuccess={isSuccess}
           isError={isError}
-          duration={duration}
           previewText={previewText}
           flashText={flashText}
           modeColor={modeColor}
         />
       )}
     </button>
+      {budRevealed && (
+        <ScratchpadBud
+          onOpen={() => {
+            openScratchpad().catch((e) => console.error("open scratchpad failed:", e));
+            setPillHovered(false);
+          }}
+        />
+      )}
+    </div>
     </div>
   );
 }

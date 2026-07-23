@@ -6,6 +6,7 @@ pub mod history;
 pub mod llm;
 pub mod models;
 pub mod notes;
+pub mod scratchpad;
 pub mod settings;
 pub mod voice_commands;
 
@@ -17,5 +18,6 @@ pub use history::*;
 pub use llm::*;
 pub use models::*;
 pub use notes::*;
+pub use scratchpad::*;
 pub use settings::*;
 pub use voice_commands::*;

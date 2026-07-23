@@ -132,6 +132,30 @@ impl Database {
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS scratchpad_note (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    content TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scratchpad_pads (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scratchpad_entries (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    pad_id TEXT NOT NULL REFERENCES scratchpad_pads(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scratchpad_entries_pad
+                    ON scratchpad_entries(pad_id, created_at DESC);
+
                 PRAGMA user_version = 3;
             ",
             )?;
@@ -172,6 +196,9 @@ impl Database {
         // the lock.
         crate::storage::voice_commands::seed_defaults(self)?;
         crate::storage::voice_commands::seed_missing_builtins(self)?;
+
+        // Seed the always-present default scratchpad pad (idempotent).
+        crate::storage::scratchpad::ensure_default_pad(self)?;
 
         Ok(())
     }

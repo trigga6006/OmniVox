@@ -65,7 +65,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// margin.  Single source of truth on the Rust side (window creation +
 /// `recover_overlay`); MUST match `IDLE_WIN_W`/`IDLE_WIN_H` in
 /// `src/features/overlay/useOverlaySizing.ts`.
-pub const OVERLAY_IDLE_WIN_W: f64 = 62.0;
+pub const OVERLAY_IDLE_WIN_W: f64 = 112.0;
 pub const OVERLAY_IDLE_WIN_H: f64 = 26.0;
 
 /// Create the floating overlay pill window — transparent, borderless,
@@ -738,6 +738,19 @@ pub fn run() {
             commands::update_note,
             commands::delete_note,
             commands::list_notes,
+            // Scratchpad commands (11)
+            commands::open_scratchpad,
+            commands::close_scratchpad,
+            commands::scratchpad_get,
+            commands::scratchpad_set_note,
+            commands::scratchpad_add_entry,
+            commands::scratchpad_delete_entry,
+            commands::scratchpad_clear_pad,
+            commands::scratchpad_set_variant,
+            commands::save_scratchpad_position,
+            commands::save_scratchpad_size,
+            commands::set_scratchpad_capture,
+            commands::scratchpad_get_capture,
             // Mode-scoped dictionary/snippet commands (6)
             commands::list_mode_dictionary_entries,
             commands::add_mode_dictionary_entry,

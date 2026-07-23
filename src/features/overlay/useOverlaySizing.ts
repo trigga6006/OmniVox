@@ -15,14 +15,14 @@ export const ACTIVE_PILL_W = 148; // pill CSS width — 8px slack inside ACTIVE_
 export const MENU_PILL_W = 196; // thin base slit under the mode-selector menu
 export const IDLE_W = 42;
 export const IDLE_H = 14;
-// The idle pill is a tiny dark slit; on a black UI behind it you can't tell
-// where it is. We reserve a small transparent margin around it (kept small so
-// the window doesn't eat clicks meant for apps behind it) for a faint amber
-// locator glow to bleed into. Asymmetric on purpose: full pad on the sides +
-// top, but the pill sits nearly flush at the bottom (just a 2px sliver) so it
-// stays low above the taskbar — centering it floated the slit visibly too high.
 export const IDLE_GLOW_PAD = 10;
-export const IDLE_WIN_W = IDLE_W + IDLE_GLOW_PAD * 2; // 62 (10px each side)
+// The idle window is a FIXED size — intentionally wider than the 42px pill.
+// The extra transparent margin (a) lets the amber locator glow bleed out and
+// (b) reserves room to the RIGHT for the scratchpad bud that reveals on hover.
+// It is deliberately NOT resized on hover: resizing the overlay re-centers the
+// always-visible idle pill, which caused a one-frame flicker. The pill stays a
+// 42px slit centered in this window, so its on-screen position is unchanged.
+export const IDLE_WIN_W = 112;
 export const IDLE_WIN_H = IDLE_H + IDLE_GLOW_PAD + 2; // 26 (10px top, 2px bottom)
 
 interface OverlaySizingOptions {
@@ -70,8 +70,13 @@ export function useOverlaySizing({
       // Room for "Open X?" plus the Yes/No buttons.
       targetW = 300;
       targetH = 46;
+    } else if (commandState === "done" || commandState === "error") {
+      // Result summary — often a multi-step chain ("Opened Spotify · Next
+      // track") or a full error sentence; wider so it isn't clipped mid-word.
+      targetW = 320;
+      targetH = ACTIVE_H;
     } else if (commandState !== "idle") {
-      // Listening / recognizing / done / error — a slightly wider pill.
+      // Listening / recognizing — a slightly wider pill.
       targetW = 260;
       targetH = ACTIVE_H;
     } else if (hasStructuredPayload) {
@@ -92,7 +97,8 @@ export function useOverlaySizing({
       targetW = ACTIVE_W;
       targetH = ACTIVE_H;
     } else {
-      // Idle window includes the glow margin around the pill.
+      // Idle window — a FIXED size (see IDLE_WIN_W). The scratchpad bud reveals
+      // via CSS on hover with NO resize, so the idle pill never flickers.
       targetW = IDLE_WIN_W;
       targetH = IDLE_WIN_H;
     }

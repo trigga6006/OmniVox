@@ -84,6 +84,8 @@ pub enum PendingCommand {
     Chain {
         intents: Vec<crate::actions::CommandIntent>,
     },
+    /// Wipe the scratchpad's saved cards + note on confirm (destructive).
+    ClearScratchpad,
 }
 
 /// What the most recent executed command can undo (Phase A minimum-viable
@@ -220,6 +222,15 @@ pub struct AppState {
     pub command_cancel_floor: Arc<AtomicU64>,
     /// The most recent undoable command action ("undo that").
     pub last_action: Mutex<Option<LastAction>>,
+
+    /// When true AND the scratchpad window is visible, the global dictation
+    /// hotkey routes into the scratchpad regardless of which app is focused — so
+    /// you can read in one window and dictate answers into the pad. Default OFF
+    /// so dictation lands where you're focused; the pad's Crosshair toggle opts
+    /// in. Gated on window visibility, so it can never hijack normal dictation
+    /// while the pad is closed. Dictating with the pad *itself* focused still
+    /// routes to the pad (foreground match), independent of this flag.
+    pub scratchpad_capture: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -288,6 +299,7 @@ impl AppState {
             command_id_gen: AtomicU64::new(0),
             command_cancel_floor: Arc::new(AtomicU64::new(0)),
             last_action: Mutex::new(None),
+            scratchpad_capture: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

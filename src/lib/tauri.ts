@@ -605,6 +605,49 @@ export const onWhisperGpuFallback = (
 ): Promise<UnlistenFn> =>
   listen<string>("whisper-gpu-fallback", (e) => callback(e.payload));
 
+// ── Scratchpad ──────────────────────────────────────────────────────────────
+export interface ScratchpadEntry {
+  id: string;
+  pad_id: string;
+  content: string;
+  created_at: string;
+}
+export interface ScratchpadPad {
+  id: string;
+  name: string;
+  position: number;
+  /** Newest-first. */
+  entries: ScratchpadEntry[];
+}
+export type ScratchpadVariant = "note" | "entries" | "pads";
+export interface ScratchpadData {
+  note: string;
+  pads: ScratchpadPad[];
+  active_pad_id: string;
+  variant: ScratchpadVariant;
+}
+
+export const openScratchpad = () => invoke<void>("open_scratchpad");
+export const closeScratchpad = () => invoke<void>("close_scratchpad");
+export const scratchpadGet = () => invoke<ScratchpadData>("scratchpad_get");
+export const scratchpadSetNote = (content: string) =>
+  invoke<void>("scratchpad_set_note", { content });
+export const scratchpadAddEntry = (padId: string | null, content: string) =>
+  invoke<ScratchpadEntry>("scratchpad_add_entry", { padId, content });
+export const scratchpadDeleteEntry = (id: string) =>
+  invoke<void>("scratchpad_delete_entry", { id });
+export const scratchpadClearPad = (padId: string | null) =>
+  invoke<void>("scratchpad_clear_pad", { padId });
+export const scratchpadSetVariant = (variant: ScratchpadVariant) =>
+  invoke<void>("scratchpad_set_variant", { variant });
+export const saveScratchpadPosition = (x: number, y: number) =>
+  invoke<void>("save_scratchpad_position", { x, y });
+export const saveScratchpadSize = (w: number, h: number) =>
+  invoke<void>("save_scratchpad_size", { w, h });
+export const setScratchpadCapture = (on: boolean) =>
+  invoke<void>("set_scratchpad_capture", { on });
+export const scratchpadGetCapture = () => invoke<boolean>("scratchpad_get_capture");
+
 // Event listeners
 export const onRecordingStateChange = (
   callback: (status: string) => void
@@ -624,16 +667,28 @@ export const onTranscriptionResult = (
 ): Promise<UnlistenFn> =>
   listen<string>("transcription-result", (e) => callback(e.payload));
 
+export interface DictationInsertPayload {
+  text: string;
+  /** OmniVox window label the dictation was aimed at, decided by the backend
+   *  from the HWND snapshotted at record start: "main" | "scratchpad". */
+  target: string;
+}
+
 /**
  * Fired when a dictation was aimed at one of OmniVox's own windows.  A
  * synthetic Ctrl+V doesn't reliably land in our WebView2 inputs, so the
- * backend hands the text here and the focused window inserts it at the caret
- * of whatever field the user is in.
+ * backend hands the text here, tagged with the TARGET window label so each
+ * window can deliver (caret-insert / append) or stand down deterministically.
  */
 export const onDictationInsert = (
-  callback: (text: string) => void
+  callback: (payload: DictationInsertPayload) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("dictation-insert", (e) => callback(e.payload));
+  listen<DictationInsertPayload>("dictation-insert", (e) => callback(e.payload));
+
+/** Fired when a voice command changed the scratchpad's stored content (e.g.
+ *  "clear the scratchpad") so an open pad reloads from the DB. */
+export const onScratchpadRefresh = (callback: () => void): Promise<UnlistenFn> =>
+  listen<void>("scratchpad-refresh", () => callback());
 
 export const onModelLoaded = (
   callback: (modelId: string) => void
