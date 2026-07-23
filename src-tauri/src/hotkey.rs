@@ -269,6 +269,34 @@ mod state_machine {
         }
     }
 
+    /// Bitmask of combo keys a HOLD-mode recording believes are still held.
+    /// Layout: bit0/bit1 = dictation key1/key2, bit2/bit3 = command key1/key2;
+    /// the matching VK codes are written into `out`.  Returns 0 when no
+    /// hold-mode recording is active — idle, toggle-locked (double-tap), and
+    /// mic-button sessions are never policed by the release watchdog.
+    pub fn hold_believed_down(out: &mut [u16; 4]) -> u8 {
+        let mut mask = 0u8;
+        for (hk_idx, hk) in [&DICTATION, &COMMAND].into_iter().enumerate() {
+            if !hk.recording.load(Ordering::Acquire) || hk.toggle_locked.load(Ordering::Acquire) {
+                continue;
+            }
+            let packed = hk.packed.load(Ordering::Acquire);
+            if packed == 0 {
+                continue;
+            }
+            let keys = [(packed & 0xFFFF) as u16, ((packed >> 16) & 0xFFFF) as u16];
+            let down = hk.keys_down.load(Ordering::Acquire);
+            for (k_idx, &vk) in keys.iter().enumerate() {
+                if vk != 0 && down & (1u8 << k_idx) != 0 {
+                    let bit = hk_idx * 2 + k_idx;
+                    out[bit] = vk;
+                    mask |= 1 << bit;
+                }
+            }
+        }
+        mask
+    }
+
     /// Process a key event against both hotkeys. Returns true if the event
     /// should be swallowed.
     pub fn process_key_event(vk: u16, is_down: bool, is_up: bool) -> bool {
@@ -457,9 +485,19 @@ mod state_machine {
         }
 
         // ── Key released while hold-recording (non-locked) ──
+        // Claim the recording→stopped transition with a CAS: the same release
+        // edge can reach this branch from more than one thread (OS hook, DOM
+        // bridge command, and the release watchdog all feed process_key_event),
+        // and a plain load-then-store would let two of them observe `true` and
+        // both spawn a stop pipeline.  Exactly one caller may fire the stop.
         if recording && !locked && is_up && (matches_key1 || matches_key2) {
-            hk.recording.store(false, Ordering::Relaxed);
-            fire_stop(action);
+            if hk
+                .recording
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                fire_stop(action);
+            }
         }
 
         // ── Swallow the release of any combo key whose activating press we
@@ -509,6 +547,128 @@ mod win {
         unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
     }
 
+    /// True when the current foreground window belongs to this process (one of
+    /// OmniVox's own windows — main, scratchpad, overlay — is in front).
+    fn foreground_is_self() -> bool {
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, GA_ROOT,
+        };
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.is_null() {
+                return false;
+            }
+            let root = GetAncestor(fg, GA_ROOT);
+            let hwnd = if root.is_null() { fg } else { root };
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            pid == GetCurrentProcessId()
+        }
+    }
+
+    /// Hold-release watchdog.  When one of OmniVox's own WebView windows is
+    /// focused (e.g. dictating into the scratchpad), hotkey key-UP events can
+    /// be lost: the WebView consumes input the OS hook path doesn't drive, and
+    /// the DOM key bridge never receives a keyup for a key whose keydown was
+    /// swallowed — or misses it entirely when the window loses focus mid-hold.
+    /// A lost release leaves a hold-mode recording running forever, which reads
+    /// as an unwanted "long-running dictation".
+    ///
+    /// This thread polls PHYSICAL key state while (and only while) a hold-mode
+    /// recording is live and an OmniVox window is foreground.  If a combo key
+    /// the state machine believes is held reads physically up on two
+    /// consecutive polls, the missed key-up is synthesized through the same
+    /// `process_key_event` path — firing the normal release-stop.
+    ///
+    /// Deliberately inert for every long-running mode: toggle-locked
+    /// (double-tap) and mic-button sessions are excluded by
+    /// `hold_believed_down`, and the foreground gate keeps it from ever
+    /// second-guessing dictation into other apps (where the OS hook is
+    /// reliable, and where UIPI can blank `GetAsyncKeyState` for elevated
+    /// targets).
+    fn start_release_watchdog() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+        thread::Builder::new()
+            .name("omnivox-hotkey-watchdog".into())
+            .spawn(|| {
+                let key_up = |vk: u16| unsafe { (GetAsyncKeyState(vk as i32) as u16) & 0x8000 == 0 };
+                // Phantom bits seen last poll — a key must read stuck on two
+                // consecutive polls before its release is synthesized.
+                let mut prev_phantom = 0u8;
+                // Keys observed physically DOWN at least once during the
+                // current hold (cleared when the hold ends).  Only these may
+                // ever count as phantom: a key-down the hook swallowed never
+                // enters the async key-state table and reads "up" for its
+                // whole legitimate hold — without this gate a single-key
+                // combo (no passed-through sibling to veto the group) could
+                // be false-stopped moments after it started.
+                let mut seen_down = 0u8;
+                loop {
+                    let mut vks = [0u16; 4];
+                    if state_machine::hold_believed_down(&mut vks) == 0 {
+                        prev_phantom = 0;
+                        seen_down = 0;
+                        thread::sleep(std::time::Duration::from_millis(150));
+                        continue;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(30));
+                    if !foreground_is_self() {
+                        prev_phantom = 0;
+                        continue;
+                    }
+                    // Re-read after the sleep so we compare fresh belief
+                    // against fresh physical state.
+                    let mut vks = [0u16; 4];
+                    let believed = state_machine::hold_believed_down(&mut vks);
+                    // A hotkey's hold counts as phantom only when ALL keys it
+                    // believes are held read physically up, AND every one of
+                    // them was seen physically down earlier in this hold.
+                    // Per-key checks would false-positive: a key-down the hook
+                    // SWALLOWED never reaches the async key-state table, so
+                    // that key reads "up" for the entire (legitimate) hold —
+                    // the seen-down gate means such a key can simply never
+                    // trip the watchdog, in which case the hook that swallowed
+                    // it also reliably delivers its release.
+                    let mut physically_down = 0u8;
+                    for bit in 0..4u8 {
+                        if believed & (1 << bit) != 0 && !key_up(vks[bit as usize]) {
+                            physically_down |= 1 << bit;
+                        }
+                    }
+                    // Eligibility never outlives belief — a slot the machine no
+                    // longer holds must re-earn seen-down in its next hold.
+                    seen_down = (seen_down & believed) | physically_down;
+                    let mut phantom = 0u8;
+                    for group in [0b0011u8, 0b1100u8] {
+                        let bits = believed & group;
+                        if bits != 0
+                            && bits & physically_down == 0
+                            && bits & seen_down == bits
+                        {
+                            phantom |= bits;
+                        }
+                    }
+                    let confirmed = phantom & prev_phantom;
+                    prev_phantom = phantom;
+                    for bit in 0..4u8 {
+                        if confirmed & (1 << bit) != 0 {
+                            crate::llm::diaglog::log(&format!(
+                                "hotkey: watchdog synthesizing missed key-up vk={:#06x}",
+                                vks[bit as usize]
+                            ));
+                            state_machine::process_key_event(vks[bit as usize], false, true);
+                        }
+                    }
+                    if confirmed != 0 {
+                        prev_phantom = 0;
+                    }
+                }
+            })
+            .expect("Failed to spawn hotkey watchdog thread");
+    }
+
     /// Spawn the hook thread with a Windows message pump.
     pub fn start(app_handle: tauri::AppHandle) {
         let _ = state_machine::APP_HANDLE.set(app_handle);
@@ -537,6 +697,8 @@ mod win {
                 }
             })
             .expect("Failed to spawn hotkey thread");
+
+        start_release_watchdog();
     }
 }
 
