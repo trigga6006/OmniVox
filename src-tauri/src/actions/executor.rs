@@ -43,13 +43,23 @@ pub fn run_chord(c: KeyChord) -> Result<(), String> {
         KeyChord::Paste => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('v')),
         KeyChord::Cut => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('x')),
         KeyChord::Undo => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('z')),
-        KeyChord::Redo => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('y')),
+        // Ctrl/Cmd+Shift+Z — matches the inline-dictation redo and has the
+        // widest modern-editor coverage (Ctrl+Y no-ops in Chrome/ProseMirror inputs).
+        KeyChord::Redo => chord(&mut enigo, &[PRIMARY_MOD, Key::Shift], Key::Unicode('z')),
         KeyChord::SelectAll => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('a')),
         KeyChord::Save => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('s')),
         KeyChord::NewTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('t')),
         KeyChord::CloseTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('w')),
         KeyChord::Screenshot => screenshot(&mut enigo),
         KeyChord::ShowDesktop => show_desktop(&mut enigo),
+        KeyChord::Refresh => chord(&mut enigo, &[], Key::F5),
+        KeyChord::Find => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('f')),
+        KeyChord::NewWindow => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('n')),
+        KeyChord::ReopenTab => chord(&mut enigo, &[PRIMARY_MOD, Key::Shift], Key::Unicode('t')),
+        KeyChord::NextTab => chord(&mut enigo, &[PRIMARY_MOD], Key::Tab),
+        KeyChord::PrevTab => chord(&mut enigo, &[PRIMARY_MOD, Key::Shift], Key::Tab),
+        KeyChord::PageDown => chord(&mut enigo, &[], Key::PageDown),
+        KeyChord::PageUp => chord(&mut enigo, &[], Key::PageUp),
     }
 }
 
@@ -83,18 +93,68 @@ pub fn run_media(a: MediaAction) -> Result<(), String> {
         keybd_event, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
     };
 
+    // Mute/Unmute are set deterministically via WASAPI (below) rather than the
+    // VK_VOLUME_MUTE toggle, so a directional request ("unmute", "sound on")
+    // can't invert the state and silence audio that's already on.
+    match a {
+        MediaAction::Mute => return set_system_mute(true),
+        MediaAction::Unmute => return set_system_mute(false),
+        _ => {}
+    }
+
     // VK_MEDIA_* / VK_VOLUME_* codes.
     let vk: u8 = match a {
         MediaAction::PlayPause => 0xB3,
         MediaAction::NextTrack => 0xB0,
         MediaAction::PrevTrack => 0xB1,
-        MediaAction::Mute => 0xAD,
         MediaAction::VolumeUp => 0xAF,
         MediaAction::VolumeDown => 0xAE,
+        MediaAction::Mute | MediaAction::Unmute => unreachable!("handled above"),
+    };
+    // Windows moves master volume only ~2% per VK_VOLUME_UP/DOWN press, so a
+    // single press reads as "nothing happened". Repeat for an audible step
+    // (~8%). Transport keys stay single-press.
+    let repeats = if matches!(a, MediaAction::VolumeUp | MediaAction::VolumeDown) {
+        4
+    } else {
+        1
     };
     unsafe {
-        keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0);
-        keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+        for _ in 0..repeats {
+            keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0);
+            keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+        }
+    }
+    Ok(())
+}
+
+/// Set the default render endpoint's mute state deterministically via WASAPI.
+/// Unlike VK_VOLUME_MUTE (a blind toggle), this honors the requested direction —
+/// `set_system_mute(false)` can never silence audio that's already on. Mirrors
+/// the COM setup in `audio::ducking`.
+#[cfg(windows)]
+fn set_system_mute(muted: bool) -> Result<(), String> {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| format!("audio endpoint enumerate failed: {e}"))?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eMultimedia)
+            .map_err(|e| format!("no default audio endpoint: {e}"))?;
+        let vol = device
+            .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
+            .map_err(|e| format!("activate endpoint volume failed: {e}"))?;
+        vol.SetMute(muted, std::ptr::null())
+            .map_err(|e| format!("set mute failed: {e}"))?;
     }
     Ok(())
 }
@@ -148,6 +208,21 @@ pub fn run_close_window(_hwnd: Option<isize>) -> Result<(), String> {
     Err("Closing windows is only supported on Windows".into())
 }
 
+/// Restore a previously minimized window ("undo that" after a minimize).
+#[cfg(windows)]
+pub fn run_restore_window(hwnd: isize) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_RESTORE};
+    unsafe {
+        ShowWindow(hwnd as *mut core::ffi::c_void, SW_RESTORE);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn run_restore_window(_hwnd: isize) -> Result<(), String> {
+    Err("Window control is only supported on Windows".into())
+}
+
 /// Best-effort window title for confirm UX ("Close \"Untitled - Notepad\"?").
 /// Empty string if it can't be read.
 #[cfg(windows)]
@@ -173,20 +248,54 @@ pub fn window_title(_hwnd: isize) -> String {
     String::new()
 }
 
-/// Type text into the focused app via the dictation path's clipboard-verified
-/// paste (prior clipboard restored). Focus restoration is the caller's job —
-/// same contract as `run_chord`. With `submit` the text is also sent with
-/// Enter; the pipeline confirms with the user before any submitting intent
-/// runs, so this never fires a message blind.
-pub fn run_type_text(text: &str, submit: bool) -> Result<(), String> {
+/// Type text into `target` via the dictation path's clipboard-verified paste
+/// (prior clipboard restored).  Restores focus to the bound target and VERIFIES
+/// its identity (IsWindow + foreground + PID) before touching the clipboard, and
+/// RE-VERIFIES between the paste and the submitting Enter — a submit is the whole
+/// risk, so the window must still be the one we confirmed at both gates.
+///
+/// `should_cancel` is polled before the paste and again between the paste and the
+/// submitting Enter: a "stop"/"cancel" spoken while we restore focus or hold the
+/// post-paste guard must abort before the (consequential) Enter fires — the
+/// caller's pre-check alone can't see a stop that lands during this blocking
+/// work (B2-13).
+pub fn run_type_text(
+    text: &str,
+    submit: bool,
+    target: crate::focus::WindowTarget,
+    should_cancel: impl Fn() -> bool,
+) -> Result<(), String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("No text to type".into());
+    }
+    if should_cancel() {
+        return Err("stopped".into());
+    }
+    // Bind + verify the target before pasting: refuse to type into a window that
+    // isn't the one this command was aimed at.
+    crate::focus::restore_foreground_window(target.hwnd, target.pid);
+    if !crate::focus::verify_foreground_target(target.hwnd, target.pid) {
+        return Err("Target window is not in focus — refusing to type".into());
+    }
+    // Re-check cancellation immediately before the paste (focus restore slept).
+    if should_cancel() {
+        return Err("stopped".into());
     }
     crate::output::router::OutputRouter::new()
         .paste_text(text, true)
         .map_err(|e| e.to_string())?;
     if submit {
+        // A stop spoken during the paste + post-paste guard must abort the
+        // submit (B2-13) before we re-verify identity and press Enter.
+        if should_cancel() {
+            return Err("stopped".into());
+        }
+        // Re-check identity between the paste and the Enter: a focus change in
+        // that window must not turn the paste into a submit somewhere else.
+        if !crate::focus::verify_foreground_target(target.hwnd, target.pid) {
+            return Err("Target window changed before send — not pressing Enter".into());
+        }
         // paste_text already held the post-paste guard, so the text has landed
         // by the time Enter fires.
         let mut enigo = Enigo::new(&Settings::default())
@@ -217,23 +326,49 @@ pub fn run_web_search(_query: &str) -> Result<(), String> {
     Err("Web search is only supported on Windows".into())
 }
 
-/// Open a URL / website in the user's DEFAULT browser.
-#[cfg(windows)]
-pub fn run_open_url(target: &str) -> Result<(), String> {
+/// Normalize + validate a spoken/LLM URL before opening it.  Prefixes `https://`
+/// when no scheme is present, then parses with the `url` crate and REFUSES
+/// anything that isn't a plain http/https URL with a host and no embedded
+/// credentials.  Userinfo (`https://trusted.com@evil.example`) is the key attack:
+/// it navigates to `evil.example` while reading as `trusted.com`, defeating URL
+/// grounding.  Pure + platform-independent so it can be unit tested.
+pub(crate) fn validate_open_url(target: &str) -> Result<String, String> {
     let t = target.trim();
     if t.is_empty() {
         return Err("No URL to open".into());
     }
-    let url = if t.starts_with("http://") || t.starts_with("https://") {
+    let normalized = if t.starts_with("http://") || t.starts_with("https://") {
         t.to_string()
     } else {
         format!("https://{t}")
     };
+    let parsed =
+        url::Url::parse(&normalized).map_err(|_| "Not a valid URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Refusing to open a non-web URL".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Refusing to open a URL with embedded credentials".into());
+    }
+    match parsed.host_str() {
+        Some(host) if !host.is_empty() => {}
+        _ => return Err("URL has no host".into()),
+    }
+    Ok(normalized)
+}
+
+/// Open a URL / website in the user's DEFAULT browser.
+#[cfg(windows)]
+pub fn run_open_url(target: &str) -> Result<(), String> {
+    let url = validate_open_url(target)?;
     open_in_default_browser(&url)
 }
 
 #[cfg(not(windows))]
-pub fn run_open_url(_target: &str) -> Result<(), String> {
+pub fn run_open_url(target: &str) -> Result<(), String> {
+    // Validate on every platform (keeps the checks/tests honest) but only
+    // Windows can actually launch the browser.
+    let _ = validate_open_url(target)?;
     Err("Opening URLs is only supported on Windows".into())
 }
 
@@ -264,4 +399,33 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_open_url;
+
+    #[test]
+    fn accepts_plain_domain_and_prefixes_https() {
+        assert_eq!(validate_open_url("github.com").unwrap(), "https://github.com");
+        assert_eq!(
+            validate_open_url("https://youtube.com").unwrap(),
+            "https://youtube.com"
+        );
+    }
+
+    #[test]
+    fn rejects_embedded_credentials() {
+        // The M1 attack: reads as github.com, navigates to evil.example.
+        assert!(validate_open_url("github.com@evil.example").is_err());
+        assert!(validate_open_url("https://github.com@evil.example").is_err());
+        assert!(validate_open_url("http://user:pass@evil.example").is_err());
+    }
+
+    #[test]
+    fn rejects_non_web_and_malformed() {
+        assert!(validate_open_url("javascript:alert(1)").is_err());
+        assert!(validate_open_url("").is_err());
+        assert!(validate_open_url("   ").is_err());
+    }
 }

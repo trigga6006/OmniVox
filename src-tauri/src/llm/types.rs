@@ -30,11 +30,15 @@ impl Default for LlmConfig {
             model_path: String::new(),
             n_threads,
             use_gpu: false,
-            // Must fit: system prompt (~1,900 tokens) + the 1,600-char input
-            // cap (~450 tokens) + max_tokens of output.  The old 2048 looked
-            // generous but actually overflowed mid-generation on long
-            // dictations — the system prompt alone nearly filled it.
-            n_ctx: 3072,
+            // Must fit: system prompt (~1,900 tokens) + the input cap in
+            // pipeline.rs (STRUCTURED_INPUT_CHAR_CAP, 4,000 chars ≈ 1,100
+            // tokens) + max_tokens of output, with headroom.  The old 2048
+            // looked generous but actually overflowed mid-generation on long
+            // dictations — the system prompt alone nearly filled it.  KV
+            // cache scales linearly with this; 4096 costs ~1/3 more memory
+            // than the previous 3072 while more than doubling the usable
+            // dictation length.
+            n_ctx: 4096,
             // Enough headroom for a fully-populated JSON (goal + 3 array
             // slots with a few items each).  192 was too tight and would
             // cause the model to truncate mid-JSON on rich dictations.

@@ -1,11 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap, Power } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  getSettings,
   getAudioDevices,
   setAudioDevice,
-  onSettingsChanged,
   getPlatformInfo,
   openMicSettings,
   openAccessibilitySettings,
@@ -15,9 +13,11 @@ import {
   type PlatformInfo,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Button, Card, Toggle, Segmented, Badge, Modal } from "@/components/ui";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { Button, Card, Toggle, Segmented, Badge, PageHeader } from "@/components/ui";
+import { useAppStore } from "@/stores/appStore";
+import { useThemeStore } from "@/stores/themeStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
+import { useSettingsSync } from "@/hooks/useSettingsSync";
 import { HotkeySection } from "./HotkeySection";
 import { GpuAccelerationSection } from "./GpuAccelerationSection";
 
@@ -69,7 +69,7 @@ function GroupCard({
       style={{ opacity: 0, animationDelay: `${delay}s`, animationFillMode: "forwards" }}
     >
       <div className="mb-2.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+        <span className="eyebrow">
           {title}
         </span>
       </div>
@@ -119,8 +119,28 @@ export function SettingsPage() {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
-  const [showVoiceCommands, setShowVoiceCommands] = useState(false);
+  const deviceMenuRef = useRef<HTMLDivElement>(null);
+  // Close the custom input-device dropdown on click-outside / Escape, matching
+  // the kit Modal's dismissal affordances (the bare <div> menu had neither).
+  useEffect(() => {
+    if (!deviceMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDeviceMenuOpen(false);
+    };
+    const onDown = (e: PointerEvent) => {
+      if (deviceMenuRef.current && !deviceMenuRef.current.contains(e.target as Node)) {
+        setDeviceMenuOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [deviceMenuOpen]);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const setPage = useAppStore((s) => s.setPage);
   const { replaceSettings, patchSettings } = useSettingsPatch(setSettings);
   // Version is sourced from tauri.conf.json via the Tauri app API
   // rather than hardcoded — so the About section stays correct across
@@ -129,17 +149,21 @@ export function SettingsPage() {
   // just "OmniVox" in the meantime.
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
-  useEffect(() => {
-    getSettings()
-      .then((s) => {
-        replaceSettings(s);
-        const mode = outputModes.find((m) => m.id === s.output_mode);
-        setActiveMode(mode ? mode.id : "clipboard");
-        const style = writingStyles.find((st) => st.id === s.writing_style);
-        setActiveStyle(style ? style.id : "formal");
-      })
-      .catch((e) => console.error("Failed to load settings:", e));
+  // Load settings and stay in sync with changes from the overlay pill (or
+  // any window) — one apply callback wired through useSettingsSync.
+  const applySettings = useCallback(
+    (s: AppSettings) => {
+      replaceSettings(s);
+      const mode = outputModes.find((m) => m.id === s.output_mode);
+      setActiveMode(mode ? mode.id : "clipboard");
+      const style = writingStyles.find((st) => st.id === s.writing_style);
+      setActiveStyle(style ? style.id : "formal");
+    },
+    [replaceSettings]
+  );
+  useSettingsSync(applySettings);
 
+  useEffect(() => {
     getAudioDevices()
       .then((devices) => {
         setAudioDevices(devices);
@@ -155,19 +179,7 @@ export function SettingsPage() {
     getVersion()
       .then(setAppVersion)
       .catch((e) => console.error("Failed to load app version:", e));
-
-    // Stay in sync when settings change from the overlay pill (or any window)
-    const unlisten = onSettingsChanged((s) => {
-      replaceSettings(s);
-      const mode = outputModes.find((m) => m.id === s.output_mode);
-      setActiveMode(mode ? mode.id : "clipboard");
-      const style = writingStyles.find((st) => st.id === s.writing_style);
-      setActiveStyle(style ? style.id : "formal");
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [replaceSettings]);
+  }, []);
 
   const handleModeChange = useCallback(
     (mode: OutputMode) => {
@@ -193,12 +205,11 @@ export function SettingsPage() {
     [patchSettings, settings?.writing_style]
   );
 
+  // Return the write promise so the GPU section can AWAIT the settings save
+  // before reloading the models — otherwise the reload can read a stale
+  // gpu_acceleration from the DB and apply the old backend.
   const handleGpuToggle = useCallback(
-    (enabled: boolean) => {
-      patchSettings({ gpu_acceleration: enabled }).catch((e) =>
-        console.error("Failed to save settings:", e)
-      );
-    },
+    (enabled: boolean) => patchSettings({ gpu_acceleration: enabled }),
     [patchSettings]
   );
 
@@ -217,6 +228,10 @@ export function SettingsPage() {
 
   const handleNoiseReductionToggle = useCallback(() => {
     patchSettings((current) => ({ noise_reduction: !current.noise_reduction })).catch(console.error);
+  }, [patchSettings]);
+
+  const handleFillerRemovalToggle = useCallback(() => {
+    patchSettings((current) => ({ filler_removal: !current.filler_removal })).catch(console.error);
   }, [patchSettings]);
 
   const handleScreenContextToggle = useCallback(() => {
@@ -256,11 +271,19 @@ export function SettingsPage() {
     patchSettings((current) => ({ ship_mode: !current.ship_mode })).catch(console.error);
   }, [patchSettings]);
 
+  const handleCommandModeToggle = useCallback(() => {
+    patchSettings((current) => ({ command_mode: !current.command_mode })).catch(console.error);
+  }, [patchSettings]);
+
+  const handleAutoStartToggle = useCallback(() => {
+    patchSettings((current) => ({ auto_start: !current.auto_start })).catch(console.error);
+  }, [patchSettings]);
+
   const currentTheme = settings?.theme ?? "dark";
   const handleThemeChange = useCallback(
     (theme: string) => {
       patchSettings({ theme }).catch(console.error);
-      useSettingsStore.getState().setSettings({ theme });
+      useThemeStore.getState().setTheme(theme);
     },
     [patchSettings]
   );
@@ -271,17 +294,12 @@ export function SettingsPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-10">
       {/* Header */}
-      <div
+      <PageHeader
+        title="Settings"
+        subtitle="Configure how OmniVox listens, transcribes, and behaves."
         className="animate-slide-up"
         style={{ opacity: 0, animationDelay: "0.05s", animationFillMode: "forwards" }}
-      >
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] text-text-primary">
-          Settings
-        </h1>
-        <p className="mt-1 text-sm text-text-muted">
-          Configure how OmniVox listens, transcribes, and behaves.
-        </p>
-      </div>
+      />
 
       {/* Two-column masonry — essentials first, width-filling */}
       <div className="mt-5 max-w-5xl gap-x-4 [column-fill:balance] columns-1 lg:columns-2">
@@ -329,12 +347,18 @@ export function SettingsPage() {
               onChange={handleStyleChange}
             />
           </Row>
+          <Row
+            icon={PenLine}
+            title="Filler removal"
+            description={'Drop filler words ("um", "you know", stray "basically") and stutter repeats. Off = verbatim transcription.'}
+            control={<Toggle checked={settings?.filler_removal ?? true} onChange={handleFillerRemovalToggle} aria-label="Filler removal" />}
+          />
         </GroupCard>
 
         {/* ── Audio ── */}
         <GroupCard title="Audio" delay={0.13}>
           <Row icon={Volume2} title="Input device" description="Sample rate: 16,000 Hz">
-            <div className="relative">
+            <div className="relative" ref={deviceMenuRef}>
               <button
                 onClick={() => setDeviceMenuOpen((p) => !p)}
                 className="flex w-full items-center gap-2 rounded-[9px] border border-border-hover bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"
@@ -495,7 +519,7 @@ export function SettingsPage() {
                   variant="ghost"
                   icon={<Info />}
                   className="self-start"
-                  onClick={() => setShowVoiceCommands(true)}
+                  onClick={() => setPage("commands")}
                 >
                   View all commands
                 </Button>
@@ -524,6 +548,12 @@ export function SettingsPage() {
         {/* ── Behavior ── */}
         <GroupCard title="Behavior" delay={0.19}>
           <Row
+            icon={Power}
+            title="Launch at startup"
+            description="Start OmniVox automatically when you sign in to Windows."
+            control={<Toggle checked={!!settings?.auto_start} onChange={handleAutoStartToggle} aria-label="Launch at startup" />}
+          />
+          <Row
             icon={Layers}
             title="Auto context switching"
             description="Switch context mode based on the focused app when recording starts. Bind apps to modes in the Context Modes editor."
@@ -545,6 +575,18 @@ export function SettingsPage() {
               </>
             }
             control={<Toggle checked={!!settings?.ship_mode} onChange={handleShipModeToggle} aria-label="Ship Mode" />}
+          />
+          <Row
+            icon={Zap}
+            title="Command Mode"
+            description={
+              <>
+                Hold <span className="text-amber-300/85">Right Ctrl</span> and speak a command —
+                "open Spotify", "close this window". Performs an action instead of typing.
+                Model and testing live on the Models page.
+              </>
+            }
+            control={<Toggle accent="amber" checked={!!settings?.command_mode} onChange={handleCommandModeToggle} aria-label="Command Mode" />}
           />
         </GroupCard>
 
@@ -594,35 +636,6 @@ export function SettingsPage() {
         </GroupCard>
       </div>
 
-      {/* ── Voice Commands Reference ── */}
-      <Modal
-        open={showVoiceCommands}
-        onClose={() => setShowVoiceCommands(false)}
-        title="Voice Commands"
-        className="max-w-sm"
-      >
-        <div className="space-y-2">
-          {[
-            { phrase: "new line", desc: "Insert a line break" },
-            { phrase: "new paragraph", desc: "Insert a paragraph break" },
-            { phrase: "delete last word", desc: "Remove the previous word" },
-            { phrase: "send", desc: "Press Enter to send (must be last word)" },
-          ].map((cmd) => (
-            <div
-              key={cmd.phrase}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-2/55 px-3 py-2.5"
-            >
-              <div>
-                <span className="font-mono text-xs font-medium text-amber-300">"{cmd.phrase}"</span>
-                <p className="mt-0.5 text-xs text-text-muted">{cmd.desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        <p className="mt-5 text-center text-[10.5px] text-text-muted">
-          Speak these phrases naturally during dictation
-        </p>
-      </Modal>
     </div>
   );
 }

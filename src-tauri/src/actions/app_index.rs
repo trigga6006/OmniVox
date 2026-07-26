@@ -11,6 +11,7 @@
 //! query against the index (exact → token/substring containment → edit-distance)
 //! and returns a confidence the caller uses to decide auto-launch vs. confirm.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// One launchable app from the AppsFolder index.
@@ -46,16 +47,57 @@ const AMBIGUITY_MARGIN: f32 = 0.06;
 
 static INDEX: OnceLock<Mutex<Option<Vec<AppEntry>>>> = OnceLock::new();
 
+/// Unix-seconds of the last successful enumeration. 0 = never refreshed via
+/// [`refresh`] (a lazy [`snapshot`] load doesn't stamp it, so the first
+/// [`refresh_if_stale`] after a lazy load will re-enumerate once).
+static LAST_REFRESH: AtomicU64 = AtomicU64::new(0);
+
+/// Minimum seconds between self-heal re-enumerations (they spawn PowerShell).
+const REFRESH_TTL_SECS: u64 = 300;
+
 fn cell() -> &'static Mutex<Option<Vec<AppEntry>>> {
     INDEX.get_or_init(|| Mutex::new(None))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Force a fresh enumeration (call once at startup, off the main thread).
 pub fn refresh() {
     let entries = load_entries();
+    let got_apps = !entries.is_empty();
     if let Ok(mut guard) = cell().lock() {
-        *guard = Some(entries);
+        // A transient Get-StartApps / JSON failure returns an empty Vec. Never
+        // let that clobber a previously-good index — otherwise the self-heal
+        // rescan fired from the "no app found" path could lock out EVERY "open
+        // app" for the TTL. Caching an empty result is only acceptable when we
+        // have nothing yet (keeps snapshot() from reloading synchronously).
+        let keep_old =
+            !got_apps && guard.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
+        if !keep_old {
+            *guard = Some(entries);
+        }
     }
+    // Only stamp on a successful (non-empty) enumeration, so a transient failure
+    // is retried by the next refresh_if_stale instead of suppressed for the TTL.
+    if got_apps {
+        LAST_REFRESH.store(now_secs(), Ordering::Relaxed);
+    }
+}
+
+/// Re-enumerate at most once per [`REFRESH_TTL_SECS`]. Fired (non-blocking, off
+/// the async runtime) from the "no app found" path so an app installed while
+/// OmniVox is running becomes launchable on the user's NEXT attempt — without a
+/// restart or a manual rescan. A no-op while within the TTL.
+pub fn refresh_if_stale() {
+    if now_secs().saturating_sub(LAST_REFRESH.load(Ordering::Relaxed)) < REFRESH_TTL_SECS {
+        return;
+    }
+    refresh();
 }
 
 /// Snapshot the index, loading it on first use.
@@ -254,19 +296,40 @@ fn load_entries() -> Vec<AppEntry> {
     Vec::new()
 }
 
-/// Launch (or activate) an app by its AppsFolder AppID.
+/// The identity we can attribute to an app we just launched, so a settle can
+/// prove the window that appears really belongs to it (B2-4).
+///
+/// AppsFolder launches go through `explorer.exe shell:AppsFolder\…`, which
+/// activates the target app in a SEPARATE process whose pid we never see — so
+/// those resolve to `Package` (the AUMID).  We do not correlate an AUMID to a
+/// window (that needs the shell property store), so a `Package` identity is
+/// treated as UNPROVEN downstream: the launch still happens, but focus-dependent
+/// retargeting and undo recording are skipped.
+#[derive(Debug, Clone)]
+pub enum LaunchIdentity {
+    /// The launched process id — correlated against a candidate window's owner.
+    Pid(u32),
+    /// The app's AUMID/package — not correlated to a window (unproven identity).
+    Package(String),
+}
+
+/// Launch (or activate) an app by its AppsFolder AppID.  Returns the launched
+/// app's expected identity so a settle can verify the window that appears
+/// belongs to it.  `explorer.exe` is only the launcher — its child pid is not
+/// the app's — so the best correlator here is the AUMID (`Package`, unproven;
+/// see [`LaunchIdentity`]).
 #[cfg(windows)]
-pub fn launch(app_id: &str) -> Result<(), String> {
+pub fn launch(app_id: &str) -> Result<LaunchIdentity, String> {
     use std::process::Command;
     Command::new("explorer.exe")
         .arg(format!("shell:AppsFolder\\{app_id}"))
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Failed to launch app: {e}"))
+        .map_err(|e| format!("Failed to launch app: {e}"))?;
+    Ok(LaunchIdentity::Package(app_id.to_string()))
 }
 
 #[cfg(not(windows))]
-pub fn launch(_app_id: &str) -> Result<(), String> {
+pub fn launch(_app_id: &str) -> Result<LaunchIdentity, String> {
     Err("App launching is only supported on Windows".into())
 }
 

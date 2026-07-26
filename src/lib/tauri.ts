@@ -80,11 +80,9 @@ export interface HotkeyConfig {
 
 export interface AppSettings {
   theme: string;
-  language: string;
+  /** Launch OmniVox automatically when the OS starts. */
   auto_start: boolean;
-  minimize_to_tray: boolean;
   output_mode: string;
-  sample_rate: number;
   active_model_id: string | null;
   hotkey: HotkeyConfig | null;
   gpu_acceleration: boolean;
@@ -96,9 +94,17 @@ export interface AppSettings {
   command_send: boolean;
   /** Command Mode: hold Right Ctrl and speak a command (launch app, key chord, media). */
   command_mode: boolean;
+  /**
+   * Gate for the "Launch"/"open app" command action.  When false, voice
+   * commands that would start an application are refused by the backend.
+   * Default true.
+   */
+  launch_app_voice_commands_enabled: boolean;
   ship_mode: boolean;
   ghost_mode: boolean;
   writing_style: string;
+  /** Remove filler words and stutter repeats during post-processing. */
+  filler_removal: boolean;
   audio_ducking: boolean;
   ducking_amount: number;
   /** Send dictation through a local LLM and output a structured Markdown prompt. */
@@ -309,13 +315,23 @@ export interface CommandResult {
   summary: string;
 }
 export interface CommandConfirm {
+  /** Backend-issued id for this confirm, echoed back to confirm_command /
+   *  cancel_command so a stale pill can't consume a newer command's confirm. */
+  id: number;
   summary: string;
+  /** Present when the pending action sends a typed message — shown in an
+   *  editable textarea so a mishearing can be fixed before it sends. */
+  editable_text?: string;
 }
 
-/** Execute the command currently awaiting confirmation. */
-export const confirmCommand = () => invoke<void>("confirm_command");
+/** Execute the command currently awaiting confirmation.  `confirmId` is the id
+ *  from the `command-confirm` event; pass `editedText` when the user revised
+ *  the message in the confirm pill's textarea. */
+export const confirmCommand = (confirmId: number, editedText?: string) =>
+  invoke<void>("confirm_command", { confirmId, editedText: editedText ?? null });
 /** Discard the command currently awaiting confirmation. */
-export const cancelCommand = () => invoke<void>("cancel_command");
+export const cancelCommand = (confirmId: number) =>
+  invoke<void>("cancel_command", { confirmId });
 
 /** Resolved result of a "Test command" dry-run (no execution). */
 export interface CommandTestResult {
@@ -356,6 +372,11 @@ export interface ContextMode {
   created_at: string;
   updated_at: string;
   writing_style: string;
+  /**
+   * Structured Mode profile id for this mode ("agent-prompt", "email",
+   * "notes-outline").  Empty = default agent-prompt.
+   */
+  structured_profile: string;
 }
 
 export const listContextModes = () => invoke<ContextMode[]>("list_context_modes");
@@ -366,7 +387,8 @@ export const createContextMode = (
   description: string,
   icon: string,
   color: string,
-  writingStyle: string
+  writingStyle: string,
+  structuredProfile: string
 ) =>
   invoke<ContextMode>("create_context_mode", {
     name,
@@ -374,6 +396,7 @@ export const createContextMode = (
     icon,
     color,
     writingStyle,
+    structuredProfile,
   });
 export const updateContextMode = (
   id: string,
@@ -381,7 +404,8 @@ export const updateContextMode = (
   description: string,
   icon: string,
   color: string,
-  writingStyle: string
+  writingStyle: string,
+  structuredProfile: string
 ) =>
   invoke<void>("update_context_mode", {
     id,
@@ -390,6 +414,7 @@ export const updateContextMode = (
     icon,
     color,
     writingStyle,
+    structuredProfile,
   });
 export const deleteContextMode = (id: string) =>
   invoke<void>("delete_context_mode", { id });
@@ -458,6 +483,13 @@ export type Urgency = "low" | "normal" | "high";
 
 export interface SlotExtraction {
   goal: string;
+  /**
+   * Background/situational statements from the dictation.  Renders as
+   * `## Context`.  (Present in the Rust schema since v0.2.x; was missing
+   * from this mirror, silently dropping the slot in any TS consumer.)
+   * Absent on the wire when empty — Rust skip-serializes empty slots.
+   */
+  context?: string[];
   constraints: string[];
   files: string[];
   urgency?: Urgency | null;
@@ -482,8 +514,19 @@ export interface SlotExtraction {
 
 export interface StructuredOutputPayload {
   markdown: string;
-  slots: SlotExtraction;
+  /**
+   * Profile-specific slot object.  `SlotExtraction`-shaped for the default
+   * agent-prompt profile; the email / notes-outline profiles emit their own
+   * shapes (none of these keys), so every field is effectively optional.
+   */
+  slots: Partial<SlotExtraction>;
   raw_transcript: string;
+  /**
+   * Characters dropped from the LLM input because the dictation exceeded
+   * the structured input cap.  0 when nothing was truncated.  The full
+   * dictation is always preserved in `raw_transcript`.
+   */
+  truncated_chars: number;
 }
 
 export const listLlmModels = () => invoke<LlmModelInfo[]>("list_llm_models");
@@ -500,6 +543,25 @@ export const llmTestExtract = (text?: string) =>
 export const pasteStructuredOutput = (markdown: string) =>
   invoke<void>("paste_structured_output", { markdown });
 
+/** Mirrors Rust `llm::diaglog::ExtractionRecord`. */
+export interface LlmExtractionRecord {
+  /** RFC 3339 UTC. */
+  timestamp: string;
+  duration_ms: number;
+  /** Chars actually sent to the LLM (post-truncation). */
+  input_chars: number;
+  /** Chars dropped by the input cap (0 = nothing truncated). */
+  truncated_chars: number;
+  /** Rendered markdown length; 0 when the extraction failed. */
+  output_chars: number;
+  /** "ok", or the degradation reason shown to the user. */
+  outcome: string;
+}
+
+/** Recent structured-mode extraction attempts, newest first. */
+export const getLlmDiagnostics = () =>
+  invoke<LlmExtractionRecord[]>("get_llm_diagnostics");
+
 export const onLlmDownloadProgress = (
   callback: (progress: LlmDownloadProgress) => void
 ): Promise<UnlistenFn> =>
@@ -511,6 +573,17 @@ export const onLlmModelLoaded = (
   callback: (modelId: string) => void
 ): Promise<UnlistenFn> =>
   listen<string>("llm-model-loaded", (e) => callback(e.payload));
+
+/**
+ * Structured-Mode LLM lifecycle: "loading" while the GGUF loads,
+ * "ready" once usable, "error: …" on a failed load.  Lets the overlay
+ * explain why a first structured dictation is slow instead of
+ * appearing hung.
+ */
+export const onLlmStatus = (
+  callback: (status: string) => void
+): Promise<UnlistenFn> =>
+  listen<string>("llm-status", (e) => callback(e.payload));
 
 export const onStructuredOutputReady = (
   callback: (payload: StructuredOutputPayload) => void
@@ -532,6 +605,49 @@ export const onWhisperGpuFallback = (
 ): Promise<UnlistenFn> =>
   listen<string>("whisper-gpu-fallback", (e) => callback(e.payload));
 
+// ── Scratchpad ──────────────────────────────────────────────────────────────
+export interface ScratchpadEntry {
+  id: string;
+  pad_id: string;
+  content: string;
+  created_at: string;
+}
+export interface ScratchpadPad {
+  id: string;
+  name: string;
+  position: number;
+  /** Newest-first. */
+  entries: ScratchpadEntry[];
+}
+export type ScratchpadVariant = "note" | "entries" | "pads";
+export interface ScratchpadData {
+  note: string;
+  pads: ScratchpadPad[];
+  active_pad_id: string;
+  variant: ScratchpadVariant;
+}
+
+export const openScratchpad = () => invoke<void>("open_scratchpad");
+export const closeScratchpad = () => invoke<void>("close_scratchpad");
+export const scratchpadGet = () => invoke<ScratchpadData>("scratchpad_get");
+export const scratchpadSetNote = (content: string) =>
+  invoke<void>("scratchpad_set_note", { content });
+export const scratchpadAddEntry = (padId: string | null, content: string) =>
+  invoke<ScratchpadEntry>("scratchpad_add_entry", { padId, content });
+export const scratchpadDeleteEntry = (id: string) =>
+  invoke<void>("scratchpad_delete_entry", { id });
+export const scratchpadClearPad = (padId: string | null) =>
+  invoke<void>("scratchpad_clear_pad", { padId });
+export const scratchpadSetVariant = (variant: ScratchpadVariant) =>
+  invoke<void>("scratchpad_set_variant", { variant });
+export const saveScratchpadPosition = (x: number, y: number) =>
+  invoke<void>("save_scratchpad_position", { x, y });
+export const saveScratchpadSize = (w: number, h: number) =>
+  invoke<void>("save_scratchpad_size", { w, h });
+export const setScratchpadCapture = (on: boolean) =>
+  invoke<void>("set_scratchpad_capture", { on });
+export const scratchpadGetCapture = () => invoke<boolean>("scratchpad_get_capture");
+
 // Event listeners
 export const onRecordingStateChange = (
   callback: (status: string) => void
@@ -551,16 +667,28 @@ export const onTranscriptionResult = (
 ): Promise<UnlistenFn> =>
   listen<string>("transcription-result", (e) => callback(e.payload));
 
+export interface DictationInsertPayload {
+  text: string;
+  /** OmniVox window label the dictation was aimed at, decided by the backend
+   *  from the HWND snapshotted at record start: "main" | "scratchpad". */
+  target: string;
+}
+
 /**
  * Fired when a dictation was aimed at one of OmniVox's own windows.  A
  * synthetic Ctrl+V doesn't reliably land in our WebView2 inputs, so the
- * backend hands the text here and the focused window inserts it at the caret
- * of whatever field the user is in.
+ * backend hands the text here, tagged with the TARGET window label so each
+ * window can deliver (caret-insert / append) or stand down deterministically.
  */
 export const onDictationInsert = (
-  callback: (text: string) => void
+  callback: (payload: DictationInsertPayload) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("dictation-insert", (e) => callback(e.payload));
+  listen<DictationInsertPayload>("dictation-insert", (e) => callback(e.payload));
+
+/** Fired when a voice command changed the scratchpad's stored content (e.g.
+ *  "clear the scratchpad") so an open pad reloads from the DB. */
+export const onScratchpadRefresh = (callback: () => void): Promise<UnlistenFn> =>
+  listen<void>("scratchpad-refresh", () => callback());
 
 export const onModelLoaded = (
   callback: (modelId: string) => void

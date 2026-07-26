@@ -16,17 +16,17 @@ export function DictationPanel() {
   const status = useRecordingStore((s) => s.status);
   const lastTranscription = useRecordingStore((s) => s.lastTranscription);
 
-  const [hotkeyLabel, setHotkeyLabel] = useState("Ctrl + Alt");
+  // One settings fetch for the whole page — hotkey label here, feature-tip
+  // filtering below via prop.
+  const [settings, setSettings] = useState<AppSettings | null>(null);
 
   useEffect(() => {
-    getSettings()
-      .then((s) => {
-        if (s.hotkey?.labels?.length) {
-          setHotkeyLabel(s.hotkey.labels.join(" + "));
-        }
-      })
-      .catch(() => {});
+    getSettings().then(setSettings).catch(() => {});
   }, []);
+
+  const hotkeyLabel = settings?.hotkey?.labels?.length
+    ? settings.hotkey.labels.join(" + ")
+    : "Ctrl + Alt";
 
   const isIdle = status === "idle";
   const isRecording = status === "recording";
@@ -101,7 +101,7 @@ export function DictationPanel() {
         <StatsCard />
 
         {/* ── Feature discovery tip ────────────────────────────── */}
-        <FeatureTip />
+        <FeatureTip settings={settings} />
 
         {/* ── Last transcription card ──────────────────────────── */}
         {lastTranscription && (
@@ -132,7 +132,7 @@ function TranscriptionCard({ text }: { text: string }) {
     <Card className="mt-4 flex min-h-0 w-full max-w-lg flex-col px-5 py-4 opacity-0 animate-slide-up">
       <div className="mb-2.5 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+          <span className="eyebrow">
             Last transcription
           </span>
           <button
@@ -275,25 +275,22 @@ function dismissTip(id: string) {
   localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed]));
 }
 
-function FeatureTip() {
+function FeatureTip({ settings }: { settings: AppSettings | null }) {
   const [tip, setTip] = useState<Tip | null>(null);
   const setPage = useAppStore((s) => s.setPage);
   const status = useRecordingStore((s) => s.status);
   const isRecording = status === "recording";
 
   useEffect(() => {
-    getSettings()
-      .then((s) => {
-        const dismissed = getDismissed();
-        const available = TIPS.filter(
-          (t) => !dismissed.has(t.id) && t.shouldShow(s)
-        );
-        if (available.length > 0) {
-          setTip(available[Math.floor(Math.random() * available.length)]);
-        }
-      })
-      .catch(() => {});
-  }, []);
+    if (!settings) return;
+    const dismissed = getDismissed();
+    const available = TIPS.filter(
+      (t) => !dismissed.has(t.id) && t.shouldShow(settings)
+    );
+    if (available.length > 0) {
+      setTip(available[Math.floor(Math.random() * available.length)]);
+    }
+  }, [settings]);
 
   const handleDismiss = useCallback(() => {
     if (tip) {

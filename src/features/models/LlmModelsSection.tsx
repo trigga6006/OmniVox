@@ -5,6 +5,8 @@ import {
   Loader2,
   AlertCircle,
   FlaskConical,
+  Activity,
+  ChevronDown,
 } from "lucide-react";
 import {
   listLlmModels,
@@ -14,10 +16,12 @@ import {
   onLlmDownloadProgress,
   onLlmModelLoaded,
   llmTestExtract,
+  getLlmDiagnostics,
   getSettings,
   updateSettings,
   onSettingsChanged,
   type LlmModelInfo,
+  type LlmExtractionRecord,
   type AppSettings,
 } from "@/lib/tauri";
 import { formatBytes, cn } from "@/lib/utils";
@@ -239,6 +243,23 @@ export function LlmModelsSection() {
     }
   };
 
+  // Diagnostics disclosure — refetched on every expand so it always shows
+  // the current session's ring buffer without needing a live subscription.
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [diagRecords, setDiagRecords] = useState<LlmExtractionRecord[]>([]);
+  const handleDiagToggle = async () => {
+    const next = !diagOpen;
+    setDiagOpen(next);
+    if (next) {
+      try {
+        const recs = await getLlmDiagnostics();
+        if (mountedRef.current) setDiagRecords(recs);
+      } catch {
+        /* panel just shows the empty state */
+      }
+    }
+  };
+
   const minChars = settings?.structured_min_chars ?? 40;
   const llmTimeout = settings?.llm_timeout_secs ?? 8;
   const testAvailable = hasDownloaded && structuredMode;
@@ -329,6 +350,58 @@ export function LlmModelsSection() {
             <span>{testError}</span>
           </div>
         )}
+
+        {/* Diagnostics disclosure — the last 20 extraction attempts from
+            the in-memory ring buffer, so "why was that dictation slow /
+            plain?" is answerable without env vars or log files. */}
+        {structuredMode && (
+          <div className="mt-3 border-t border-border/60 pt-3">
+            <button
+              onClick={handleDiagToggle}
+              className="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
+            >
+              <Activity size={11} strokeWidth={2} />
+              Recent extractions
+              <ChevronDown
+                size={11}
+                strokeWidth={2}
+                className={cn("transition-transform", diagOpen && "rotate-180")}
+              />
+            </button>
+            {diagOpen &&
+              (diagRecords.length === 0 ? (
+                <p className="mt-2 text-[10.5px] text-text-muted">
+                  No structured extractions this session yet.
+                </p>
+              ) : (
+                <div className="mt-2 flex max-h-[180px] flex-col gap-1 overflow-y-auto">
+                  {diagRecords.map((r, i) => (
+                    <div
+                      key={`${r.timestamp}-${i}`}
+                      className="flex items-center gap-2.5 rounded-md border border-border/50 bg-surface-2/50 px-2.5 py-1.5 text-[10.5px] tabular-nums"
+                    >
+                      <span className="shrink-0 text-text-muted">
+                        {new Date(r.timestamp).toLocaleTimeString()}
+                      </span>
+                      <span
+                        className={cn(
+                          "min-w-0 truncate",
+                          r.outcome === "ok" ? "text-success" : "text-error"
+                        )}
+                        title={r.outcome}
+                      >
+                        {r.outcome === "ok" ? `${r.duration_ms} ms` : r.outcome}
+                      </span>
+                      <span className="ml-auto shrink-0 text-text-muted">
+                        {r.input_chars} in → {r.output_chars} out
+                        {r.truncated_chars > 0 && ` · ${r.truncated_chars} cut`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+          </div>
+        )}
       </Card>
 
       {/* Model list — row chrome deliberately mirrors the Whisper rows
@@ -346,7 +419,7 @@ export function LlmModelsSection() {
             <Card
               key={m.id}
               className={cn(
-                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-all duration-200 hover:border-border-hover animate-slide-up",
+                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-colors duration-200 hover:border-border-hover animate-slide-up",
                 isActive && "border-l-[3px] border-l-violet-400/80",
                 m.is_default && !isActive && "border-l-[3px] border-l-violet-500/45"
               )}

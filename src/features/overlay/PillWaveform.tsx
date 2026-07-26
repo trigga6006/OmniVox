@@ -5,6 +5,10 @@ const BAR_WIDTH = 2;
 const BAR_GAP = 2;
 const MIN_HEIGHT = 2;
 const MAX_HEIGHT = 18;
+// Below this audio level the mic is effectively silent — show a gently
+// shimmering resting baseline instead of 12 dead-flat 2px dots.
+const IDLE_LEVEL = 0.04;
+const IDLE_HEIGHT = 6;
 
 // Bell-curve weights — center bars respond more, edges stay lower
 const WEIGHTS = [
@@ -19,12 +23,15 @@ const PHASE_OFFSETS = [
 ];
 
 interface PillWaveformProps {
-  active: boolean;
   color?: string;
 }
 
-export function PillWaveform({ active, color }: PillWaveformProps) {
+// The waveform is only ever rendered while capture is live (both call sites),
+// so there's no inactive branch — bars react to the audio level, and fall back
+// to a shimmering baseline during near-silence.
+export function PillWaveform({ color }: PillWaveformProps) {
   const audioLevel = useRecordingStore((s) => s.audioLevel);
+  const idle = audioLevel < IDLE_LEVEL;
 
   return (
     <div
@@ -37,9 +44,7 @@ export function PillWaveform({ active, color }: PillWaveformProps) {
       {Array.from({ length: BAR_COUNT }, (_, i) => {
         const weight = WEIGHTS[i];
         const phase = PHASE_OFFSETS[i];
-        const level = active
-          ? Math.min(1, audioLevel * weight + phase * audioLevel * 0.5)
-          : 0;
+        const level = Math.min(1, audioLevel * weight + phase * audioLevel * 0.5);
         const height = MIN_HEIGHT + level * (MAX_HEIGHT - MIN_HEIGHT);
 
         return (
@@ -48,14 +53,17 @@ export function PillWaveform({ active, color }: PillWaveformProps) {
             className="rounded-full"
             style={{
               width: `${BAR_WIDTH}px`,
-              height: `${height}px`,
-              backgroundColor: active
-                ? (color ?? "rgb(245,158,11)")
-                : "rgba(255,255,255,0.12)",
-              opacity: active ? 0.8 : 1,
-              transition: active
-                ? "height 100ms ease-out, background-color 300ms ease"
-                : "height 400ms ease-out, background-color 300ms ease",
+              height: idle ? `${IDLE_HEIGHT}px` : `${height}px`,
+              backgroundColor: color ?? "rgb(245,158,11)",
+              opacity: 0.8,
+              transformOrigin: "center",
+              // Near-silence: a per-bar staggered shimmer (reuses the idle-wave
+              // keyframe) so the waveform breathes instead of flat-lining. Once
+              // audio rises above IDLE_LEVEL, snap to the audio-driven height.
+              animation: idle
+                ? `idle-wave 1.5s ease-in-out ${i * 0.09}s infinite`
+                : "none",
+              transition: "height 100ms ease-out, background-color 300ms ease",
             }}
           />
         );

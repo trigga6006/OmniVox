@@ -51,6 +51,14 @@ function insertAtCaret(el: EditableEl, text: string) {
 }
 
 /**
+ * Fired on `window` after a dictation was successfully inserted into a
+ * focused editable in this window.  Same-window listeners that would
+ * otherwise deliver the same dictation a second time (NotesPage's
+ * append-to-open-note) use it to stand down.
+ */
+export const DICTATION_INSERTED_EVENT = "omnivox:dictation-inserted";
+
+/**
  * Routes dictation aimed at OmniVox's own windows into the focused field.
  *
  * The backend can't reliably Ctrl+V into our WebView2 inputs, so when the
@@ -74,10 +82,31 @@ export function useInAppDictation() {
   }, []);
 
   useEffect(() => {
-    const unlisten = onDictationInsert((text) => {
-      const target =
-        targetRef.current ?? (isEditable(document.activeElement) ? document.activeElement : null);
-      if (target) insertAtCaret(target, text);
+    const unlisten = onDictationInsert(({ text, target }) => {
+      // Delivered to a DIFFERENT OmniVox window (e.g. the scratchpad). Stand
+      // down here, and still fire DICTATION_INSERTED_EVENT so NotesPage's
+      // append handler — which keys off it to avoid double-capturing — skips a
+      // dictation that wasn't aimed at this window. (dictation-insert is emitted
+      // before transcription-result, so the flag is set before Notes reacts.)
+      if (target && target !== "main") {
+        window.dispatchEvent(new Event(DICTATION_INSERTED_EVENT));
+        targetRef.current = null;
+        return;
+      }
+      // The snapshotted editable can detach if its subtree unmounts mid-record
+      // (e.g. navigating pages).  Inserting into a detached node silently drops
+      // the dictation, so fall back to the live focused editable. (SS4)
+      const snapshot = targetRef.current;
+      const el =
+        snapshot && snapshot.isConnected
+          ? snapshot
+          : isEditable(document.activeElement)
+            ? document.activeElement
+            : null;
+      if (el) {
+        insertAtCaret(el, text);
+        window.dispatchEvent(new Event(DICTATION_INSERTED_EVENT));
+      }
       targetRef.current = null;
     });
     return () => {

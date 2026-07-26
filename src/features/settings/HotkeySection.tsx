@@ -76,6 +76,15 @@ export function HotkeySection({
     };
   }, [state]);
 
+  // If this section unmounts mid-remap (user navigates away while listening or
+  // confirming), make sure the global hotkey hook isn't left suspended — that
+  // would kill push-to-talk app-wide until restart.  A no-op if not suspended.
+  useEffect(() => {
+    return () => {
+      suspendHotkey(false).catch(() => {});
+    };
+  }, []);
+
   const handleRemap = () => {
     setCaptured([]);
     setState("listening");
@@ -131,7 +140,7 @@ export function HotkeySection({
       style={{ opacity: 0, animationDelay: "0.06s", animationFillMode: "forwards" }}
     >
       <div className="mb-2.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+        <span className="eyebrow">
           Shortcut
         </span>
       </div>

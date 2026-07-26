@@ -1,14 +1,16 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { StickyNote, Plus, Trash2, ArrowLeft, Check } from "lucide-react";
-import { Button, Card, EmptyState } from "@/components/ui";
+import { Button, Card, EmptyState, PageHeader, LoadingState } from "@/components/ui";
 import {
   listNotes,
   addNote,
   updateNote,
   deleteNote,
+  onRecordingStateChange,
   onTranscriptionResult,
   type Note,
 } from "@/lib/tauri";
+import { DICTATION_INSERTED_EVENT } from "@/hooks/useInAppDictation";
 
 type View = "grid" | "editor";
 
@@ -88,16 +90,46 @@ export function NotesPage() {
     };
   }, [editTitle, editContent]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When in editor, append transcription results directly into the note
+  // True when the in-app dictation path (useInAppDictation in App.tsx)
+  // already inserted the current dictation at the caret of a focused field
+  // in this window.  Consumed by the append listener below.
+  const insertedRef = useRef(false);
+
+  // When in editor, append transcription results directly into the note —
+  // UNLESS the dictation was already delivered into a focused field here.
+  // Dictating into OmniVox emits `dictation-insert` (caret insertion) instead
+  // of an OS paste; appending on top of that duplicated every dictation.
+  // When no field received the insert (focus on a button, or dictating from
+  // another app with the note open in the background) the append is the
+  // delivery path and must run.
   useEffect(() => {
     if (view !== "editor") return;
+
+    const onInserted = () => {
+      insertedRef.current = true;
+    };
+    window.addEventListener(DICTATION_INSERTED_EVENT, onInserted);
+
+    // A new recording clears any stale flag so a skipped/failed run can
+    // never suppress the NEXT dictation's append.
+    const unlistenRecording = onRecordingStateChange((state) => {
+      if (state === "recording") insertedRef.current = false;
+    });
+
     const unlisten = onTranscriptionResult((text) => {
+      if (insertedRef.current) {
+        insertedRef.current = false;
+        return;
+      }
       setEditContent((prev) => {
         const separator = prev.length > 0 && !prev.endsWith("\n") && !prev.endsWith(" ") ? " " : "";
         return prev + separator + text;
       });
     });
+
     return () => {
+      window.removeEventListener(DICTATION_INSERTED_EVENT, onInserted);
+      unlistenRecording.then((fn) => fn());
       unlisten.then((fn) => fn());
     };
   }, [view]);
@@ -151,7 +183,7 @@ export function NotesPage() {
         {/* Toolbar — slim, utility-focused */}
         <div className="flex items-center justify-between border-b border-border/55 px-8 py-3">
           <Button variant="ghost" size="sm" icon={<ArrowLeft />} onClick={handleBack}>
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em]">
+            <span className="eyebrow">
               Notes
             </span>
           </Button>
@@ -203,28 +235,24 @@ export function NotesPage() {
   return (
     <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-            Notes
-          </h1>
-          <p className="mt-1 text-sm text-text-muted">
-            {notes.length > 0
-              ? `${notes.length} note${notes.length === 1 ? "" : "s"}`
-              : "Your saved notes"}
-          </p>
-        </div>
-        <Button variant="primary" size="sm" icon={<Plus />} onClick={handleNew}>
-          New
-        </Button>
-      </div>
+      <PageHeader
+        title="Notes"
+        subtitle={
+          notes.length > 0
+            ? `${notes.length} note${notes.length === 1 ? "" : "s"}`
+            : "Your saved notes"
+        }
+        action={
+          <Button variant="primary" size="sm" icon={<Plus />} onClick={handleNew}>
+            New
+          </Button>
+        }
+      />
 
       {/* Grid */}
       <div className="mt-6 flex-1 overflow-auto pr-1">
         {loading && notes.length === 0 ? (
-          <div className="flex h-48 items-center justify-center text-sm text-text-muted">
-            Loading…
-          </div>
+          <LoadingState />
         ) : notes.length === 0 ? (
           /* ── Empty state ── */
           <div className="flex h-64 items-center justify-center">
@@ -275,18 +303,18 @@ export function NotesPage() {
                     {formatDate(note.updated_at)}
                   </span>
 
-                  <div
-                    role="button"
-                    tabIndex={0}
+                  {/* Real <button> — interactive-inside-interactive (role=button
+                      card + role=button delete) is invalid ARIA and only handled
+                      Enter, not Space. A native button activates on both and
+                      handleDelete stopPropagations so the card doesn't also open. */}
+                  <button
+                    type="button"
+                    aria-label="Delete note"
                     onClick={(e) => handleDelete(e, note.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter")
-                        handleDelete(e as unknown as React.MouseEvent, note.id);
-                    }}
-                    className="rounded-md p-1 text-text-muted opacity-0 transition-all hover:bg-recording-500/12 hover:text-recording-400 group-hover:opacity-100"
+                    className="rounded-md p-1 text-text-muted opacity-0 transition-all hover:bg-recording-500/10 hover:text-recording-400 group-hover:opacity-100"
                   >
                     <Trash2 size={11} />
-                  </div>
+                  </button>
                 </div>
               </Card>
             ))}

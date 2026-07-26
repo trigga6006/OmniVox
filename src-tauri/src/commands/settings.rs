@@ -5,7 +5,8 @@ use crate::state::AppState;
 use crate::storage::types::AppSettings;
 use tauri::{Emitter, Manager, State};
 
-const TASKBAR_H: f64 = 48.0;
+// Gap between the pill and the bottom of the monitor's WORK AREA (the
+// screen minus taskbar/appbars, from the OS) — no taskbar-height guessing.
 const MARGIN: f64 = 12.0;
 
 /// Find which monitor currently contains the mouse cursor.
@@ -87,17 +88,17 @@ pub async fn resize_overlay(app: tauri::AppHandle, width: f64, height: f64) -> R
         .ok_or("no monitor")?;
 
     let scale = target.scale_factor();
-    let mon_pos = target.position();
-    let mon_size = target.size();
+    let wa = target.work_area();
 
-    // Calculate position in physical pixels, centered at the bottom of the target monitor
+    // Calculate position in physical pixels, centered at the bottom of the
+    // target monitor's work area (excludes the taskbar wherever it is —
+    // bottom, side, scaled, or auto-hidden).
     let phys_w = width * scale;
     let phys_h = height * scale;
-    let taskbar_phys = TASKBAR_H * scale;
     let margin_phys = MARGIN * scale;
 
-    let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
-    let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
+    let x = wa.position.x as f64 + (wa.size.width as f64 - phys_w) / 2.0;
+    let y = wa.position.y as f64 + wa.size.height as f64 - phys_h - margin_phys;
     let xi = x as i32;
     let yi = y.max(0.0) as i32;
 
@@ -166,6 +167,9 @@ pub async fn update_settings(
     let prev_command_mode = crate::storage::settings::get_settings(&state.db)
         .map(|s| s.command_mode)
         .unwrap_or(false);
+    let prev_auto_start = crate::storage::settings::get_settings(&state.db)
+        .map(|s| s.auto_start)
+        .unwrap_or(false);
 
     // If Structured Mode is being enabled without an explicit active model,
     // auto-pick the best downloaded one so the app never enters a misleading
@@ -195,6 +199,8 @@ pub async fn update_settings(
 
     // Structured Mode just turned on AND a model is chosen but not loaded →
     // load it eagerly so the first dictation doesn't eat the load time.
+    // The multi-second GGUF load runs on a blocking thread so the settings
+    // command (and the toggle in the UI) returns immediately.
     if !prev_structured && settings.structured_mode {
         if let Some(model_id) = settings.active_llm_model_id.clone() {
             if let Ok(mut guard) = state.active_llm_model_id.lock() {
@@ -207,11 +213,17 @@ pub async fn update_settings(
                 .map(|g| g.is_some())
                 .unwrap_or(false);
             if !runner_loaded {
-                let state_inner = state.inner();
-                if let Err(e) = crate::commands::llm::load_and_activate_llm(&model_id, state_inner)
-                {
-                    eprintln!("Eager LLM load on toggle failed: {e}");
-                }
+                let app_for_load = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let st = app_for_load.state::<AppState>();
+                    if let Err(e) = crate::commands::llm::load_and_activate_llm_with_status(
+                        &model_id,
+                        &st,
+                        Some(&app_for_load),
+                    ) {
+                        eprintln!("Eager LLM load on toggle failed: {e}");
+                    }
+                });
             }
         }
     }
@@ -227,9 +239,10 @@ pub async fn update_settings(
         cfg.ship_mode = settings.ship_mode;
     }
 
-    // Sync writing style to the processor chain
+    // Sync writing style + filler removal to the processor chain
     if let Ok(mut proc) = state.processor.lock() {
         proc.set_style(WritingStyle::from_str(&settings.writing_style));
+        proc.set_filler_removal(settings.filler_removal);
     }
 
     // Sync hotkey to the live hook
@@ -237,6 +250,21 @@ pub async fn update_settings(
         let key1 = hk.keys.first().copied().unwrap_or(0);
         let key2 = hk.keys.get(1).copied().unwrap_or(0);
         crate::hotkey::update_hotkey_keys(key1, key2);
+    }
+
+    // Sync launch-at-startup with the OS (registry Run key on Windows).
+    // Only touch the registry when the setting actually changed.
+    if settings.auto_start != prev_auto_start {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        let result = if settings.auto_start {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        if let Err(e) = result {
+            eprintln!("Failed to update launch-at-startup: {e}");
+        }
     }
 
     // Sync Command-Mode hotkey activation; warm the app index the first time
@@ -251,6 +279,17 @@ pub async fn update_settings(
     let _ = app.emit("settings-changed", &settings);
 
     Ok(())
+}
+
+/// Opt-in gate: whether a voice command may launch a program (Command Mode
+/// "open <app>" and the inline dictation `LaunchApp`).  Reads the canonical
+/// typed `launch_app_voice_commands_enabled` setting — default ON (the
+/// identity-bound command path makes launches safe).  Falls back to the default
+/// (true) if settings can't be read.
+pub fn launch_app_voice_command_enabled(db: &crate::storage::database::Database) -> bool {
+    crate::storage::settings::get_settings(db)
+        .map(|s| s.launch_app_voice_commands_enabled)
+        .unwrap_or(true)
 }
 
 /// Suspend or resume the hotkey hook.
@@ -334,19 +373,17 @@ pub async fn recover_overlay(
         .ok_or("no primary monitor")?;
 
     let scale = target.scale_factor();
-    let mon_pos = target.position();
-    let mon_size = target.size();
+    let wa = target.work_area();
 
-    // Idle pill size (matches FloatingPill.tsx IDLE_W/IDLE_H).
-    let pill_w_logical = 56.0_f64;
-    let pill_h_logical = 26.0_f64;
+    // Idle window size — shared const, matches useOverlaySizing.ts IDLE_WIN_W/H.
+    let pill_w_logical = crate::OVERLAY_IDLE_WIN_W;
+    let pill_h_logical = crate::OVERLAY_IDLE_WIN_H;
     let phys_w = pill_w_logical * scale;
     let phys_h = pill_h_logical * scale;
-    let taskbar_phys = TASKBAR_H * scale;
     let margin_phys = MARGIN * scale;
 
-    let x = mon_pos.x as f64 + (mon_size.width as f64 - phys_w) / 2.0;
-    let y = mon_pos.y as f64 + mon_size.height as f64 - taskbar_phys - phys_h - margin_phys;
+    let x = wa.position.x as f64 + (wa.size.width as f64 - phys_w) / 2.0;
+    let y = wa.position.y as f64 + wa.size.height as f64 - phys_h - margin_phys;
     let xi = x as i32;
     let yi = y.max(0.0) as i32;
 

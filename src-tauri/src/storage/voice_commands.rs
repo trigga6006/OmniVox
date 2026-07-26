@@ -111,6 +111,63 @@ pub fn seed_defaults(db: &Database) -> AppResult<()> {
     Ok(())
 }
 
+/// Backfill built-in commands added in app updates after the user's DB was
+/// first seeded.  [`seed_defaults`] is a no-op once rows exist, so without
+/// this pass an existing install would never see new built-ins (e.g. the
+/// v0.5 list commands).  Inserts only built-ins whose encoded `action` has no
+/// row yet; user edits, re-scopes, and disables of existing rows are left
+/// untouched.
+///
+/// The presence check keys on `action`, NOT the user-mutable `phrase`: the
+/// Voice Commands page lets users rename a built-in, and keying on phrase
+/// treated a renamed built-in as "missing" and resurrected (duplicated) it on
+/// every launch.  The action encoding is the stable identity of what a
+/// built-in does, so a renamed built-in is correctly recognized as present.
+pub fn seed_missing_builtins(db: &Database) -> AppResult<()> {
+    let conn = db.conn()?;
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT action FROM custom_voice_commands")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().collect()
+    };
+    let now = Utc::now().to_rfc3339();
+    for (def, enabled) in default_command_table()
+        .iter()
+        .map(|d| (d, true))
+        .chain(default_disabled_command_table().iter().map(|d| (d, false)))
+    {
+        let action = command_to_action(&def.command);
+        if existing.contains(&action) {
+            continue;
+        }
+        let sort_order: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM custom_voice_commands",
+            [],
+            |r| r.get(0),
+        )?;
+        // OR IGNORE: keying the check on `action` means a default's phrase
+        // could (rarely) collide with an existing row's UNIQUE phrase; skip
+        // that row rather than failing the whole startup seed.
+        conn.execute(
+            "INSERT OR IGNORE INTO custom_voice_commands
+                (id, phrase, action, trigger_scope, enabled, built_in, sort_order, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                def.phrase,
+                action,
+                scope_to_str(def.scope),
+                enabled,
+                sort_order,
+                now,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 // ── CRUD ─────────────────────────────────────────────────────────
 
 /// List all commands (built-in and custom) for the management UI.
@@ -346,5 +403,54 @@ mod tests {
             let action = command_to_action(&def.command);
             assert_eq!(action_to_command(&action), Some(def.command));
         }
+    }
+
+    /// SS1: renaming a built-in (its user-mutable `phrase`) must NOT cause the
+    /// backfill to treat it as missing and resurrect the original phrase on the
+    /// next launch.  The presence check keys on the stable `action` encoding.
+    #[test]
+    fn renamed_builtin_is_not_resurrected_by_backfill() {
+        let dir = std::env::temp_dir().join(format!("omnivox-vc-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vc.db");
+        // Database::init seeds defaults + runs the initial backfill.
+        let db = Database::init(&path).unwrap();
+
+        // Rename the seeded "new line" (action "NewLine") built-in.
+        let target = list(&db)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.action == "NewLine")
+            .expect("NewLine built-in should be seeded");
+        update(
+            &db,
+            &target.id.to_string(),
+            "line break",
+            &target.action,
+            &target.trigger_scope,
+            target.enabled,
+        )
+        .unwrap();
+
+        // Simulate the next app launch's backfill.
+        seed_missing_builtins(&db).unwrap();
+
+        let after = list(&db).unwrap();
+        let newline_rows = after.iter().filter(|c| c.action == "NewLine").count();
+        assert_eq!(
+            newline_rows, 1,
+            "renamed built-in must not be resurrected as a duplicate"
+        );
+        assert!(
+            after.iter().any(|c| c.phrase == "line break"),
+            "the user's rename must persist"
+        );
+        assert!(
+            !after.iter().any(|c| c.phrase == "new line"),
+            "original phrase must not be re-seeded"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

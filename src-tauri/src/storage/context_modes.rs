@@ -11,6 +11,7 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
     let description: String = row.get(2)?;
     let icon: String = row.get(3)?;
     let color: String = row.get(4)?;
+    let structured_profile: String = row.get(5)?;
     let sort_order: i32 = row.get(6)?;
     let is_builtin: bool = row.get(7)?;
     let created_at_str: String = row.get(8)?;
@@ -36,11 +37,12 @@ fn row_to_mode(row: &rusqlite::Row) -> rusqlite::Result<ContextMode> {
         created_at,
         updated_at,
         writing_style,
+        structured_profile,
     })
 }
 
 const SELECT_COLS: &str =
-    "id, name, description, icon, color, llm_prompt, sort_order, is_builtin, created_at, updated_at, writing_style";
+    "id, name, description, icon, color, structured_profile, sort_order, is_builtin, created_at, updated_at, writing_style";
 
 /// Return the ID of the builtin General mode (the fallback for unbound apps).
 pub fn get_general_mode_id(db: &Database) -> AppResult<String> {
@@ -54,7 +56,6 @@ pub fn get_general_mode_id(db: &Database) -> AppResult<String> {
 }
 
 /// Ensure the builtin "General" mode exists. Returns its ID.
-/// Also refreshes builtin prompts to the latest version on every launch.
 pub fn seed_general_mode(db: &Database) -> AppResult<String> {
     let id = {
         let conn = db.conn()?;
@@ -69,15 +70,6 @@ pub fn seed_general_mode(db: &Database) -> AppResult<String> {
             .ok();
 
         if let Some(id) = existing {
-            // General mode has no mode-specific additions — clear any stale
-            // full prompt left over from earlier versions.
-            let now = Utc::now().to_rfc3339();
-            conn.execute(
-                "UPDATE context_modes SET llm_prompt = ?1, updated_at = ?2 \
-                 WHERE id = ?3 AND is_builtin = 1",
-                params!["", now, id],
-            )?;
-
             // General already exists, but still ensure other builtin modes are seeded
             // (they may have been missed due to earlier bugs).
             drop(conn);
@@ -89,7 +81,7 @@ pub fn seed_general_mode(db: &Database) -> AppResult<String> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        // General mode: empty llm_prompt (no mode-specific additions).
+        // General mode: empty structured_profile (= default agent-prompt).
         conn.execute(
             &format!("INSERT INTO context_modes ({SELECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"),
             params![id, "General", "Default dictation mode", "mic", "amber", "", 0, true, now, now, "formal"],
@@ -137,6 +129,7 @@ pub fn create_mode(
     icon: &str,
     color: &str,
     writing_style: &str,
+    structured_profile: &str,
 ) -> AppResult<ContextMode> {
     let id = Uuid::new_v4();
     let now = Utc::now();
@@ -152,7 +145,7 @@ pub fn create_mode(
             description,
             icon,
             color,
-            "",
+            structured_profile,
             0,
             false,
             now.to_rfc3339(),
@@ -172,6 +165,7 @@ pub fn create_mode(
         created_at: now,
         updated_at: now,
         writing_style: writing_style.to_string(),
+        structured_profile: structured_profile.to_string(),
     })
 }
 
@@ -183,12 +177,13 @@ pub fn update_mode(
     icon: &str,
     color: &str,
     writing_style: &str,
+    structured_profile: &str,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     let conn = db.conn()?;
     conn.execute(
-        "UPDATE context_modes SET name=?1, description=?2, icon=?3, color=?4, llm_prompt=?5, updated_at=?6, writing_style=?8 WHERE id=?7",
-        params![name, description, icon, color, "", now, id, writing_style],
+        "UPDATE context_modes SET name=?1, description=?2, icon=?3, color=?4, structured_profile=?5, updated_at=?6, writing_style=?7 WHERE id=?8",
+        params![name, description, icon, color, structured_profile, now, writing_style, id],
     )?;
     Ok(())
 }
@@ -211,15 +206,122 @@ pub fn delete_mode(db: &Database, id: &str) -> AppResult<()> {
     }
 
     // Cascade delete inside one transaction — a crash mid-way must not leave
-    // orphaned dictionary entries or snippets pointing at a deleted mode.
+    // orphaned dictionary entries, snippets, or vocabulary pointing at a
+    // deleted mode.  Vocabulary was missing from the cascade before v0.5,
+    // and since `vocabulary_entries.mode_id` is an enforced FK with no ON
+    // DELETE action, deleting any mode that had vocabulary words failed
+    // outright with "FOREIGN KEY constraint failed".
     let tx = conn.transaction()?;
     tx.execute(
         "DELETE FROM dictionary_entries WHERE mode_id = ?1",
         params![id],
     )?;
     tx.execute("DELETE FROM snippets WHERE mode_id = ?1", params![id])?;
+    tx.execute(
+        "DELETE FROM vocabulary_entries WHERE mode_id = ?1",
+        params![id],
+    )?;
     tx.execute("DELETE FROM context_modes WHERE id = ?1", params![id])?;
     tx.commit()?;
 
     Ok(())
+}
+
+/// Remove vocabulary rows whose mode no longer exists.  FK enforcement makes
+/// new orphans impossible, but rows written before the `foreign_keys` pragma
+/// (or by external tools) can linger and keep feeding phonetic correction —
+/// this is a startup repair for those historical leaks.
+pub fn purge_orphaned_vocabulary(db: &Database) -> AppResult<usize> {
+    let conn = db.conn()?;
+    let purged = conn.execute(
+        "DELETE FROM vocabulary_entries
+         WHERE mode_id IS NOT NULL
+           AND mode_id NOT IN (SELECT id FROM context_modes)",
+        [],
+    )?;
+    Ok(purged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db() -> (Database, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("omnivox-modes-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::init(&dir.join("t.db")).unwrap();
+        (db, dir)
+    }
+
+    #[test]
+    fn delete_mode_cascades_vocabulary() {
+        let (db, dir) = temp_db();
+        let mode = create_mode(&db, "Test", "", "zap", "amber", "formal", "").unwrap();
+        let mode_id = mode.id.to_string();
+        crate::storage::vocabulary::add_entry(&db, "OmniCue", Some(&mode_id)).unwrap();
+        crate::storage::vocabulary::add_entry(&db, "GlobalWord", None).unwrap();
+
+        delete_mode(&db, &mode_id).unwrap();
+
+        let conn = db.conn().unwrap();
+        let scoped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vocabulary_entries WHERE mode_id = ?1",
+                params![mode_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scoped, 0, "mode-scoped vocabulary must be cascade-deleted");
+        let global: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vocabulary_entries WHERE mode_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(global, 1, "global vocabulary must survive mode deletion");
+
+        drop(conn);
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn purge_removes_only_orphaned_vocabulary() {
+        let (db, dir) = temp_db();
+        let mode = create_mode(&db, "Live", "", "zap", "amber", "formal", "").unwrap();
+        let live_id = mode.id.to_string();
+        crate::storage::vocabulary::add_entry(&db, "LiveWord", Some(&live_id)).unwrap();
+        crate::storage::vocabulary::add_entry(&db, "GlobalWord", None).unwrap();
+        // Simulate a historical leak (rows written before FK enforcement):
+        // FKs must be off for the orphan to exist at all.
+        {
+            let conn = db.conn().unwrap();
+            conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+            conn.execute(
+                "INSERT INTO vocabulary_entries (id, word, is_enabled, created_at, mode_id)
+                 VALUES (?1, 'Orphan', 1, ?2, 'no-such-mode-id')",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    chrono::Utc::now().to_rfc3339()
+                ],
+            )
+            .unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        }
+
+        let purged = purge_orphaned_vocabulary(&db).unwrap();
+        assert_eq!(purged, 1, "exactly the orphaned row is purged");
+
+        let conn = db.conn().unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vocabulary_entries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2, "live-mode and global rows must survive");
+
+        drop(conn);
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use crate::actions::CommandIntent;
 use crate::error::{AppError, AppResult};
 use crate::llm::engine::LlmEngine;
-use crate::llm::schema::SlotExtraction;
+use crate::llm::profiles::{Profile, ProfileOutput};
 
 /// Dedicated-worker runner.
 ///
@@ -29,23 +29,34 @@ pub struct LlmRunner {
     tx: SyncSender<LlmRequest>,
     busy: Arc<AtomicBool>,
     last_used_ns: Arc<AtomicI64>,
+    /// The profile the worker's session should be warmed on.  Shared state
+    /// (not a queued message) so a profile switch can never be lost to a full
+    /// queue — the worker reconciles against this before every extraction and
+    /// prewarm.  There is only ever ONE warmed session (one KV cache); a
+    /// switch drops it and rebuilds on the new profile.
+    desired_profile: Arc<Mutex<&'static Profile>>,
     /// Kept alive to stop the worker cleanly on drop.
     _worker: WorkerHandle,
 }
 
 enum LlmRequest {
-    /// Structured Mode slot extraction (uses the warmed KV-cache session).
+    /// Structured Mode extraction on the active profile (uses the warmed
+    /// KV-cache session).
     Extract {
         text: String,
         screen_tokens: Vec<String>,
         source_app: Option<String>,
-        reply_tx: oneshot::Sender<AppResult<SlotExtraction>>,
+        reply_tx: oneshot::Sender<AppResult<ProfileOutput>>,
     },
     /// Command Mode free-form classification (one-off throwaway context).
     Classify {
         utterance: String,
         reply_tx: oneshot::Sender<AppResult<Vec<CommandIntent>>>,
     },
+    /// Opportunistic session rebuild (no reply). Sent when a recording starts
+    /// so an idle-dropped KV cache is re-warmed while the user is speaking
+    /// instead of on the extraction's critical path.
+    Prewarm,
 }
 
 /// RAII: dropping the handle drops the sender, which lets the worker exit
@@ -69,18 +80,33 @@ fn now_ns() -> i64 {
         .unwrap_or(0)
 }
 
+/// Poison-tolerant lock on the shared desired-profile cell.  The value is a
+/// `&'static Profile` (plain pointer), so a panicked writer can't have left
+/// it half-updated — recovering the inner value is always safe.
+fn lock_profile<'a>(
+    cell: &'a Mutex<&'static Profile>,
+) -> std::sync::MutexGuard<'a, &'static Profile> {
+    cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl LlmRunner {
-    /// Spawn a dedicated worker thread owning `engine`.
+    /// Spawn a dedicated worker thread owning `engine`, warmed on
+    /// `initial_profile`.
     ///
     /// The thread gets a 256 MB stack to match the Whisper loader — llama.cpp
     /// has the same enormous debug-build stack frames that cause
     /// STATUS_STACK_BUFFER_OVERRUN on Windows without this.
-    pub fn spawn<E: LlmEngine + 'static>(engine: E) -> AppResult<Self> {
+    pub fn spawn<E: LlmEngine + 'static>(
+        engine: E,
+        initial_profile: &'static Profile,
+    ) -> AppResult<Self> {
         let (tx, rx) = sync_channel::<LlmRequest>(1);
         let busy = Arc::new(AtomicBool::new(false));
         let last_used_ns = Arc::new(AtomicI64::new(now_ns()));
+        let desired_profile = Arc::new(Mutex::new(initial_profile));
         let worker_busy = Arc::clone(&busy);
         let worker_last_used = Arc::clone(&last_used_ns);
+        let worker_desired = Arc::clone(&desired_profile);
 
         let join = thread::Builder::new()
             .name("omnivox-llm".into())
@@ -94,17 +120,31 @@ impl LlmRunner {
                 const SESSION_IDLE_SECS: i64 = 5 * 60;
 
                 let engine = engine;
-                // Persistent extraction session — keeps the system prompt's
-                // KV cached across requests so each extraction only prefills
-                // the user's words.  Warmed here, in the background, right
-                // after model activation.  On failure we fall back to the
-                // stateless per-request path.
-                let mut session = match engine.new_session() {
-                    Ok(s) => Some(s),
-                    Err(e) => {
+                // Persistent extraction session — keeps the active profile's
+                // system prompt KV cached across requests so each extraction
+                // only prefills the user's words.  Warmed here, in the
+                // background, right after model activation.  On failure the
+                // per-request rebuild below retries.
+                let mut profile: &'static Profile = *lock_profile(&worker_desired);
+                // Wrap the initial session build in `catch_unwind` too (B2-9): a
+                // PANIC here (not just an Err) would otherwise unwind the whole
+                // worker thread, leaving a dead runner installed with a
+                // disconnected channel and no self-heal.  On panic/err we start
+                // with no session; the per-request rebuild (also guarded) retries.
+                let mut session = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || engine.new_session_for(profile),
+                )) {
+                    Ok(Ok(s)) => Some(s),
+                    Ok(Err(e)) => {
                         crate::llm::diaglog::log(&format!(
-                            "runner: session init failed, stateless fallback: {e}"
+                            "runner: session init failed (will retry per-request): {e}"
                         ));
+                        None
+                    }
+                    Err(_) => {
+                        crate::llm::diaglog::log(
+                            "runner: session init PANICKED (will retry per-request); worker alive",
+                        );
                         None
                     }
                 };
@@ -131,7 +171,37 @@ impl LlmRunner {
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
 
-                    let _busy_reset = BusyReset(Arc::clone(&worker_busy));
+                    // Held only for requests that actually acquired the busy
+                    // slot in `submit`. `Prewarm` bypasses `submit` (it never
+                    // sets `busy`), so it must NOT create a guard — otherwise
+                    // its drop at end-of-iteration would clear a *concurrent*
+                    // extraction's busy flag and defeat single-flight
+                    // backpressure (a second request could then queue behind
+                    // the in-flight native decode).
+                    let _busy_reset = match &req {
+                        LlmRequest::Prewarm => None,
+                        _ => Some(BusyReset(Arc::clone(&worker_busy))),
+                    };
+
+                    // Reconcile with the desired profile before any session
+                    // use.  A switch drops the old session (its KV prefix is
+                    // useless for the new prompt) — never two sessions alive.
+                    let want: &'static Profile = *lock_profile(&worker_desired);
+                    if want.id != profile.id {
+                        session = None;
+                        profile = want;
+                        crate::llm::diaglog::log(&format!(
+                            "runner: switching to profile '{}'",
+                            profile.id
+                        ));
+                    }
+
+                    // Self-heal: run each request's work under `catch_unwind`
+                    // so a Rust-side panic (a binding assertion, a postprocess
+                    // bug, a bad decode) unwinds into an error for the waiting
+                    // caller instead of tearing down the worker thread.  Once
+                    // the thread dies the channel disconnects and every future
+                    // `submit` returns "LLM worker has stopped" forever.
                     match req {
                         LlmRequest::Extract {
                             text,
@@ -139,32 +209,79 @@ impl LlmRunner {
                             source_app,
                             reply_tx,
                         } => {
-                            // Rebuild the session if it was idle-dropped (or
-                            // failed at init).  The request then pays one full
-                            // warm-up — same cost as the old stateless path.
-                            if session.is_none() {
-                                session = engine.new_session().ok();
-                            }
-                            let result = match session.as_mut() {
-                                Some(s) => s.extract_slots_with_context(
-                                    &text,
-                                    &screen_tokens,
-                                    source_app.as_deref(),
-                                ),
-                                None => engine.extract_slots_with_context(
-                                    &text,
-                                    &screen_tokens,
-                                    source_app.as_deref(),
-                                ),
-                            };
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    // Rebuild the session if it was idle-dropped,
+                                    // profile-switched, or failed at init.  The
+                                    // request then pays one full warm-up.
+                                    if session.is_none() {
+                                        session = engine.new_session_for(profile).ok();
+                                    }
+                                    match session.as_mut() {
+                                        Some(s) => s
+                                            .generate_raw(
+                                                &text,
+                                                &screen_tokens,
+                                                source_app.as_deref(),
+                                            )
+                                            .and_then(|raw| (profile.postprocess)(&raw, &text)),
+                                        None => Err(AppError::Llm(
+                                            "LLM session unavailable".into(),
+                                        )),
+                                    }
+                                }));
+                            // Release the busy slot BEFORE delivering the
+                            // reply: the native decode is done, and a caller
+                            // that observes the result must never race a
+                            // still-set busy flag (spurious rejections).
+                            drop(_busy_reset);
+                            let result = outcome.unwrap_or_else(|_| {
+                                // A panic leaves llama.cpp state suspect — drop
+                                // the session so the next request rebuilds it
+                                // fresh, and keep the worker alive.
+                                session = None;
+                                crate::llm::diaglog::log(
+                                    "runner: extraction panicked — session reset, worker alive",
+                                );
+                                Err(AppError::Llm("LLM worker recovered from a panic".into()))
+                            });
                             // Receiver may have been dropped by a timeout — ignore.
                             let _ = reply_tx.send(result);
                         }
                         LlmRequest::Classify { utterance, reply_tx } => {
                             // Runs on a throwaway context inside `classify_command`
                             // so the warmed extraction session is left intact.
-                            let result = engine.classify_command(&utterance);
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    engine.classify_command(&utterance)
+                                }));
+                            drop(_busy_reset);
+                            let result = outcome.unwrap_or_else(|_| {
+                                crate::llm::diaglog::log(
+                                    "runner: classify panicked — worker alive",
+                                );
+                                Err(AppError::Llm("LLM worker recovered from a panic".into()))
+                            });
                             let _ = reply_tx.send(result);
+                        }
+                        LlmRequest::Prewarm => {
+                            if session.is_none() {
+                                session = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| {
+                                        engine.new_session_for(profile).ok()
+                                    }),
+                                )
+                                .unwrap_or_else(|_| {
+                                    crate::llm::diaglog::log(
+                                        "runner: prewarm panicked — worker alive",
+                                    );
+                                    None
+                                });
+                                crate::llm::diaglog::log(&format!(
+                                    "runner: prewarmed session ({})",
+                                    profile.id
+                                ));
+                            }
                         }
                     }
                     worker_last_used.store(now_ns(), Ordering::Relaxed);
@@ -176,6 +293,7 @@ impl LlmRunner {
             tx,
             busy,
             last_used_ns,
+            desired_profile,
             _worker: WorkerHandle {
                 _join: Mutex::new(Some(join)),
             },
@@ -193,7 +311,7 @@ impl LlmRunner {
         &self,
         text: String,
         timeout: Duration,
-    ) -> AppResult<SlotExtraction> {
+    ) -> AppResult<ProfileOutput> {
         self.extract_with_context_and_timeout(text, Vec::new(), None, timeout)
             .await
     }
@@ -247,7 +365,7 @@ impl LlmRunner {
         screen_tokens: Vec<String>,
         source_app: Option<String>,
         timeout: Duration,
-    ) -> AppResult<SlotExtraction> {
+    ) -> AppResult<ProfileOutput> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let req = LlmRequest::Extract {
             text,
@@ -272,6 +390,34 @@ impl LlmRunner {
         self.submit(req, reply_rx, timeout, "classify").await
     }
 
+    /// Fire-and-forget: rebuild the warmed extraction session if it was
+    /// idle-dropped.  Silently ignored when the worker is busy or the queue
+    /// is full — this is an opportunistic head start, never load-bearing.
+    /// Does not take the busy slot: an extraction submitted while the
+    /// prewarm runs simply queues behind it and then benefits from the
+    /// freshly warmed session.
+    pub fn prewarm(&self) {
+        let _ = self.tx.try_send(LlmRequest::Prewarm);
+    }
+
+    /// Switch the active Structured Mode profile.
+    ///
+    /// Updates the shared desired-profile cell (can't be lost, even when the
+    /// worker is busy) and nudges a background re-warm so the KV session is
+    /// rebuilt on the new system prompt while the user isn't dictating.  If
+    /// the nudge is dropped (queue full), the next extraction reconciles and
+    /// pays the one-time warm cost itself — slow once, never wrong.
+    pub fn set_profile(&self, profile: &'static Profile) {
+        {
+            let mut desired = lock_profile(&self.desired_profile);
+            if desired.id == profile.id {
+                return;
+            }
+            *desired = profile;
+        }
+        let _ = self.tx.try_send(LlmRequest::Prewarm);
+    }
+
     /// Unix timestamp in nanoseconds when the worker last finished a job.
     pub fn last_used_ns(&self) -> i64 {
         self.last_used_ns.load(Ordering::Relaxed)
@@ -285,6 +431,8 @@ impl LlmRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::profiles;
+    use crate::llm::schema::SlotExtraction;
     use std::sync::Arc;
 
     struct SlowEngine {
@@ -304,9 +452,12 @@ mod tests {
     #[tokio::test]
     async fn rejects_second_request_while_native_inference_is_running() {
         let runner = Arc::new(
-            LlmRunner::spawn(SlowEngine {
-                delay: Duration::from_millis(100),
-            })
+            LlmRunner::spawn(
+                SlowEngine {
+                    delay: Duration::from_millis(100),
+                },
+                profiles::get(profiles::DEFAULT_PROFILE_ID),
+            )
             .unwrap(),
         );
 
@@ -333,7 +484,116 @@ mod tests {
         assert!(second.unwrap_err().to_string().contains("busy"));
 
         let first_result = first.await.unwrap().unwrap();
-        assert_eq!(first_result.goal, "first");
+        assert_eq!(first_result.slots["goal"], "first");
+        assert!(first_result.markdown.contains("first"));
         assert!(!runner.is_busy());
+    }
+
+    /// Engine whose first extraction panics, then succeeds — exercises the
+    /// worker's per-request `catch_unwind` self-heal.
+    struct PanicOnceEngine {
+        panicked: Arc<AtomicBool>,
+    }
+
+    impl LlmEngine for PanicOnceEngine {
+        fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction> {
+            if !self.panicked.swap(true, Ordering::SeqCst) {
+                panic!("simulated decode panic");
+            }
+            Ok(SlotExtraction {
+                goal: user_text.to_string(),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_survives_a_panicking_request() {
+        let runner = LlmRunner::spawn(
+            PanicOnceEngine {
+                panicked: Arc::new(AtomicBool::new(false)),
+            },
+            profiles::get(profiles::DEFAULT_PROFILE_ID),
+        )
+        .unwrap();
+
+        // First extraction panics inside the worker; it must come back as an
+        // error, not a dropped reply or a dead worker.
+        let first = runner
+            .extract_with_timeout("first".into(), Duration::from_secs(2))
+            .await;
+        assert!(first.is_err(), "panicking request should surface an error");
+
+        // The worker must still be alive: a second request succeeds and the
+        // busy slot was released after the panic.
+        assert!(!runner.is_busy());
+        let second = runner
+            .extract_with_timeout("second".into(), Duration::from_secs(2))
+            .await
+            .expect("worker should survive the earlier panic");
+        assert_eq!(second.slots["goal"], "second");
+    }
+
+    /// Engine that records which profile each session was built for, so the
+    /// test can observe the switch-triggered rebuild.
+    struct RecordingEngine {
+        sessions: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl LlmEngine for RecordingEngine {
+        fn extract_slots(&self, user_text: &str) -> AppResult<SlotExtraction> {
+            Ok(SlotExtraction {
+                goal: user_text.to_string(),
+                ..Default::default()
+            })
+        }
+
+        fn new_session_for(
+            &self,
+            profile: &'static Profile,
+        ) -> AppResult<Box<dyn crate::llm::engine::LlmSession + '_>> {
+            self.sessions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(profile.id);
+            Ok(Box::new(crate::llm::engine::StatelessSession(self)))
+        }
+    }
+
+    #[tokio::test]
+    async fn set_profile_rebuilds_session_on_new_profile_in_background() {
+        let sessions = Arc::new(Mutex::new(Vec::new()));
+        let runner = LlmRunner::spawn(
+            RecordingEngine {
+                sessions: Arc::clone(&sessions),
+            },
+            profiles::get(profiles::DEFAULT_PROFILE_ID),
+        )
+        .unwrap();
+
+        // Initial session is built (in the worker) on the default profile.
+        for _ in 0..200 {
+            if !sessions.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(*sessions.lock().unwrap(), vec!["agent-prompt"]);
+
+        // Switching kicks a background re-warm on the new profile — exactly
+        // one new session, no extraction needed.
+        runner.set_profile(profiles::get("email"));
+        for _ in 0..200 {
+            if sessions.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(*sessions.lock().unwrap(), vec!["agent-prompt", "email"]);
+
+        // Setting the same profile again is a no-op (no session churn).
+        runner.set_profile(profiles::get("email"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(sessions.lock().unwrap().len(), 2);
     }
 }

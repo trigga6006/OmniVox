@@ -271,7 +271,11 @@ mod mac {
 /// `factor` is the multiplier applied to the current volume (0.0 = mute, 1.0 = no change).
 /// Pass `None` to use the default factor (0.30).
 pub fn duck(factor: Option<f32>) {
+    // Ducking is unimplemented on Linux; keep the no-op path compiling.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let f = factor.unwrap_or(DEFAULT_DUCK_FACTOR);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = factor;
 
     #[cfg(target_os = "windows")]
     win::duck(f);

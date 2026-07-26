@@ -18,6 +18,7 @@ export default defineConfig(async () => ({
       input: {
         main: path.resolve(__dirname, "index.html"),
         overlay: path.resolve(__dirname, "overlay.html"),
+        scratchpad: path.resolve(__dirname, "scratchpad.html"),
       },
       output: {
         // Separate vendor chunk so React/Zustand are shared if both

@@ -306,6 +306,18 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
         </div>
       </div>
 
+      {/* Truncation warning — long dictation exceeded the LLM input cap.
+          The raw transcript always carries the full text. */}
+      {payload.truncated_chars > 0 && (
+        <div className="sp-error">
+          <span className="sp-error-dot" />
+          <span className="sp-error-text">
+            Long dictation — the last ~{payload.truncated_chars} characters
+            weren't structured. Use Raw for the full text.
+          </span>
+        </div>
+      )}
+
       {/* Error banner */}
       {pasteError && (
         <div className="sp-error">
@@ -482,8 +494,8 @@ function UrgencyChip({ value }: { value: "low" | "normal" | "high" }) {
 }
 
 /**
- * Minimal Markdown renderer — handles headings (##), unordered lists (- ),
- * and inline code (`…`).  The Structured Mode template only uses these
+ * Minimal Markdown renderer — handles headings (## and ###), unordered lists
+ * (- ), and inline code (`…`).  The Structured Mode templates only use these
  * features, so we avoid pulling in a full Markdown library just for the panel.
  */
 function MarkdownPreview({ markdown }: { markdown: string }) {
@@ -503,7 +515,16 @@ function MarkdownPreview({ markdown }: { markdown: string }) {
   };
 
   lines.forEach((line, i) => {
-    if (line.startsWith("## ")) {
+    if (line.startsWith("### ")) {
+      // Sub-heading — used by the notes-outline profile's section headings.
+      flushList(String(i));
+      elements.push(
+        <div key={`h-${i}`} className="sp-h sp-h--sub">
+          <span className="sp-h-rule" aria-hidden="true" />
+          <span className="sp-h-text">{line.slice(4)}</span>
+        </div>
+      );
+    } else if (line.startsWith("## ")) {
       flushList(String(i));
       elements.push(
         <div key={`h-${i}`} className="sp-h">

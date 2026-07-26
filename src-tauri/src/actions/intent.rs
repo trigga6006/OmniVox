@@ -21,6 +21,22 @@ pub enum KeyChord {
     Screenshot,
     /// Win+D on Windows — minimize everything / show the desktop (reversible).
     ShowDesktop,
+    /// F5 — reload the current page / view.
+    Refresh,
+    /// Ctrl+F — open the in-page / in-app find bar.
+    Find,
+    /// Ctrl+N — open a new window.
+    NewWindow,
+    /// Ctrl+Shift+T — reopen the last closed tab.
+    ReopenTab,
+    /// Ctrl+Tab — switch to the next tab.
+    NextTab,
+    /// Ctrl+Shift+Tab — switch to the previous tab.
+    PrevTab,
+    /// Page Down — scroll down one page.
+    PageDown,
+    /// Page Up — scroll up one page.
+    PageUp,
 }
 
 impl KeyChord {
@@ -38,6 +54,14 @@ impl KeyChord {
             KeyChord::CloseTab => "Closed tab",
             KeyChord::Screenshot => "Screenshot",
             KeyChord::ShowDesktop => "Showed desktop",
+            KeyChord::Refresh => "Refreshed",
+            KeyChord::Find => "Opened find",
+            KeyChord::NewWindow => "New window",
+            KeyChord::ReopenTab => "Reopened tab",
+            KeyChord::NextTab => "Next tab",
+            KeyChord::PrevTab => "Previous tab",
+            KeyChord::PageDown => "Page down",
+            KeyChord::PageUp => "Page up",
         }
     }
 }
@@ -49,6 +73,10 @@ pub enum MediaAction {
     NextTrack,
     PrevTrack,
     Mute,
+    /// Explicit un-mute (distinct from the blind VK_VOLUME_MUTE toggle) — set
+    /// deterministically via WASAPI so "unmute"/"sound on" never silences audio
+    /// that's already on. Produced by the deterministic matcher only.
+    Unmute,
     VolumeUp,
     VolumeDown,
 }
@@ -60,6 +88,7 @@ impl MediaAction {
             MediaAction::NextTrack => "Next track",
             MediaAction::PrevTrack => "Previous track",
             MediaAction::Mute => "Mute",
+            MediaAction::Unmute => "Unmute",
             MediaAction::VolumeUp => "Volume up",
             MediaAction::VolumeDown => "Volume down",
         }
@@ -80,6 +109,16 @@ impl WindowAction {
             WindowAction::Maximize => "Maximized",
         }
     }
+}
+
+/// An action on OmniVox's own scratchpad window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScratchpadAction {
+    Open,
+    Close,
+    /// Wipe the saved cards + note. Destructive, so the pipeline routes it
+    /// through the confirm pill before executing.
+    Clear,
 }
 
 /// A resolved command intent — the closed action enum.
@@ -106,7 +145,57 @@ pub enum CommandIntent {
     /// send it — consequential, so the pipeline routes any intent/chain
     /// containing one through the confirm pill before executing.
     TypeText { text: String, submit: bool },
+    /// Act on OmniVox's own scratchpad window.  Executed in the pipeline (it
+    /// needs the Tauri `AppHandle`; the executor is OS-only).
+    Scratchpad(ScratchpadAction),
 }
+
+/// The canonical LLM action vocabulary — SINGLE SOURCE OF TRUTH for the
+/// name set that is otherwise triplicated across `from_llm` below, the
+/// GBNF grammar (`resources/grammars/command_intent_v1.gbnf`), and the
+/// prompt's ACTIONS section (`llm::prompt::COMMAND_SYSTEM_PROMPT`).
+/// Tests in this module assert all three stay in sync — adding a verb
+/// without updating every surface fails the build's test step.
+pub const ACTION_NAMES: &[&str] = &[
+    "open_app",
+    "focus_app",
+    "web_search",
+    "open_url",
+    "type_text",
+    "send_message",
+    "copy",
+    "paste",
+    "cut",
+    "undo",
+    "redo",
+    "select_all",
+    "save",
+    "new_tab",
+    "close_tab",
+    "screenshot",
+    "show_desktop",
+    "refresh",
+    "find_in_page",
+    "new_window",
+    "reopen_tab",
+    "next_tab",
+    "prev_tab",
+    "page_down",
+    "page_up",
+    "play_pause",
+    "next_track",
+    "prev_track",
+    "mute",
+    "volume_up",
+    "volume_down",
+    "minimize",
+    "maximize",
+    "close_window",
+    "open_scratchpad",
+    "close_scratchpad",
+    "clear_scratchpad",
+    "none",
+];
 
 impl CommandIntent {
     /// Map the LLM fallback's `{action, target}` output (snake_case action enum
@@ -135,6 +224,14 @@ impl CommandIntent {
             "close_tab" => CommandIntent::KeyChord(KeyChord::CloseTab),
             "screenshot" => CommandIntent::KeyChord(KeyChord::Screenshot),
             "show_desktop" => CommandIntent::KeyChord(KeyChord::ShowDesktop),
+            "refresh" => CommandIntent::KeyChord(KeyChord::Refresh),
+            "find_in_page" => CommandIntent::KeyChord(KeyChord::Find),
+            "new_window" => CommandIntent::KeyChord(KeyChord::NewWindow),
+            "reopen_tab" => CommandIntent::KeyChord(KeyChord::ReopenTab),
+            "next_tab" => CommandIntent::KeyChord(KeyChord::NextTab),
+            "prev_tab" => CommandIntent::KeyChord(KeyChord::PrevTab),
+            "page_down" => CommandIntent::KeyChord(KeyChord::PageDown),
+            "page_up" => CommandIntent::KeyChord(KeyChord::PageUp),
             "play_pause" => CommandIntent::Media(MediaAction::PlayPause),
             "next_track" => CommandIntent::Media(MediaAction::NextTrack),
             "prev_track" => CommandIntent::Media(MediaAction::PrevTrack),
@@ -144,6 +241,9 @@ impl CommandIntent {
             "minimize" => CommandIntent::Window(WindowAction::Minimize),
             "maximize" => CommandIntent::Window(WindowAction::Maximize),
             "close_window" => CommandIntent::CloseWindow,
+            "open_scratchpad" => CommandIntent::Scratchpad(ScratchpadAction::Open),
+            "close_scratchpad" => CommandIntent::Scratchpad(ScratchpadAction::Close),
+            "clear_scratchpad" => CommandIntent::Scratchpad(ScratchpadAction::Clear),
             "web_search" => CommandIntent::WebSearch(target.trim().to_string()),
             "type_text" | "send_message" => {
                 let t = target.trim();
@@ -246,6 +346,18 @@ mod tests {
             Some(CommandIntent::CloseWindow)
         );
         assert_eq!(
+            CommandIntent::from_llm("open_scratchpad", ""),
+            Some(CommandIntent::Scratchpad(ScratchpadAction::Open))
+        );
+        assert_eq!(
+            CommandIntent::from_llm("close_scratchpad", ""),
+            Some(CommandIntent::Scratchpad(ScratchpadAction::Close))
+        );
+        assert_eq!(
+            CommandIntent::from_llm("clear_scratchpad", ""),
+            Some(CommandIntent::Scratchpad(ScratchpadAction::Clear))
+        );
+        assert_eq!(
             CommandIntent::from_llm("type_text", "hello world"),
             Some(CommandIntent::TypeText {
                 text: "hello world".into(),
@@ -289,6 +401,64 @@ mod tests {
         // rejects the WHOLE utterance rather than silently running a partial.
         let json = r#"[{"action":"open_app","target":"Spotify"},{"action":"none","target":""}]"#;
         assert!(CommandIntent::from_llm_list(json).is_empty());
+    }
+
+    /// Extract the quoted action names from the grammar's `action ::=` rule.
+    fn grammar_action_names() -> Vec<String> {
+        let gbnf = include_str!("../../resources/grammars/command_intent_v1.gbnf");
+        let line = gbnf
+            .lines()
+            .find(|l| l.trim_start().starts_with("action ::="))
+            .expect("grammar has an action rule");
+        // Alternatives look like  "\"open_app\""  — pull the inner name.
+        line.split('|')
+            .filter_map(|alt| {
+                let alt = alt.trim().trim_start_matches("action ::=").trim();
+                alt.strip_prefix("\"\\\"")
+                    .and_then(|s| s.strip_suffix("\\\"\""))
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grammar_matches_canonical_action_table() {
+        let mut grammar: Vec<String> = grammar_action_names();
+        let mut canonical: Vec<String> = ACTION_NAMES.iter().map(|s| s.to_string()).collect();
+        grammar.sort();
+        canonical.sort();
+        assert_eq!(
+            grammar, canonical,
+            "command_intent_v1.gbnf action set drifted from intent::ACTION_NAMES"
+        );
+    }
+
+    #[test]
+    fn from_llm_accepts_exactly_the_canonical_table() {
+        for name in ACTION_NAMES {
+            if *name == "none" {
+                assert_eq!(CommandIntent::from_llm(name, "x"), None);
+                continue;
+            }
+            // A non-empty target satisfies the actions that require one and is
+            // ignored by the rest.
+            assert!(
+                CommandIntent::from_llm(name, "some target").is_some(),
+                "canonical action '{name}' is not handled by from_llm"
+            );
+        }
+        assert_eq!(CommandIntent::from_llm("not_an_action", "x"), None);
+    }
+
+    #[test]
+    fn prompt_documents_every_canonical_action() {
+        let prompt = crate::llm::prompt::COMMAND_SYSTEM_PROMPT;
+        for name in ACTION_NAMES {
+            assert!(
+                prompt.contains(name),
+                "COMMAND_SYSTEM_PROMPT does not mention action '{name}'"
+            );
+        }
     }
 
     #[test]

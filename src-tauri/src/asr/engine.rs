@@ -57,11 +57,33 @@ impl WhisperEngine {
         let ctx = WhisperContext::new_with_params(path, ctx_params)
             .map_err(|e| AppError::Asr(format!("Failed to load model '{path}': {e}")))?;
 
-        // Prove the first real transcription can allocate its decode state
-        // while we are still in the loader's GPU/CPU fallback path.
-        let state_probe = ctx
+        // Allocate a decode state here (while still in the loader's GPU/CPU
+        // fallback path) AND run one throwaway pass on it so the GPU compute
+        // graph — Vulkan/CUDA pipeline compilation, buffer allocation, first-
+        // kernel JIT — is built on this loader thread instead of stalling the
+        // user's first real dictation. Best-effort: a warmup failure is non-fatal.
+        let mut state_probe = ctx
             .create_state()
             .map_err(|e| AppError::Asr(format!("Failed to allocate decode state: {e}")))?;
+        {
+            let mut warm = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+            warm.set_n_threads(config.n_threads as i32);
+            warm.set_translate(false);
+            warm.set_print_progress(false);
+            warm.set_print_special(false);
+            warm.set_print_realtime(false);
+            warm.set_print_timestamps(false);
+            warm.set_no_speech_thold(0.6);
+            // ~1s of silence — enough to build and execute the full graph.
+            let silence = vec![0.0f32; 16_000];
+            let _ = state_probe.full(warm, &silence);
+        }
+        // Drop the warmed state. The Vulkan/CUDA pipeline + kernel compilation it
+        // triggered is cached at the backend/device level and persists, so the
+        // warmup benefit survives — but we do NOT keep the (hundreds-of-MB)
+        // decode buffers resident, which would overlap the live-preview worker's
+        // state on smaller GPUs (the exact contention the pipeline serializes to
+        // avoid) and could reuse a state left bad by a failed warmup.
         drop(state_probe);
 
         Ok(Self {
@@ -192,7 +214,9 @@ impl AsrEngine for WhisperEngine {
             });
         }
 
-        // Each call gets its own state — cheap to create, owns the decode buffers.
+        // Each call gets its own decode state — cheap to create, owns the decode
+        // buffers, and dropped at the end of the call so it never overlaps the
+        // live-preview worker's state on smaller GPUs.
         let mut state = self
             .ctx
             .create_state()

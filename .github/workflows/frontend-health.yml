@@ -1,0 +1,30 @@
+name: frontend-health
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm run build` = tsc && vite build — catches TS type drift
+      # (e.g. Rust/TS payload mismatches) and broken imports that the
+      # Windows-only Rust workflow never sees.
+      - name: Typecheck and build
+        run: npm run build
+
+      # vitest — pure-logic frontend tests (analytics compute, overlay sizing)
+      - name: Unit tests
+        run: npm test

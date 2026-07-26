@@ -452,3 +452,84 @@ fn strips_markdown_bullets_before_formatting() {
         "Asterisk bullets should be stripped: {result}"
     );
 }
+
+// ── Counted header: short dictations + numbered ordinals ──────
+
+#[test]
+fn short_counted_header_formats() {
+    // A counted header is an explicit signal — honored below the word gate.
+    let input = "I need these three things. Milk. Eggs. Bread.";
+    let result = format_lists(input);
+    assert_eq!(
+        result,
+        "I need these three things.\n- Milk.\n- Eggs.\n- Bread."
+    );
+}
+
+#[test]
+fn short_text_without_header_still_passes_through_exactly() {
+    // Three sentences, no counted header — must round-trip byte-exact.
+    let input = "I went to the store.  I bought milk. I came home.";
+    assert_eq!(format_lists(input), input);
+}
+
+#[test]
+fn counted_header_with_ordinal_items_becomes_numbered() {
+    let input = "Here are the three steps for tonight before the launch window closes. \
+                 First, set up the database with the new schema and migrations. \
+                 Second, write the API endpoints for the new service layer. \
+                 Third, deploy everything to the staging environment for review.";
+    let result = format_lists(input);
+    assert!(
+        result.contains("1. Set up the database with the new schema and migrations."),
+        "ordinal items should be numbered with ordinals stripped: {result}"
+    );
+    assert!(result.contains("2. Write the API endpoints for the new service layer."));
+    assert!(result.contains("3. Deploy everything to the staging environment for review."));
+    assert!(!result.contains("First,"), "spoken ordinal should be stripped: {result}");
+}
+
+#[test]
+fn counted_header_without_ordinals_stays_bulleted() {
+    let input = "I need these three items handled before the end of the day today. \
+                 Update the settings panel copy so users can scan it quickly. \
+                 Fix the formatter so lists only come from counted requests. \
+                 Run the regression tests against the release branch.";
+    let result = format_lists(input);
+    assert!(result.contains("- Update the settings panel copy"));
+    assert!(!result.contains("1. "), "non-ordinal items stay bullets: {result}");
+}
+
+#[test]
+fn ordinal_only_run_still_stays_prose() {
+    // No counted header — ordinals alone must never trigger a list.
+    let input = "First, we look at the budget for the quarter and trim it down. \
+                 Second, we meet with the design team about the new landing page. \
+                 Third, we finalize the hiring plan for the platform group. \
+                 Fourth, we review the incident postmortem from last week. \
+                 Fifth, we close out the roadmap review with the stakeholders.";
+    let result = format_lists(input);
+    assert!(!result.contains("- "), "ordinal-only runs stay prose: {result}");
+    assert!(!result.contains("1. "), "ordinal-only runs stay prose: {result}");
+}
+
+// ── UTF-8 boundary safety ──────────────────────────────────────
+// Regression: a multibyte char immediately before a sentence-final period
+// (Whisper emits typographic apostrophes/dashes/ellipses constantly) made the
+// old `rfind(..).map(|p| p + 1)` slice mid-char and panic.
+
+#[test]
+fn multibyte_before_period_does_not_panic() {
+    for input in [
+        "I don\u{2019}t.",                // curly apostrophe
+        "She can\u{2019}t. Really.",
+        "Wait \u{2014} I can\u{2019}t.",  // em-dash + curly apostrophe
+        "Well\u{2026}. Fine.",            // ellipsis then period
+        "It costs 20\u{00b0}. Hot.",      // degree sign
+        "Caf\u{00e9}. Yes.",              // multibyte alphabetic before period
+    ] {
+        // Must not panic; we only assert it produces *some* output.
+        let out = format_lists(input);
+        assert!(!out.is_empty(), "empty output for {input:?}");
+    }
+}

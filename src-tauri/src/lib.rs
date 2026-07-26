@@ -61,25 +61,37 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Overlay idle *window* size in logical px — the pill slit plus its glow
+/// margin.  Single source of truth on the Rust side (window creation +
+/// `recover_overlay`); MUST match `IDLE_WIN_W`/`IDLE_WIN_H` in
+/// `src/features/overlay/useOverlaySizing.ts`.
+pub const OVERLAY_IDLE_WIN_W: f64 = 112.0;
+pub const OVERLAY_IDLE_WIN_H: f64 = 26.0;
+
 /// Create the floating overlay pill window — transparent, borderless,
 /// always-on-top, positioned just above the taskbar/dock at screen center.
 fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::WebviewWindowBuilder;
 
-    // Start at active size — the frontend shrinks it to idle once mounted.
-    let pill_width = 210.0_f64;
-    let pill_height = 34.0_f64;
-    let taskbar_height = 48.0_f64;
+    // Created at idle size so there is no startup flash — the frontend's
+    // mount-time resize to the same idle size is then a no-op.
+    let pill_width = OVERLAY_IDLE_WIN_W;
+    let pill_height = OVERLAY_IDLE_WIN_H;
     let margin = 12.0_f64;
 
+    // Bottom-center of the primary monitor's WORK AREA (screen minus
+    // taskbar/appbars) — no hardcoded taskbar height, so side-docked,
+    // scaled, and auto-hide taskbars all position correctly.
     let (x, y) = if let Some(monitor) = app.primary_monitor()? {
-        let size = monitor.size();
         let scale = monitor.scale_factor();
-        let screen_w = size.width as f64 / scale;
-        let screen_h = size.height as f64 / scale;
+        let wa = monitor.work_area();
+        let wa_x = wa.position.x as f64 / scale;
+        let wa_y = wa.position.y as f64 / scale;
+        let wa_w = wa.size.width as f64 / scale;
+        let wa_h = wa.size.height as f64 / scale;
         (
-            (screen_w - pill_width) / 2.0,
-            screen_h - taskbar_height - pill_height - margin,
+            wa_x + (wa_w - pill_width) / 2.0,
+            wa_y + wa_h - pill_height - margin,
         )
     } else {
         (400.0, 800.0) // fallback
@@ -105,6 +117,118 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     .build()?;
 
     Ok(())
+}
+
+/// Keep the always-on-top overlay pill reachable for the whole session.
+///
+/// `always_on_top(true)` is set once at window creation, but Windows demotes
+/// always-on-top windows over time: a fullscreen app, a UAC prompt, an
+/// explorer.exe restart, or a lock/unlock cycle can steal the z-order, and a
+/// monitor sleep/wake or unplug can leave the pill parked off every screen.
+/// The tray's "Reset Pill" item fixes both by hand; this watchdog does the
+/// same two corrections automatically on a low-frequency tick so the pill can
+/// never silently vanish mid-session (the bug: visible for hours, then gone).
+///
+/// Re-asserting HWND_TOPMOST without moving/sizing/activating is a visual
+/// no-op when the pill is already topmost, so there is no flicker or focus
+/// theft; the off-screen reposition only fires when the window intersects no
+/// connected monitor (a disconnected/slept display).
+fn start_overlay_watchdog(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+            let Some(window) = app.get_webview_window("overlay") else {
+                // Window destroyed entirely (WebView2 process kill) — nothing
+                // to re-assert; only a full relaunch recovers that.
+                continue;
+            };
+
+            // Ghost mode dims via CSS opacity, not an OS hide, so a genuinely
+            // hidden OS window is abnormal — restore it.
+            if matches!(window.is_visible(), Ok(false)) {
+                let _ = window.show();
+            }
+
+            #[cfg(target_os = "windows")]
+            overlay_watchdog_tick(&app, &window);
+        }
+    });
+}
+
+/// One Windows watchdog correction: re-assert topmost, and pull the pill back
+/// on-screen if it drifted off every connected monitor.
+#[cfg(target_os = "windows")]
+fn overlay_watchdog_tick(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+
+    let Ok(hwnd_raw) = window.hwnd() else { return };
+    let hwnd: HWND = hwnd_raw.0 as HWND;
+
+    // Does the window's rect intersect any connected monitor?  If it does,
+    // a plain topmost re-assert is all we need.  If it doesn't (parked on a
+    // now-disconnected/slept monitor), move it back to the primary work area.
+    let on_screen = overlay_intersects_a_monitor(app, window);
+    if on_screen {
+        // SAFETY: hwnd just retrieved from Tauri; NOMOVE|NOSIZE|NOACTIVATE
+        // touches only z-order, so this cannot move focus or resize the pill.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        return;
+    }
+
+    // Off every monitor — reposition to the primary work area, keeping the
+    // current size (SWP_NOSIZE) so we don't clip an expanded pill, and assert
+    // topmost in the same call.
+    let Ok(Some(primary)) = app.primary_monitor() else { return };
+    let Ok(size) = window.outer_size() else { return };
+    let wa = primary.work_area();
+    // 12px gap above the work-area bottom — matches setup_overlay_window.
+    let margin_phys = (12.0 * primary.scale_factor()).round() as i32;
+    let x = wa.position.x + ((wa.size.width as i32 - size.width as i32) / 2);
+    let y = wa.position.y + wa.size.height as i32 - size.height as i32 - margin_phys;
+
+    eprintln!("overlay watchdog: pill was off-screen — repositioning to primary monitor");
+    // SAFETY: as above; SWP_NOSIZE keeps the current size, we only move + topmost.
+    unsafe {
+        SetWindowPos(hwnd, HWND_TOPMOST, x, y.max(0), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+/// True if the overlay window's rect overlaps any connected monitor.
+#[cfg(target_os = "windows")]
+fn overlay_intersects_a_monitor(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> bool {
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        // Can't tell — assume on-screen so we never reposition on a bad read.
+        return true;
+    };
+    let (wx, wy) = (pos.x, pos.y);
+    let (ww, wh) = (size.width as i32, size.height as i32);
+
+    let monitors = match app.available_monitors() {
+        Ok(m) => m,
+        Err(_) => return true, // can't enumerate — don't reposition
+    };
+    monitors.iter().any(|m| {
+        let mp = m.position();
+        let ms = m.size();
+        let (mx, my) = (mp.x, mp.y);
+        let (mw, mh) = (ms.width as i32, ms.height as i32);
+        // Standard AABB overlap test.
+        wx < mx + mw && wx + ww > mx && wy < my + mh && wy + wh > my
+    })
 }
 
 /// Copy bundled model files from Tauri resources to user directories on first launch.
@@ -225,7 +349,7 @@ fn load_default_llm_deferred(app_handle: &tauri::AppHandle, state: &state::AppSt
     }
 
     eprintln!("Loading LLM model in background...");
-    match commands::llm::load_and_activate_llm(&model_id, state) {
+    match commands::llm::load_and_activate_llm_with_status(&model_id, state, Some(app_handle)) {
         Ok(()) => {
             eprintln!("LLM model loaded successfully");
             let _ = app_handle.emit("llm-model-loaded", &model_id);
@@ -385,7 +509,10 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
 
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -414,6 +541,44 @@ pub fn run() {
             // Load persisted settings (output mode, etc.) into in-memory state
             apply_persisted_settings(&state);
 
+            // Reconcile launch-at-startup with the persisted setting — the
+            // registry entry can drift (exe moved, user cleaned it manually).
+            // The setting is the source of truth.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let want = crate::storage::settings::get_settings(&state.db)
+                    .map(|s| s.auto_start)
+                    .unwrap_or(false);
+                let autolaunch = app.autolaunch();
+                // `is_enabled()` only checks Run-key *presence*, not that the
+                // stored command points at the current exe — a moved binary
+                // leaves a stale entry it still reports as enabled.  `enable()`
+                // is idempotent and rewrites the key to the current path, so
+                // call it unconditionally when the setting wants autostart;
+                // only disable when a key is actually present.
+                let result = if want {
+                    Some(autolaunch.enable())
+                } else if autolaunch.is_enabled().unwrap_or(false) {
+                    Some(autolaunch.disable())
+                } else {
+                    None
+                };
+                if let Some(Err(e)) = result {
+                    eprintln!("Launch-at-startup reconcile failed: {e}");
+                }
+            }
+
+            // Startup repair: drop vocabulary rows whose mode no longer
+            // exists (possible in DBs predating FK enforcement). Orphans by
+            // definition reference IDs that no longer exist, so running
+            // before mode seeding is safe — builtin modes persist in the
+            // table across restarts.
+            match crate::storage::context_modes::purge_orphaned_vocabulary(&state.db) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("Purged {n} orphaned mode-scoped vocabulary entries"),
+                Err(e) => eprintln!("Orphaned-vocabulary purge failed: {e}"),
+            }
+
             // Seed the default "General" context mode and load the active mode
             if let Ok(general_id) = crate::storage::context_modes::seed_general_mode(&state.db) {
                 // Load the persisted active mode, or default to General
@@ -423,6 +588,16 @@ pub fn run() {
                     .unwrap_or(general_id.clone());
 
                 *state.active_context_mode_id.lock().unwrap() = Some(active_id.clone());
+
+                // Restore the active mode's Structured Mode profile before
+                // the deferred LLM load below so the runner warms the right
+                // system prompt on the first try.
+                if let Ok(mode) =
+                    crate::storage::context_modes::get_mode(&state.db, &active_id)
+                {
+                    *state.active_structured_profile.lock().unwrap() =
+                        crate::llm::profiles::get(&mode.structured_profile);
+                }
 
                 // Load global + mode-scoped dictionary/snippets into processor
                 commands::dictionary::sync_processor(&state);
@@ -456,8 +631,17 @@ pub fn run() {
 
                 // Restore Structured Mode if it was on at last shutdown.
                 // Runs after the Whisper model so it doesn't compete with
-                // that load for the background pool's first slot.
-                load_default_llm_deferred(&handle, &st);
+                // that load for the background pool's first slot.  The LLM load
+                // holds LLM_LOAD_LOCK across a blocking GGUF load + thread join,
+                // so it runs on the blocking pool, not this tokio worker (B2-8).
+                {
+                    let h = handle.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let st = h.state::<state::AppState>();
+                        load_default_llm_deferred(&h, &st);
+                    })
+                    .await;
+                }
 
                 // Pre-warm the Command-Mode app index so the first "open <app>"
                 // resolves instantly instead of spawning PowerShell mid-command.
@@ -472,6 +656,12 @@ pub fn run() {
             // Create the floating overlay pill — always-on-top, transparent,
             // positioned just above the taskbar/dock.
             setup_overlay_window(app)?;
+
+            // Keep the pill reachable: Windows demotes always-on-top windows
+            // over a long session (fullscreen apps, lock/unlock, monitor
+            // sleep), which previously left the pill gone until a manual
+            // "Reset Pill".  This re-asserts topmost + on-screen automatically.
+            start_overlay_watchdog(app.handle().clone());
 
             // Install the hotkey via a low-level keyboard hook.
             hotkey::install(app.handle().clone());
@@ -548,6 +738,19 @@ pub fn run() {
             commands::update_note,
             commands::delete_note,
             commands::list_notes,
+            // Scratchpad commands (11)
+            commands::open_scratchpad,
+            commands::close_scratchpad,
+            commands::scratchpad_get,
+            commands::scratchpad_set_note,
+            commands::scratchpad_add_entry,
+            commands::scratchpad_delete_entry,
+            commands::scratchpad_clear_pad,
+            commands::scratchpad_set_variant,
+            commands::save_scratchpad_position,
+            commands::save_scratchpad_size,
+            commands::set_scratchpad_capture,
+            commands::scratchpad_get_capture,
             // Mode-scoped dictionary/snippet commands (6)
             commands::list_mode_dictionary_entries,
             commands::add_mode_dictionary_entry,
@@ -575,7 +778,7 @@ pub fn run() {
             commands::list_app_bindings,
             commands::add_app_binding,
             commands::delete_app_binding,
-            // LLM / Structured Mode commands (7)
+            // LLM / Structured Mode commands (8)
             commands::list_llm_models,
             commands::download_llm_model,
             commands::delete_llm_model,
@@ -583,6 +786,7 @@ pub fn run() {
             commands::set_active_llm_model,
             commands::llm_test_extract,
             commands::paste_structured_output,
+            commands::get_llm_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");

@@ -5,6 +5,7 @@ pub mod database;
 pub mod dictionary;
 pub mod history;
 pub mod notes;
+pub mod scratchpad;
 pub mod settings;
 pub mod snippets;
 pub mod types;

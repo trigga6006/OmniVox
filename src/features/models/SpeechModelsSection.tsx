@@ -81,7 +81,7 @@ export function SpeechModelsSection() {
             <Card
               key={model.id}
               className={cn(
-                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-all duration-200 hover:border-border-hover animate-slide-up",
+                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-colors duration-200 hover:border-border-hover animate-slide-up",
                 isActive && "border-l-[3px] border-l-success/75",
                 model.recommended && !isActive && "border-l-[3px] border-l-amber-500/70"
               )}
@@ -163,7 +163,7 @@ export function SpeechModelsSection() {
         >
           <div className="mb-2.5 flex items-center gap-2">
             <Cpu size={13} strokeWidth={1.75} className="text-text-muted" />
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+            <span className="eyebrow">
               Hardware
             </span>
           </div>

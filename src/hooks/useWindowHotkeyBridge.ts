@@ -37,21 +37,45 @@ export function useWindowHotkeyBridge() {
       chain = chain.then(() => feedHotkeyEvent(vk, down).catch(() => {}));
     };
 
+    // Keys THIS window forwarded a down for.  If the window blurs or hides
+    // mid-hold, their keyups will never arrive here — and a missed keyup
+    // leaves the backend hold-mode recording running forever (the "dictation
+    // never stops in the scratchpad" bug).  Flush synthetic ups instead.
+    const forwardedDown = new Set<number>();
+
     const onDown = (e: KeyboardEvent) => {
       if (e.repeat) return; // ignore auto-repeat; the state machine only needs edges
       const vk = CODE_TO_VK[e.code];
-      if (vk !== undefined) enqueue(vk, true);
+      if (vk !== undefined) {
+        forwardedDown.add(vk);
+        enqueue(vk, true);
+      }
     };
     const onUp = (e: KeyboardEvent) => {
       const vk = CODE_TO_VK[e.code];
-      if (vk !== undefined) enqueue(vk, false);
+      if (vk !== undefined) {
+        forwardedDown.delete(vk);
+        enqueue(vk, false);
+      }
+    };
+    const flushDown = () => {
+      for (const vk of forwardedDown) enqueue(vk, false);
+      forwardedDown.clear();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushDown();
     };
 
     window.addEventListener("keydown", onDown, true);
     window.addEventListener("keyup", onUp, true);
+    window.addEventListener("blur", flushDown);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("keydown", onDown, true);
       window.removeEventListener("keyup", onUp, true);
+      window.removeEventListener("blur", flushDown);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flushDown();
     };
   }, []);
 }

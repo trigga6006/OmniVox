@@ -1,4 +1,4 @@
-use crate::llm::schema::{SlotExtraction, Urgency};
+use crate::llm::schema::{EmailExtraction, NotesExtraction, SlotExtraction, Urgency};
 
 /// Render a `SlotExtraction` into the canonical target-agnostic Markdown.
 ///
@@ -92,6 +92,88 @@ pub fn render_markdown(s: &SlotExtraction) -> String {
         out.push_str("\n## Options\n");
         for o in &s.options {
             let trimmed = o.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            out.push_str("- ");
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+/// Render an `EmailExtraction` into a ready-to-paste draft.
+///
+/// Deliberately markdown-light: `To:` / `Subject:` header lines when present,
+/// then the body points as paragraphs, then the sign-off.  Empty slots render
+/// nothing — a subject-less, recipient-less dictation is just the body.
+pub fn render_email(e: &EmailExtraction) -> String {
+    let mut out = String::new();
+
+    if !e.recipient_hint.is_empty() {
+        out.push_str("To: ");
+        out.push_str(e.recipient_hint.trim());
+        out.push('\n');
+    }
+    if !e.subject.is_empty() {
+        out.push_str("Subject: ");
+        out.push_str(e.subject.trim());
+        out.push('\n');
+    }
+
+    for point in &e.body_points {
+        let trimmed = point.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(trimmed);
+        out.push('\n');
+    }
+
+    if !e.sign_off.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(e.sign_off.trim());
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Render a `NotesExtraction` into a clean markdown outline: `##` title,
+/// `###` section headings, `-` bullet points.  Heading-less sections render
+/// their bullets directly.
+pub fn render_notes(n: &NotesExtraction) -> String {
+    let mut out = String::new();
+
+    if !n.title.is_empty() {
+        out.push_str("## ");
+        out.push_str(n.title.trim());
+        out.push('\n');
+    }
+
+    for section in &n.sections {
+        if section.points.is_empty() {
+            continue;
+        }
+        if !section.heading.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("### ");
+            out.push_str(section.heading.trim());
+            out.push('\n');
+        } else if !out.is_empty() {
+            out.push('\n');
+        }
+        for point in &section.points {
+            let trimmed = point.trim();
             if trimmed.is_empty() {
                 continue;
             }

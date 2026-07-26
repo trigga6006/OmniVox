@@ -27,13 +27,20 @@ import {
   type Snippet,
   type VocabularyEntry,
 } from "@/lib/tauri";
-import { Button, Card, Input, Kbd, Segmented, EmptyState } from "@/components/ui";
+import {
+  Button,
+  Card,
+  Input,
+  Kbd,
+  Segmented,
+  EmptyState,
+  PageHeader,
+} from "@/components/ui";
 
 const tabs = ["Vocabulary", "Words", "Snippets"] as const;
 type Tab = (typeof tabs)[number];
 
-const eyebrow =
-  "font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted";
+const eyebrow = "eyebrow";
 
 /* ──────────────────────── Vocabulary Tab ──────────────────────── */
 
@@ -171,7 +178,7 @@ function VocabularyTab() {
         return (
           <Card
             key={entry.id}
-            className="group flex items-center gap-3 bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+            className="group flex items-center gap-3 bg-surface-1/80 px-4 py-3 transition-colors duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <span className="flex-1 truncate text-sm font-medium text-text-primary">
               {entry.word}
@@ -399,7 +406,7 @@ function WordsTab() {
         return (
           <Card
             key={entry.id}
-            className="group flex items-center gap-3 bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+            className="group flex items-center gap-3 bg-surface-1/80 px-4 py-3 transition-colors duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <span className="flex-1 truncate text-sm font-medium text-text-secondary">
               {entry.phrase}
@@ -655,7 +662,7 @@ function SnippetsTab() {
         return (
           <Card
             key={snippet.id}
-            className="group bg-surface-1/80 px-4 py-3 transition-all duration-200 hover:border-border-hover hover:bg-surface-1"
+            className="group bg-surface-1/80 px-4 py-3 transition-colors duration-200 hover:border-border-hover hover:bg-surface-1"
           >
             <div className="flex items-center gap-3">
               <Kbd className="shrink-0 border-amber-400/25 bg-amber-500/[0.08] text-amber-300">
@@ -766,14 +773,7 @@ export function DictionaryPage() {
   return (
     <div className="flex h-full flex-col px-8 pt-6 pb-8">
       {/* Header */}
-      <div>
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-          Dictionary
-        </h1>
-        <p className="mt-1 text-sm text-text-muted">
-          Custom vocabulary & text snippets
-        </p>
-      </div>
+      <PageHeader title="Dictionary" subtitle="Custom vocabulary & text snippets" />
 
       {/* Tabs */}
       <div className="mt-5">

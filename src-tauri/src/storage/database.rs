@@ -88,7 +88,7 @@ impl Database {
                     description TEXT NOT NULL DEFAULT '',
                     icon TEXT NOT NULL DEFAULT 'mic',
                     color TEXT NOT NULL DEFAULT 'amber',
-                    llm_prompt TEXT NOT NULL,
+                    structured_profile TEXT NOT NULL DEFAULT '',
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_builtin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
@@ -132,6 +132,30 @@ impl Database {
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS scratchpad_note (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    content TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scratchpad_pads (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scratchpad_entries (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    pad_id TEXT NOT NULL REFERENCES scratchpad_pads(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scratchpad_entries_pad
+                    ON scratchpad_entries(pad_id, created_at DESC);
+
                 PRAGMA user_version = 3;
             ",
             )?;
@@ -142,6 +166,10 @@ impl Database {
 
         // Migration: add writing_style column to context_modes if missing
         self.migrate_add_writing_style()?;
+
+        // Migration: repurpose the vestigial llm_prompt column as the
+        // Structured Mode profile id
+        self.migrate_llm_prompt_to_structured_profile()?;
 
         // Migration: add raw_transcript column to transcriptions if missing
         self.migrate_add_raw_transcript()?;
@@ -162,9 +190,15 @@ impl Database {
             )?;
         }
 
-        // Seed the built-in voice commands on first run (empty-table guarded).
-        // Called after the conn guard above is dropped since it takes the lock.
+        // Seed the built-in voice commands on first run (empty-table guarded),
+        // then backfill any built-ins added by app updates since the first
+        // seed. Called after the conn guard above is dropped since both take
+        // the lock.
         crate::storage::voice_commands::seed_defaults(self)?;
+        crate::storage::voice_commands::seed_missing_builtins(self)?;
+
+        // Seed the always-present default scratchpad pad (idempotent).
+        crate::storage::scratchpad::ensure_default_pad(self)?;
 
         Ok(())
     }
@@ -227,6 +261,37 @@ impl Database {
         if !has_col {
             conn.execute_batch(
                 "ALTER TABLE context_modes ADD COLUMN writing_style TEXT NOT NULL DEFAULT 'formal';"
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Rename `context_modes.llm_prompt` to `structured_profile` if the old
+    /// column is still present.
+    ///
+    /// `llm_prompt` was vestigial — written by the builtin-mode seeds but
+    /// never read by extraction — and now holds the Structured Mode profile
+    /// id ("agent-prompt" / "email" / "notes-outline"; empty = default).
+    /// Existing rows carry stale seed text, so the migration clears the
+    /// column after renaming; unknown values would degrade to the default
+    /// profile anyway, but starting clean keeps the DB inspectable.
+    fn migrate_llm_prompt_to_structured_profile(&self) -> AppResult<()> {
+        let conn = self.conn()?;
+
+        let has_col = |name: &str| -> bool {
+            conn.prepare("PRAGMA table_info(context_modes)")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(1))
+                        .map(|rows| rows.filter_map(|r| r.ok()).any(|col| col == name))
+                })
+                .unwrap_or(false)
+        };
+
+        if has_col("llm_prompt") && !has_col("structured_profile") {
+            conn.execute_batch(
+                "ALTER TABLE context_modes RENAME COLUMN llm_prompt TO structured_profile;
+                 UPDATE context_modes SET structured_profile = '';",
             )?;
         }
 
@@ -307,6 +372,75 @@ mod tests {
             .next()
             .is_some();
         assert!(has_index, "per-mode vocabulary index should exist");
+
+        drop(conn);
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A database from before the profile column carries `llm_prompt` with
+    /// stale seed text.  Init must rename it to `structured_profile` and
+    /// clear the stale values so they can't be misread as profile ids.
+    #[test]
+    fn init_renames_llm_prompt_to_structured_profile_and_clears_it() {
+        let dir = std::env::temp_dir().join(format!("omnivox-db-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+
+        // Simulate the pre-profile schema with one mode carrying seed text.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE context_modes (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT '',
+                    icon TEXT NOT NULL DEFAULT 'mic',
+                    color TEXT NOT NULL DEFAULT 'amber',
+                    llm_prompt TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    is_builtin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    writing_style TEXT NOT NULL DEFAULT 'formal'
+                );
+                INSERT INTO context_modes
+                    (id, name, description, icon, color, llm_prompt, sort_order,
+                     is_builtin, created_at, updated_at, writing_style)
+                VALUES
+                    ('m1', 'Programming', '', 'code', 'blue',
+                     '- Recognize programming terms…', 1, 1, '2025', '2025', 'formal');",
+            )
+            .unwrap();
+        }
+
+        let db = Database::init(&path).expect("init must migrate the legacy schema");
+
+        let conn = db.conn().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(context_modes)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.iter().any(|c| c == "structured_profile"),
+            "structured_profile column should exist after migration"
+        );
+        assert!(
+            !cols.iter().any(|c| c == "llm_prompt"),
+            "llm_prompt column should be gone after migration"
+        );
+
+        let value: String = conn
+            .query_row(
+                "SELECT structured_profile FROM context_modes WHERE id = 'm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "", "stale seed text must be cleared");
 
         drop(conn);
         drop(db);

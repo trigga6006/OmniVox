@@ -55,11 +55,29 @@ pub const COMMAND_HOTKEY_VK: u16 = 0xA3;
 // independent hotkeys (dictation + command).
 
 mod state_machine {
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering};
     use std::sync::OnceLock;
     use std::time::Instant;
 
     use tauri::Manager;
+
+    /// The foreground window (as an isize handle) at the moment a confirm pill
+    /// armed.  The Enter/Esc hijack fires ONLY while the live foreground still
+    /// matches this — if the user tabbed to another app, their Enter is meant for
+    /// that app, not our confirm (H4).  `0` = unknown / not on Windows.
+    static CONFIRM_ARM_FG: AtomicIsize = AtomicIsize::new(0);
+
+    /// The current foreground window as an isize handle (`0` when unavailable).
+    #[cfg(target_os = "windows")]
+    fn current_foreground_isize() -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        (unsafe { GetForegroundWindow() }) as isize
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn current_foreground_isize() -> isize {
+        0
+    }
 
     /// Time window for a double-press to count as "toggle" mode.
     const DOUBLE_TAP_MS: u64 = 400;
@@ -112,6 +130,41 @@ mod state_machine {
 
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     pub static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+    /// Epoch-ms timestamp when a command confirm pill was armed (0 = none).
+    /// Written from the pipeline via [`set_confirm_pending`]; read lock-free
+    /// on the hook thread so Enter/Esc can drive the confirm without focus.
+    static CONFIRM_PENDING_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+
+    /// The EXACT pending command id the pill was armed with (0 = none).  The
+    /// keyboard Enter/Esc path echoes THIS id back to the pipeline so it can't
+    /// confirm a newer command that replaced the parked one in the interim
+    /// (B2-2b).
+    static CONFIRM_PENDING_ID: AtomicU64 = AtomicU64::new(0);
+
+    const VK_RETURN: u16 = 0x0D;
+    const VK_ESCAPE: u16 = 0x1B;
+
+    /// Arm (or clear) the hook's Enter/Esc confirm path.  Called wherever a
+    /// `PendingCommand` is parked or consumed.  `Some(id)` arms for that exact
+    /// pending command (and snapshots the current foreground so the hijack is
+    /// bound to it — H4); `None` clears.
+    pub fn set_confirm_pending(pending_id: Option<u64>) {
+        match pending_id {
+            Some(id) => {
+                CONFIRM_PENDING_ID.store(id, Ordering::Release);
+                CONFIRM_ARM_FG.store(current_foreground_isize(), Ordering::Release);
+                // max(1): a pill armed in the very first millisecond after launch
+                // must not encode as the "none" sentinel.
+                CONFIRM_PENDING_SINCE_MS.store(now_ms().max(1), Ordering::Release);
+            }
+            None => {
+                CONFIRM_PENDING_ID.store(0, Ordering::Release);
+                CONFIRM_ARM_FG.store(0, Ordering::Release);
+                CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
+            }
+        }
+    }
 
     fn now_ms() -> u64 {
         let epoch = EPOCH.get_or_init(Instant::now);
@@ -216,6 +269,34 @@ mod state_machine {
         }
     }
 
+    /// Bitmask of combo keys a HOLD-mode recording believes are still held.
+    /// Layout: bit0/bit1 = dictation key1/key2, bit2/bit3 = command key1/key2;
+    /// the matching VK codes are written into `out`.  Returns 0 when no
+    /// hold-mode recording is active — idle, toggle-locked (double-tap), and
+    /// mic-button sessions are never policed by the release watchdog.
+    pub fn hold_believed_down(out: &mut [u16; 4]) -> u8 {
+        let mut mask = 0u8;
+        for (hk_idx, hk) in [&DICTATION, &COMMAND].into_iter().enumerate() {
+            if !hk.recording.load(Ordering::Acquire) || hk.toggle_locked.load(Ordering::Acquire) {
+                continue;
+            }
+            let packed = hk.packed.load(Ordering::Acquire);
+            if packed == 0 {
+                continue;
+            }
+            let keys = [(packed & 0xFFFF) as u16, ((packed >> 16) & 0xFFFF) as u16];
+            let down = hk.keys_down.load(Ordering::Acquire);
+            for (k_idx, &vk) in keys.iter().enumerate() {
+                if vk != 0 && down & (1u8 << k_idx) != 0 {
+                    let bit = hk_idx * 2 + k_idx;
+                    out[bit] = vk;
+                    mask |= 1 << bit;
+                }
+            }
+        }
+        mask
+    }
+
     /// Process a key event against both hotkeys. Returns true if the event
     /// should be swallowed.
     pub fn process_key_event(vk: u16, is_down: bool, is_up: bool) -> bool {
@@ -230,6 +311,93 @@ mod state_machine {
             }
             return false;
         }
+
+        // ── Phase A control keys ─────────────────────────────
+        // Esc while a command capture is live cancels it (the overlay window
+        // is focused(false), so DOM key events can never arrive — the hook is
+        // the only path).  Scoped to COMMAND on purpose: Esc during dictation
+        // is often meant for the app the user is dictating into.
+        if vk == VK_ESCAPE && is_down && COMMAND.recording.load(Ordering::Relaxed) {
+            reset(&COMMAND);
+            if let Some(handle) = APP_HANDLE.get() {
+                let h = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = h.state::<crate::state::AppState>();
+                    crate::pipeline::cancel_recording(&h, &st);
+                });
+            }
+            return true; // swallow — this Esc was aimed at OmniVox
+        }
+
+        // Enter/Esc while a confirm pill is pending drives it from the
+        // keyboard.  Guard rails against confirming something the user never
+        // saw: a 250ms arming debounce (an Enter finishing their typing must
+        // not confirm), a 6s freshness window (a forgotten pill must not swallow
+        // keys later — the mouse buttons keep working), AND an identity gate —
+        // the hijack fires ONLY while the live foreground is still the window
+        // that was foreground when the pill armed.  If the user tabbed away,
+        // their Enter is meant for the current app, so we pass it through
+        // untouched (H4).
+        // Read the armed id FIRST as the anchor for a compare-and-consume.  The
+        // pill's freshness window + arm-time foreground are validated below, but
+        // the id (which the keyboard path echoes back) is consumed via
+        // `compare_exchange` so a pending newly (re)armed in the sub-ms gap
+        // between these separate atomic reads can't be confirmed by an Enter
+        // meant for the PREVIOUS pill (B2-14).  `armed_id != 0` and `since != 0`
+        // are set/cleared together in `set_confirm_pending`, so either gates the
+        // "a pill is armed" check.
+        let armed_id = CONFIRM_PENDING_ID.load(Ordering::Acquire);
+        if armed_id != 0 && is_down && (vk == VK_RETURN || vk == VK_ESCAPE) {
+            let since = CONFIRM_PENDING_SINCE_MS.load(Ordering::Acquire);
+            let age = now_ms().saturating_sub(since);
+            let arm_fg = CONFIRM_ARM_FG.load(Ordering::Acquire);
+            // B2-7: `GetForegroundWindow` (via `current_foreground_isize`) is a
+            // cheap, non-blocking user32 read of a value the window manager
+            // already holds — it does NOT send cross-process messages the way
+            // the banned `GetWindowText`/UIA calls do, so it's safe to call on
+            // the serialized WH_KEYBOARD_LL hook thread.  No blocking Win32 call
+            // is ever made here.
+            let fg_matches = current_foreground_isize() == arm_fg;
+            if since != 0 && (250..6_000).contains(&age) && fg_matches {
+                // Atomically consume THIS exact arming.  A failed CAS means the
+                // id changed since we anchored it (a newer pending armed, or
+                // another path consumed it) — pass the key through rather than
+                // confirm a command the user never saw (B2-14).  The residual
+                // (validating the prior arm's fg/timestamp while its still-in-
+                // flight store to the other two atomics races) is sub-µs and can
+                // only *reject*, never confirm the wrong command — the pipeline
+                // side re-checks the id under the pending lock regardless (B2-2).
+                if CONFIRM_PENDING_ID
+                    .compare_exchange(armed_id, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    CONFIRM_PENDING_SINCE_MS.store(0, Ordering::Release);
+                    CONFIRM_ARM_FG.store(0, Ordering::Release);
+                    let confirm = vk == VK_RETURN;
+                    if let Some(handle) = APP_HANDLE.get() {
+                        let h = handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let st = h.state::<crate::state::AppState>();
+                            if confirm {
+                                // Keyboard confirm sends the message as heard —
+                                // editing goes through the pill's textarea (mouse).
+                                crate::pipeline::confirm_pending_command(
+                                    &h,
+                                    &st,
+                                    Some(armed_id),
+                                    None,
+                                )
+                                .await;
+                            } else {
+                                crate::pipeline::cancel_pending_command(&h, &st, Some(armed_id));
+                            }
+                        });
+                    }
+                    return true; // swallow
+                }
+            }
+        }
+
         // Check both; swallow if either consumed the event. (The default combos
         // share no keys, so at most one fires per event.)
         let d = process_one(&DICTATION, Action::Dictation, vk, is_down, is_up);
@@ -317,9 +485,19 @@ mod state_machine {
         }
 
         // ── Key released while hold-recording (non-locked) ──
+        // Claim the recording→stopped transition with a CAS: the same release
+        // edge can reach this branch from more than one thread (OS hook, DOM
+        // bridge command, and the release watchdog all feed process_key_event),
+        // and a plain load-then-store would let two of them observe `true` and
+        // both spawn a stop pipeline.  Exactly one caller may fire the stop.
         if recording && !locked && is_up && (matches_key1 || matches_key2) {
-            hk.recording.store(false, Ordering::Relaxed);
-            fire_stop(action);
+            if hk
+                .recording
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                fire_stop(action);
+            }
         }
 
         // ── Swallow the release of any combo key whose activating press we
@@ -369,6 +547,128 @@ mod win {
         unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
     }
 
+    /// True when the current foreground window belongs to this process (one of
+    /// OmniVox's own windows — main, scratchpad, overlay — is in front).
+    fn foreground_is_self() -> bool {
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, GA_ROOT,
+        };
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.is_null() {
+                return false;
+            }
+            let root = GetAncestor(fg, GA_ROOT);
+            let hwnd = if root.is_null() { fg } else { root };
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            pid == GetCurrentProcessId()
+        }
+    }
+
+    /// Hold-release watchdog.  When one of OmniVox's own WebView windows is
+    /// focused (e.g. dictating into the scratchpad), hotkey key-UP events can
+    /// be lost: the WebView consumes input the OS hook path doesn't drive, and
+    /// the DOM key bridge never receives a keyup for a key whose keydown was
+    /// swallowed — or misses it entirely when the window loses focus mid-hold.
+    /// A lost release leaves a hold-mode recording running forever, which reads
+    /// as an unwanted "long-running dictation".
+    ///
+    /// This thread polls PHYSICAL key state while (and only while) a hold-mode
+    /// recording is live and an OmniVox window is foreground.  If a combo key
+    /// the state machine believes is held reads physically up on two
+    /// consecutive polls, the missed key-up is synthesized through the same
+    /// `process_key_event` path — firing the normal release-stop.
+    ///
+    /// Deliberately inert for every long-running mode: toggle-locked
+    /// (double-tap) and mic-button sessions are excluded by
+    /// `hold_believed_down`, and the foreground gate keeps it from ever
+    /// second-guessing dictation into other apps (where the OS hook is
+    /// reliable, and where UIPI can blank `GetAsyncKeyState` for elevated
+    /// targets).
+    fn start_release_watchdog() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+        thread::Builder::new()
+            .name("omnivox-hotkey-watchdog".into())
+            .spawn(|| {
+                let key_up = |vk: u16| unsafe { (GetAsyncKeyState(vk as i32) as u16) & 0x8000 == 0 };
+                // Phantom bits seen last poll — a key must read stuck on two
+                // consecutive polls before its release is synthesized.
+                let mut prev_phantom = 0u8;
+                // Keys observed physically DOWN at least once during the
+                // current hold (cleared when the hold ends).  Only these may
+                // ever count as phantom: a key-down the hook swallowed never
+                // enters the async key-state table and reads "up" for its
+                // whole legitimate hold — without this gate a single-key
+                // combo (no passed-through sibling to veto the group) could
+                // be false-stopped moments after it started.
+                let mut seen_down = 0u8;
+                loop {
+                    let mut vks = [0u16; 4];
+                    if state_machine::hold_believed_down(&mut vks) == 0 {
+                        prev_phantom = 0;
+                        seen_down = 0;
+                        thread::sleep(std::time::Duration::from_millis(150));
+                        continue;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(30));
+                    if !foreground_is_self() {
+                        prev_phantom = 0;
+                        continue;
+                    }
+                    // Re-read after the sleep so we compare fresh belief
+                    // against fresh physical state.
+                    let mut vks = [0u16; 4];
+                    let believed = state_machine::hold_believed_down(&mut vks);
+                    // A hotkey's hold counts as phantom only when ALL keys it
+                    // believes are held read physically up, AND every one of
+                    // them was seen physically down earlier in this hold.
+                    // Per-key checks would false-positive: a key-down the hook
+                    // SWALLOWED never reaches the async key-state table, so
+                    // that key reads "up" for the entire (legitimate) hold —
+                    // the seen-down gate means such a key can simply never
+                    // trip the watchdog, in which case the hook that swallowed
+                    // it also reliably delivers its release.
+                    let mut physically_down = 0u8;
+                    for bit in 0..4u8 {
+                        if believed & (1 << bit) != 0 && !key_up(vks[bit as usize]) {
+                            physically_down |= 1 << bit;
+                        }
+                    }
+                    // Eligibility never outlives belief — a slot the machine no
+                    // longer holds must re-earn seen-down in its next hold.
+                    seen_down = (seen_down & believed) | physically_down;
+                    let mut phantom = 0u8;
+                    for group in [0b0011u8, 0b1100u8] {
+                        let bits = believed & group;
+                        if bits != 0
+                            && bits & physically_down == 0
+                            && bits & seen_down == bits
+                        {
+                            phantom |= bits;
+                        }
+                    }
+                    let confirmed = phantom & prev_phantom;
+                    prev_phantom = phantom;
+                    for bit in 0..4u8 {
+                        if confirmed & (1 << bit) != 0 {
+                            crate::llm::diaglog::log(&format!(
+                                "hotkey: watchdog synthesizing missed key-up vk={:#06x}",
+                                vks[bit as usize]
+                            ));
+                            state_machine::process_key_event(vks[bit as usize], false, true);
+                        }
+                    }
+                    if confirmed != 0 {
+                        prev_phantom = 0;
+                    }
+                }
+            })
+            .expect("Failed to spawn hotkey watchdog thread");
+    }
+
     /// Spawn the hook thread with a Windows message pump.
     pub fn start(app_handle: tauri::AppHandle) {
         let _ = state_machine::APP_HANDLE.set(app_handle);
@@ -397,6 +697,8 @@ mod win {
                 }
             })
             .expect("Failed to spawn hotkey thread");
+
+        start_release_watchdog();
     }
 }
 
@@ -561,6 +863,14 @@ pub fn set_command_mode_enabled(enabled: bool) {
 /// Suspend or resume the hook.
 pub fn set_suspended(suspended: bool) {
     state_machine::set_suspended(suspended);
+}
+
+/// Arm (or clear) the hook's Enter/Esc handling for a pending command
+/// confirm.  Call with `Some(id)` (the parked command's exact id) when a
+/// `PendingCommand` is parked and the confirm pill shown; with `None` whenever
+/// it is consumed or cleared.
+pub fn set_confirm_pending(pending_id: Option<u64>) {
+    state_machine::set_confirm_pending(pending_id);
 }
 
 /// Feed a key event from the frontend (WebView) into the hotkey state machine.

@@ -19,6 +19,12 @@ const DELETE_WORD_MODIFIER: Key = Key::Control;
 
 const CLIPBOARD_VERIFY_TIMEOUT_MS: u64 = 750;
 const CLIPBOARD_VERIFY_INTERVAL_MS: u64 = 10;
+// Audited 2026-07-06: this guard does double duty — clipboard stability for
+// deferred-read apps AND a paste-before-next-keystroke ordering barrier
+// (dropping it between a Text and a following Command segment can land the
+// keystroke before the app processed Ctrl+V).  Since resolve_list_segments
+// merges adjacent text segments, plain dictations pay it once; don't shrink
+// it per-segment without testing slow targets (Word, browser textareas).
 const POST_PASTE_GUARD_MS: u64 = 250;
 
 use crate::error::{AppError, AppResult};
@@ -72,10 +78,19 @@ impl OutputRouter {
     /// In **Clipboard** mode, segments are collapsed to a string and copied.
     /// In **Both** mode, segments are pasted/executed and the concatenated
     /// dictation is left on the clipboard.
+    ///
+    /// `target` is the window this dictation was aimed at (bound + pid): before
+    /// each CONSEQUENTIAL inline command (Send/Enter, mouse, key combo) the
+    /// router re-verifies the foreground is still that window, so a stray
+    /// mishearing can't fire OS input into whatever grabbed focus (H5).
+    /// `allow_launch` gates the disruptive `LaunchApp` command (from the
+    /// `launch_app_voice_commands_enabled` setting, default ON).
     pub fn send_segments(
         &self,
         segments: &[OutputSegment],
         config: &OutputConfig,
+        target: Option<crate::focus::WindowTarget>,
+        allow_launch: bool,
     ) -> AppResult<()> {
         if segments.is_empty() {
             return Ok(());
@@ -89,10 +104,10 @@ impl OutputRouter {
                 }
             }
             OutputMode::TypeSimulation => {
-                self.execute_segments(segments, true)?;
+                self.execute_segments(segments, true, target, allow_launch)?;
             }
             OutputMode::Both => {
-                self.execute_segments(segments, false)?;
+                self.execute_segments(segments, false, target, allow_launch)?;
             }
         }
 
@@ -109,6 +124,8 @@ impl OutputRouter {
         &self,
         segments: &[OutputSegment],
         restore_prior_clipboard: bool,
+        target: Option<crate::focus::WindowTarget>,
+        allow_launch: bool,
     ) -> AppResult<()> {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
@@ -138,7 +155,7 @@ impl OutputRouter {
                     }
                 }
                 OutputSegment::Command(cmd) => {
-                    Self::run_command(&mut enigo, cmd)?;
+                    Self::run_command(&mut enigo, cmd, target, allow_launch)?;
                 }
             }
         }
@@ -339,10 +356,89 @@ impl OutputRouter {
         result
     }
 
+    /// Identity gate for a consequential inline command (a submit, a click, an
+    /// arbitrary chord): the bound dictation target must still be the live
+    /// foreground window.  A `None` target can't be proven, so it is REFUSED —
+    /// a consequential action never fires blind (B2-3).  Logs the skip so the
+    /// diagnostics show why nothing happened.  Called immediately before each
+    /// side-effecting primitive (for Send, AFTER its paste guard) so a focus
+    /// change in the intervening window can't redirect the input.
+    fn foreground_is_target(target: Option<crate::focus::WindowTarget>) -> bool {
+        match target {
+            Some(t) if crate::focus::verify_foreground_target(t.hwnd, t.pid) => true,
+            _ => {
+                crate::llm::diaglog::log(
+                    "router: inline command skipped — no verified target window in focus",
+                );
+                false
+            }
+        }
+    }
+
+    /// Whether a command fires OS input at (and so depends on) the foreground
+    /// window, and must therefore only run when the bound dictation target is
+    /// still that foreground window (B2-12).
+    ///
+    /// Every keystroke/pointer/edit that lands in the focused control is
+    /// focus-dependent: the submit/Enter, pointer clicks + scrolls, arbitrary
+    /// key combos, AND the Ctrl-chord edits (select-all, copy, cut, undo, redo,
+    /// delete-word) plus bare Tab/Escape — a mishearing must not fire any of
+    /// these into whatever window grabbed focus.  Exempt: `NewLine`/`NewParagraph`
+    /// (Shift+Enter inserts interleaved into the already-targeted paste stream),
+    /// the list markers (resolved to text earlier, no keystroke), and `LaunchApp`
+    /// (spawns a process, not a focus-dependent keystroke — gated separately by
+    /// `allow_launch`).
+    fn command_needs_foreground(cmd: &VoiceCommand) -> bool {
+        match cmd {
+            VoiceCommand::NewLine
+            | VoiceCommand::NewParagraph
+            | VoiceCommand::LaunchApp(_)
+            | VoiceCommand::BulletItem
+            | VoiceCommand::NumberedItem
+            | VoiceCommand::EndList => false,
+            VoiceCommand::DeleteLastWord
+            | VoiceCommand::Send
+            | VoiceCommand::SelectAll
+            | VoiceCommand::Copy
+            | VoiceCommand::Cut
+            | VoiceCommand::Undo
+            | VoiceCommand::Redo
+            | VoiceCommand::PressTab
+            | VoiceCommand::PressEscape
+            | VoiceCommand::PressEnter
+            | VoiceCommand::KeyCombo { .. }
+            | VoiceCommand::MouseClick
+            | VoiceCommand::MouseRightClick
+            | VoiceCommand::MouseDoubleClick
+            | VoiceCommand::ScrollUp
+            | VoiceCommand::ScrollDown => true,
+        }
+    }
+
     /// Execute a single voice command as OS-level input. Every modifier-bearing
     /// action routes through [`with_modifier`]/[`with_modifiers`] so a failure
     /// mid-chord can never leak a stuck Ctrl/Shift/Alt into the OS.
-    fn run_command(enigo: &mut Enigo, cmd: &VoiceCommand) -> AppResult<()> {
+    ///
+    /// `target` is the window the dictation was aimed at: a consequential command
+    /// (Send/Enter, mouse, key combo) re-verifies via [`foreground_is_target`]
+    /// immediately before each primitive and is SKIPPED when the target is absent
+    /// or no longer foreground, so a mishearing can't fire into an unverified
+    /// window (B2-3).  `allow_launch` gates the disruptive `LaunchApp` (default
+    /// governed by the `launch_app_voice_commands_enabled` setting).
+    fn run_command(
+        enigo: &mut Enigo,
+        cmd: &VoiceCommand,
+        target: Option<crate::focus::WindowTarget>,
+        allow_launch: bool,
+    ) -> AppResult<()> {
+        // Identity gate for EVERY focus-dependent primitive (B2-12): the bound
+        // dictation target must still be the live foreground before we fire OS
+        // input at it.  `Send` re-checks AGAIN after its own paste-guard sleep
+        // (below), since that 250 ms is an extra window for focus to change.
+        // A `None`/mismatched target is refused (logged) — never fire blind.
+        if Self::command_needs_foreground(cmd) && !Self::foreground_is_target(target) {
+            return Ok(());
+        }
         match cmd {
             VoiceCommand::NewLine => {
                 Self::shift_enter(enigo)?;
@@ -362,6 +458,12 @@ impl OutputRouter {
                 // Keep the paste-guard so trailing "send" doesn't fire before the
                 // dictation text has landed in the target app.
                 thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+                // Re-verify AFTER the guard — the 250 ms sleep is a window in
+                // which focus could change; the Enter must only fire while the
+                // bound target is still foreground (B2-3).
+                if !Self::foreground_is_target(target) {
+                    return Ok(());
+                }
                 enigo
                     .key(Key::Return, Direction::Click)
                     .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
@@ -451,8 +553,21 @@ impl OutputRouter {
                     .map_err(|e| AppError::Output(format!("Scroll down failed: {e}")))?;
             }
             VoiceCommand::LaunchApp(command_line) => {
-                Self::launch_app(command_line);
+                // Gated on the `launch_app_voice_commands_enabled` setting
+                // (default ON): when the user has turned it off, a misheard
+                // custom "launch …" command must not spawn a process.
+                if allow_launch {
+                    Self::launch_app(command_line);
+                } else {
+                    crate::llm::diaglog::log(
+                        "router: inline LaunchApp skipped — setting disabled",
+                    );
+                }
             }
+            // List markers are resolved into literal text segments by
+            // `resolve_list_segments` before segments reach the router; an
+            // unresolved one has nothing to execute.
+            VoiceCommand::BulletItem | VoiceCommand::NumberedItem | VoiceCommand::EndList => {}
         }
         Ok(())
     }
@@ -524,5 +639,71 @@ impl OutputRouter {
                 crate::llm::diaglog::log(&format!("LaunchApp: failed to spawn '{program}': {e}"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputRouter;
+    use crate::postprocess::voice_commands::{ComboKey, KeyModifier, VoiceCommand};
+
+    /// Every focus-dependent inline primitive must be gated on the bound target
+    /// (B2-12): the Ctrl-chord edits + bare Tab/Escape used to fire unverified.
+    #[test]
+    fn all_focus_dependent_primitives_require_foreground() {
+        let gated = [
+            VoiceCommand::DeleteLastWord,
+            VoiceCommand::Send,
+            VoiceCommand::SelectAll,
+            VoiceCommand::Copy,
+            VoiceCommand::Cut,
+            VoiceCommand::Undo,
+            VoiceCommand::Redo,
+            VoiceCommand::PressTab,
+            VoiceCommand::PressEscape,
+            VoiceCommand::PressEnter,
+            VoiceCommand::KeyCombo {
+                modifiers: vec![KeyModifier::Ctrl],
+                key: ComboKey::Char('k'),
+            },
+            VoiceCommand::MouseClick,
+            VoiceCommand::MouseRightClick,
+            VoiceCommand::MouseDoubleClick,
+            VoiceCommand::ScrollUp,
+            VoiceCommand::ScrollDown,
+        ];
+        for cmd in &gated {
+            assert!(
+                OutputRouter::command_needs_foreground(cmd),
+                "{cmd:?} must be identity-verified before firing"
+            );
+        }
+    }
+
+    /// Paste-stream inserts / process launches are exempt — they don't fire a
+    /// focus-dependent keystroke at the target control.
+    #[test]
+    fn paste_stream_and_launch_commands_are_exempt() {
+        let exempt = [
+            VoiceCommand::NewLine,
+            VoiceCommand::NewParagraph,
+            VoiceCommand::LaunchApp("notepad".into()),
+            VoiceCommand::BulletItem,
+            VoiceCommand::NumberedItem,
+            VoiceCommand::EndList,
+        ];
+        for cmd in &exempt {
+            assert!(
+                !OutputRouter::command_needs_foreground(cmd),
+                "{cmd:?} should not require foreground verification"
+            );
+        }
+    }
+
+    /// The gate refuses an absent target — a consequential inline command never
+    /// fires blind (B2-3/B2-12).
+    #[test]
+    fn absent_target_is_refused() {
+        assert!(!OutputRouter::foreground_is_target(None));
     }
 }

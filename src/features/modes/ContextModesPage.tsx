@@ -42,7 +42,7 @@ import {
   type AppBinding,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Button, Card, Input, Badge, Segmented } from "@/components/ui";
+import { Button, Card, Input, Badge, Segmented, PageHeader, LoadingState } from "@/components/ui";
 
 const ICON_OPTIONS = [
   { name: "mic", Icon: Mic },
@@ -89,8 +89,7 @@ Output ONLY the cleaned text, nothing else. No commentary, no tags, no explanati
 
 /* ──────────────────── Shared layout helpers ──────────────────── */
 
-const eyebrowClass =
-  "font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted";
+const eyebrowClass = "eyebrow";
 
 /** Labeled section in the mode editor — mono eyebrow + content. */
 function FormSection({
@@ -202,30 +201,26 @@ export function ContextModesPage() {
   return (
     <div className="mx-auto max-w-3xl px-8 pt-6 pb-10">
       {/* Header */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-[-0.02em] text-text-primary">
-            Context Modes
-          </h1>
-          <p className="mt-1 text-sm text-text-muted">
-            Switch between profiles that customize writing style, dictionary entries,
-            snippets, and app bindings.
-          </p>
-        </div>
-        <Button
-          variant="primary"
-          size="sm"
-          icon={<Plus />}
-          onClick={() => setCreating(true)}
-          className="mt-1 shrink-0"
-        >
-          New Mode
-        </Button>
-      </div>
+      <PageHeader
+        title="Context Modes"
+        subtitle="Switch between profiles that customize writing style, dictionary entries, snippets, and app bindings."
+        action={
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus />}
+            onClick={() => setCreating(true)}
+            className="mt-1 shrink-0"
+          >
+            New Mode
+          </Button>
+        }
+        className="mb-6"
+      />
 
       {/* Mode Cards */}
       {loading ? (
-        <div className="py-12 text-center text-sm text-text-muted">Loading…</div>
+        <LoadingState />
       ) : (
         <div className="grid gap-2.5">
           {modes.map((mode, i) => {
@@ -299,6 +294,7 @@ export function ContextModesPage() {
                         icon={<Trash2 />}
                         aria-label="Delete"
                         title="Delete"
+                        className="text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
                         onClick={() => handleDelete(mode.id)}
                       />
                     )}
@@ -331,6 +327,10 @@ function ModeForm({
   const [icon, setIcon] = useState(mode?.icon ?? "mic");
   const [color, setColor] = useState(mode?.color ?? "amber");
   const [writingStyle, setWritingStyle] = useState(mode?.writing_style ?? "formal");
+  // Empty (legacy rows) means the default agent-prompt profile.
+  const [structuredProfile, setStructuredProfile] = useState(
+    mode?.structured_profile || "agent-prompt"
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -437,10 +437,25 @@ function ModeForm({
     setError(null);
     try {
       if (isEdit) {
-        await updateContextMode(mode.id, name, description, icon, color, writingStyle);
+        await updateContextMode(
+          mode.id,
+          name,
+          description,
+          icon,
+          color,
+          writingStyle,
+          structuredProfile
+        );
         onSave();
       } else {
-        const created = await createContextMode(name, description, icon, color, writingStyle);
+        const created = await createContextMode(
+          name,
+          description,
+          icon,
+          color,
+          writingStyle,
+          structuredProfile
+        );
         onSave(created);
       }
     } catch (e) {
@@ -513,7 +528,7 @@ function ModeForm({
                   key={n}
                   onClick={() => setColor(n)}
                   className={cn(
-                    "h-7 w-7 rounded-full transition-all duration-200",
+                    "h-7 w-7 rounded-full transition-colors duration-200",
                     cls,
                     color === n
                       ? "scale-110 ring-2 ring-white/45 ring-offset-2 ring-offset-surface-0"
@@ -535,6 +550,22 @@ function ModeForm({
             ]}
             value={writingStyle}
             onChange={setWritingStyle}
+          />
+        </FormSection>
+
+        {/* Structured Mode Profile */}
+        <FormSection
+          label="Structured Mode Profile"
+          hint="How Structured Mode formats dictations while this mode is active: a prompt for an AI coding agent, an email draft, or a notes outline."
+        >
+          <Segmented
+            options={[
+              { value: "agent-prompt", label: "Agent Prompt" },
+              { value: "email", label: "Email" },
+              { value: "notes-outline", label: "Notes" },
+            ]}
+            value={structuredProfile}
+            onChange={setStructuredProfile}
           />
         </FormSection>
 
@@ -564,7 +595,7 @@ function ModeForm({
                         size="sm"
                         icon={<Trash2 />}
                         aria-label="Delete word"
-                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
                         onClick={() => handleDeleteDictEntry(entry.id)}
                       />
                     </div>
@@ -576,7 +607,7 @@ function ModeForm({
                   value={newPhrase}
                   onChange={(e) => setNewPhrase(e.target.value)}
                   placeholder="Heard as…"
-                  className="min-w-0 flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleAddDictEntry()}
                 />
                 <span className="shrink-0 text-xs text-text-muted">&rarr;</span>
@@ -584,7 +615,7 @@ function ModeForm({
                   value={newReplacement}
                   onChange={(e) => setNewReplacement(e.target.value)}
                   placeholder="Replace with…"
-                  className="min-w-0 flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleAddDictEntry()}
                 />
                 <Button
@@ -627,7 +658,7 @@ function ModeForm({
                         size="sm"
                         icon={<Trash2 />}
                         aria-label="Delete snippet"
-                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
                         onClick={() => handleDeleteSnippet(snippet.id)}
                       />
                     </div>
@@ -639,7 +670,7 @@ function ModeForm({
                   value={newTrigger}
                   onChange={(e) => setNewTrigger(e.target.value)}
                   placeholder="Word…"
-                  className="w-28 shrink-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="w-28 shrink-0 bg-transparent text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleAddSnippet()}
                 />
                 <span className="shrink-0 text-xs text-text-muted">&rarr;</span>
@@ -647,7 +678,7 @@ function ModeForm({
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
                   placeholder="Expands to…"
-                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleAddSnippet()}
                 />
                 <Button
@@ -686,7 +717,7 @@ function ModeForm({
                         size="sm"
                         icon={<Trash2 />}
                         aria-label="Delete binding"
-                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 text-text-muted hover:bg-recording-500/10 hover:text-recording-400"
                         onClick={() => handleDeleteBinding(binding.id)}
                       />
                     </div>
@@ -698,7 +729,7 @@ function ModeForm({
                   value={newProcessName}
                   onChange={(e) => setNewProcessName(e.target.value)}
                   placeholder="e.g. Code.exe, chrome.exe"
-                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleAddBinding()}
                 />
                 <Button

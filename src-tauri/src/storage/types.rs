@@ -15,6 +15,10 @@ pub struct ContextMode {
     pub updated_at: DateTime<Utc>,
     /// Writing style for this mode ("formal", "casual", "very_casual").
     pub writing_style: String,
+    /// Structured Mode profile id for this mode ("agent-prompt", "email",
+    /// "notes-outline").  Empty or unknown resolves to the default
+    /// agent-prompt profile (`llm::profiles::get`).
+    pub structured_profile: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,11 +112,11 @@ pub struct AppBinding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub theme: String,
-    pub language: String,
+    /// Launch OmniVox automatically when the OS starts (Windows registry
+    /// Run key via tauri-plugin-autostart).  Applied in
+    /// `commands::settings::update_settings` and reconciled at startup.
     pub auto_start: bool,
-    pub minimize_to_tray: bool,
     pub output_mode: String,
-    pub sample_rate: u32,
     pub active_model_id: Option<String>,
     pub hotkey: Option<crate::hotkey::HotkeyConfig>,
     /// Enable GPU acceleration for Whisper inference (requires Vulkan).
@@ -133,12 +137,22 @@ pub struct AppSettings {
     /// command (launch app, key chord, media key, window action) instead of
     /// dictated text.  Disabled by default.
     pub command_mode: bool,
+    /// Gate for voice commands that launch an application (Command Mode
+    /// "open <app>" and the inline dictation `LaunchApp`).  When false, the
+    /// backend refuses to start a process from a voice command.  Default ON —
+    /// the identity-bound command path makes launches safe, and the owner
+    /// prefers features full-on.
+    pub launch_app_voice_commands_enabled: bool,
     /// Automatically press Enter after transcription to send the message (TypeSimulation/Both only).
     pub ship_mode: bool,
     /// Hide the floating pill overlay (invisible but still interactive).
     pub ghost_mode: bool,
     /// Writing style controls capitalization and punctuation ("formal", "casual", "very_casual").
     pub writing_style: String,
+    /// Remove filler words (um, uh, "you know", stray "basically") and
+    /// deduplicate stutter repeats during post-processing.  Off = transcribe
+    /// verbatim.
+    pub filler_removal: bool,
     /// Lower system volume while recording to reduce background noise pickup.
     pub audio_ducking: bool,
     /// How much to reduce volume (0 = no reduction, 100 = full mute). Default 70.
@@ -177,14 +191,16 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
-            language: "en".to_string(),
             auto_start: false,
-            minimize_to_tray: true,
             output_mode: "clipboard".to_string(),
-            sample_rate: 16000,
             active_model_id: None,
             hotkey: Some(crate::hotkey::HotkeyConfig::default()),
-            gpu_acceleration: false,
+            // Default ON when the binary was compiled with a GPU backend, so a
+            // GPU build uses the GPU out of the box instead of running Whisper +
+            // the LLM entirely on CPU until the user finds the Settings toggle.
+            // CPU-only builds default OFF. (Only the DEFAULT changes — a user who
+            // has explicitly saved gpu_acceleration keeps their choice.)
+            gpu_acceleration: cfg!(any(feature = "vulkan", feature = "cuda")),
             active_context_mode_id: None,
             live_preview: false,
             noise_reduction: false,
@@ -192,9 +208,11 @@ impl Default for AppSettings {
             voice_commands: true,
             command_send: true,
             command_mode: false,
+            launch_app_voice_commands_enabled: true,
             ship_mode: false,
             ghost_mode: false,
             writing_style: "formal".to_string(),
+            filler_removal: true,
             audio_ducking: true,
             ducking_amount: 70,
             structured_mode: false,

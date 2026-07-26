@@ -1,11 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::llm::engine::LlamaEngine;
 use crate::llm::runner::LlmRunner;
-use crate::llm::schema::SlotExtraction;
-use crate::llm::template::render_markdown;
 use crate::llm::types::LlmConfig;
 use crate::llm_models::types::LlmModelInfo;
 use crate::state::AppState;
@@ -82,9 +80,20 @@ pub async fn get_active_llm_model(
 pub async fn set_active_llm_model(
     model_id: String,
     app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
+    // State is injected but re-fetched inside `spawn_blocking` (it isn't `Send`).
+    _state: State<'_, AppState>,
 ) -> Result<(), String> {
-    load_and_activate_llm(&model_id, &state)?;
+    // Run the (mutex-guarded, blocking) GGUF load + thread-join on the blocking
+    // pool so this async command never stalls a tokio worker while holding
+    // `LLM_LOAD_LOCK` (M3 / B2-8).
+    let app = app_handle.clone();
+    let mid = model_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let st = app.state::<AppState>();
+        load_and_activate_llm_with_status(&mid, &st, Some(&app))
+    })
+    .await
+    .map_err(|e| format!("LLM load task failed: {e}"))??;
     let _ = app_handle.emit("llm-model-loaded", &model_id);
     Ok(())
 }
@@ -104,8 +113,11 @@ pub async fn paste_structured_output(
     };
     let prev_hwnd = state.prev_foreground.lock().ok().and_then(|g| *g);
     if let Some(hwnd) = prev_hwnd {
+        // No pid was captured for the structured-panel Paste target — pass None
+        // so the deselection arrows fail closed (B2-15).  SetForegroundWindow
+        // still runs, so focus is restored before the paste.
         let _ = tokio::task::spawn_blocking(move || {
-            crate::focus::restore_foreground_window_public(hwnd)
+            crate::focus::restore_foreground_window_public(hwnd, None)
         })
         .await;
     }
@@ -126,16 +138,133 @@ pub async fn llm_test_extract(
         .llm_runner
         .lock()
         .unwrap()
-        .clone()
+        .as_ref()
+        .map(|(_, r)| Arc::clone(r))
         .ok_or_else(|| "No LLM model loaded".to_string())?;
     let input = text.unwrap_or_else(|| {
         "Refactor the checkout flow in billing.tsx and cart.tsx. Keep the Stripe integration. Urgent.".to_string()
     });
-    let slots: SlotExtraction = runner
+    let out = runner
         .extract_with_timeout(input, std::time::Duration::from_secs(15))
         .await
         .map_err(|e| e.to_string())?;
-    Ok(render_markdown(&slots))
+    Ok(out.markdown)
+}
+
+/// Recent structured-mode extraction attempts (newest first) from the
+/// in-memory ring buffer — powers the diagnostics panel on the Models page.
+#[tauri::command]
+pub async fn get_llm_diagnostics() -> Result<Vec<crate::llm::diaglog::ExtractionRecord>, String> {
+    Ok(crate::llm::diaglog::recent())
+}
+
+/// Process-wide single-flight guard for model loads.
+///
+/// `load_and_activate_llm` releases the `llm_runner` mutex before the (multi-
+/// second) GGUF load, so two callers that both observe `llm_runner == None`
+/// would otherwise each load a full copy into RAM/VRAM concurrently and race
+/// to install the runner (exhaustion; last-wins).  Every load path funnels
+/// through here; the lazy [`ensure_runner_loaded`] double-checks under this
+/// lock so late arrivals coalesce onto the winner instead of loading again.
+static LLM_LOAD_LOCK: Mutex<()> = Mutex::new(());
+
+/// Emit `llm-status` transitions around a load.  Lock-free core shared by the
+/// serialized entry points below — callers MUST hold [`LLM_LOAD_LOCK`].
+fn load_and_activate_llm_emit(
+    model_id: &str,
+    state: &AppState,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    if let Some(app) = app {
+        let _ = app.emit("llm-status", "loading");
+    }
+    let result = load_and_activate_llm(model_id, state);
+    if let Some(app) = app {
+        match &result {
+            Ok(()) => {
+                let _ = app.emit("llm-status", "ready");
+            }
+            Err(e) => {
+                let _ = app.emit("llm-status", &format!("error: {e}"));
+            }
+        }
+    }
+    result
+}
+
+/// Load a GGUF model and install it as the active LLM runner, emitting
+/// `llm-status` transitions (loading → ready | error: …) when an
+/// AppHandle is provided so the overlay can explain why the first
+/// structured dictation is slow instead of appearing hung.
+///
+/// Always (re)loads the requested model — used by explicit switches and eager
+/// loads.  Serializes with all other loads via [`LLM_LOAD_LOCK`] so two
+/// activations never hold two GGUF copies in memory at once.  Lazy callers
+/// should prefer [`ensure_runner_loaded`], which coalesces instead of
+/// reloading when a runner is already present.
+pub fn load_and_activate_llm_with_status(
+    model_id: &str,
+    state: &AppState,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    let _load_guard = LLM_LOAD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    load_and_activate_llm_emit(model_id, state, app)
+}
+
+/// Keyed lookup shared by [`runner_for_model`]: return the slot's value ONLY
+/// when its stored (canonical) model id matches `canonical`.  Pure so the
+/// "returns the requested model or None" invariant is unit-testable without a
+/// real runner (B2-16).
+fn keyed_slot_lookup<T: Clone>(slot: Option<&(String, T)>, canonical: &str) -> Option<T> {
+    match slot {
+        Some((id, value)) if id == canonical => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Return the loaded runner ONLY when it is the REQUESTED (canonical) model.
+///
+/// The single-flight double-check must not hand back whatever runner happens to
+/// be installed: a lazy load for model Y that raced a load of X would otherwise
+/// silently get X (M3 / B2-8).  The runner is stored TOGETHER with the canonical
+/// id of the model it was loaded for under ONE mutex, so this reads a consistent
+/// (model, runner) pair in a single lock — a concurrent switch can never return
+/// X's runner keyed to Y (B2-16).
+fn runner_for_model(state: &AppState, canonical_id: &str) -> Option<Arc<LlmRunner>> {
+    let guard = state.llm_runner.lock().ok()?;
+    keyed_slot_lookup(guard.as_ref(), canonical_id)
+}
+
+/// Lazily ensure a runner for `model_id` is loaded, coalescing concurrent
+/// callers onto a single model load (single-flight).
+///
+/// Returns the existing runner ONLY when it is the requested model.  When it
+/// must load, it re-checks under [`LLM_LOAD_LOCK`] — a caller that lost the race
+/// to load the SAME model coalesces onto the winner; a request for a DIFFERENT
+/// model proceeds to (re)load rather than being fobbed off with the wrong runner.
+///
+/// This holds a `std::sync::Mutex` across the blocking load + thread join, so it
+/// MUST be called on blocking infrastructure (a `spawn_blocking` task), never
+/// directly on a tokio worker (B2-8).
+pub fn ensure_runner_loaded(
+    model_id: &str,
+    state: &AppState,
+    app: Option<&tauri::AppHandle>,
+) -> Result<Arc<LlmRunner>, String> {
+    let canonical = crate::llm_models::manager::LlmModelManager::canonical_id(model_id).to_string();
+    // Fast path — the REQUESTED model is already loaded, no lock needed.
+    if let Some(r) = runner_for_model(state, &canonical) {
+        return Ok(r);
+    }
+    // Serialize the load; the winner installs the runner and everyone waiting
+    // on the SAME model coalesces onto it via the re-check below.
+    let _load_guard = LLM_LOAD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(r) = runner_for_model(state, &canonical) {
+        return Ok(r);
+    }
+    load_and_activate_llm_emit(&canonical, state, app)?;
+    runner_for_model(state, &canonical)
+        .ok_or_else(|| "LLM runner missing after load".to_string())
 }
 
 /// Load a GGUF model and install it as the active LLM runner.
@@ -160,18 +289,12 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         .map(|s| s.gpu_acceleration)
         .unwrap_or(false);
 
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(2).max(2).min(8) as i32)
-        .unwrap_or(4);
-
+    // n_ctx / max_tokens / n_threads live in LlmConfig::default() — the
+    // single source of truth for engine sizing.
     let config = LlmConfig {
         model_path: model_path.to_string_lossy().into_owned(),
-        n_threads,
         use_gpu,
-        // Sized for system prompt (~1,900 tok) + capped input + 384 output.
-        // 2048 overflowed mid-generation on long dictations.
-        n_ctx: 3072,
-        max_tokens: 384,
+        ..LlmConfig::default()
     };
 
     // Drop the previous runner before loading a replacement so llama.cpp does
@@ -180,7 +303,7 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         let mut runner = state.llm_runner.lock().unwrap();
         if runner
             .as_ref()
-            .map(|runner| runner.is_busy())
+            .map(|(_, r)| r.is_busy())
             .unwrap_or(false)
         {
             return Err(
@@ -234,10 +357,14 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
         .map_err(|_| "LLM loader panicked during initialization".to_string())?
         .map_err(|e| format!("Failed to load LLM: {e}"))?;
 
-    // Spawn the runner worker that will own this engine.
-    let runner = LlmRunner::spawn(engine).map_err(|e| e.to_string())?;
+    // Spawn the runner worker that will own this engine, warmed on the
+    // active context mode's Structured Mode profile.
+    let profile = *state.active_structured_profile.lock().unwrap();
+    let runner = LlmRunner::spawn(engine, profile).map_err(|e| e.to_string())?;
 
-    *state.llm_runner.lock().unwrap() = Some(Arc::new(runner));
+    // Store the runner keyed to the canonical model id it was loaded for, under
+    // the one mutex, so `runner_for_model` reads a consistent pair (B2-16).
+    *state.llm_runner.lock().unwrap() = Some((model_id.to_string(), Arc::new(runner)));
     *state.active_llm_model_id.lock().unwrap() = Some(model_id.to_string());
 
     // Persist the active LLM choice so it survives restarts.
@@ -247,4 +374,24 @@ pub fn load_and_activate_llm(model_id: &str, state: &AppState) -> Result<(), Str
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyed_slot_lookup;
+
+    /// The keyed read `runner_for_model` uses must return the value ONLY for the
+    /// requested model — a concurrent switch that installed model Y's runner
+    /// must never satisfy a request for X (B2-16).
+    #[test]
+    fn keyed_slot_lookup_returns_requested_or_none() {
+        let slot = ("qwen-x".to_string(), 7i32);
+        assert_eq!(keyed_slot_lookup(Some(&slot), "qwen-x"), Some(7));
+        // Slot now holds model Y's runner (the switch replaced it) — a request
+        // for X gets None, never Y's runner mislabeled as X.
+        let slot_y = ("qwen-y".to_string(), 9i32);
+        assert_eq!(keyed_slot_lookup(Some(&slot_y), "qwen-x"), None);
+        // Empty slot (mid-load) returns None.
+        assert_eq!(keyed_slot_lookup::<i32>(None, "qwen-x"), None);
+    }
 }
