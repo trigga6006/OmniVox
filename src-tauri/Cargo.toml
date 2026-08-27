@@ -1,6 +1,6 @@
 [package]
 name = "omnivoice"
-version = "0.5.0"
+version = "0.6.0"
 description = "OmniVox - Local AI Dictation"
 authors = ["you"]
 edition = "2021"
@@ -22,10 +22,25 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "6"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.13.4", features = ["stream", "json"] }
+sha2 = "0.10"
+sysinfo = { version = "=0.38.4", default-features = false, features = ["system"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
-cpal = "0.15"
+cpal = "0.17.3"
 whisper-rs = "0.16"
+# Official sherpa-onnx Rust bindings — powers the Parakeet TDT (ONNX transducer)
+# ASR engine family alongside whisper.cpp. Its build script downloads prebuilt
+# libraries, so there is no cmake step.
+#
+# `shared` instead of the default `static`: the crate's Windows STATIC archive is
+# built against the /MT runtime, which cannot link into this binary because
+# whisper-rs-sys and llama-cpp-sys (and Rust std) use /MD — the mix fails with
+# LNK2038. The shared archive links through an import library and carries its own
+# runtime, so it links cleanly; sherpa's C API allocates and frees everything on
+# its own side of the boundary, so nothing crosses heaps.
+sherpa-onnx = { version = "1.13.5", default-features = false, features = [
+    "shared",
+] }
 enigo = "0.2"
 arboard = "3"
 tauri-plugin-single-instance = "2.4.0"
@@ -54,9 +69,16 @@ psl = "2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Security_Credentials",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Threading",
+    # Capability Access Manager consent store — Meeting Mode reads which
+    # executables currently hold the microphone without touching COM.
+    "Win32_System_Registry",
+    # Process snapshot — a consent-store entry left behind by a crashed app
+    # only counts as a live microphone session if the app is still running.
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 windows = { version = "0.61", features = [
     "Win32_Media_Audio",
@@ -72,9 +94,7 @@ windows = { version = "0.61", features = [
 rdev = "0.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.26"
 core-graphics = "0.24"
-core-foundation = "0.10"
 objc = "0.2"
 libc = "0.2"
 
@@ -102,3 +122,8 @@ opt-level = 2
 
 [profile.dev.package.llama-cpp-sys-2]
 opt-level = 2
+
+[package.metadata.cargo-machete]
+# Build dependencies are referenced from build.rs, which machete does not
+# attribute to the package dependency graph.
+ignored = ["tauri-build"]
