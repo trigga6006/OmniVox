@@ -84,13 +84,25 @@ try {
         throw "Installer SHA-256 verification failed."
     }
 
+    # SHA-256 against the published manifest (above) is the mandatory
+    # integrity gate. Authenticode is layered on top: a PRESENT-but-invalid
+    # signature means tampering and is refused, while an unsigned installer is
+    # accepted with a warning — OmniVox releases are not code-signed today,
+    # and Windows SmartScreen will show its own unsigned-publisher prompt.
+    # If releases gain a certificate later, this verification tightens
+    # automatically because the signature will then be present and must be
+    # valid.
     $signature = Get-AuthenticodeSignature -LiteralPath $InstallerPath
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        throw "Installer Authenticode signature is not valid: $($signature.Status)"
+    if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+        Write-Host "  Verified SHA-256 and Authenticode signature." -ForegroundColor Green
+        Write-Host "  Publisher: $($signature.SignerCertificate.Subject)" -ForegroundColor DarkGray
     }
-
-    Write-Host "  Verified SHA-256 and Authenticode signature." -ForegroundColor Green
-    Write-Host "  Publisher: $($signature.SignerCertificate.Subject)" -ForegroundColor DarkGray
+    elseif ($signature.Status -eq [System.Management.Automation.SignatureStatus]::NotSigned) {
+        Write-Host "  Verified SHA-256 (installer is not code-signed; expect a SmartScreen prompt)." -ForegroundColor Yellow
+    }
+    else {
+        throw "Installer carries an invalid Authenticode signature ($($signature.Status)) - refusing to run it."
+    }
     Write-Host ""
     Write-Host "  Launching installer..." -ForegroundColor Cyan
     Write-Host "  (Follow the installer prompts to complete setup)" -ForegroundColor DarkGray

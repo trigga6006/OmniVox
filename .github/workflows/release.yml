@@ -79,20 +79,27 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Require Windows signing credentials for releases
+      - name: Detect Windows signing credentials
+        id: signing
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64) -or
-              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw "Release signing requires WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD repository secrets."
+          # Signing is optional: releases ship unsigned (SHA-256 manifest is
+          # the integrity gate, and install.ps1 accepts NotSigned) until a
+          # certificate is configured, at which point every step below
+          # re-enables automatically.
+          $available = -not ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64) -or
+                             [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD))
+          if (-not $available) {
+            Write-Warning "No signing certificate configured - publishing an UNSIGNED release."
           }
+          "available=$($available.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Import Windows signing certificate
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.signing.outputs.available == 'true'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
@@ -114,8 +121,10 @@ jobs:
 
       - name: Build Tauri app
         shell: pwsh
+        env:
+          SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
         run: |
-          if ($env:GITHUB_REF -like 'refs/tags/*') {
+          if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:SIGNING_AVAILABLE -eq 'true') {
             $signingConfig = @{
               bundle = @{
                 windows = @{
@@ -151,7 +160,7 @@ jobs:
           echo "CHECKSUM_NAME=$CHECKSUM_NAME" >> "$GITHUB_ENV"
 
       - name: Verify Authenticode signature
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.signing.outputs.available == 'true'
         shell: pwsh
         run: |
           $signature = Get-AuthenticodeSignature -LiteralPath $env:INSTALLER_NAME
