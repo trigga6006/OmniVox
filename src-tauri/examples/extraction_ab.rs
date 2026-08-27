@@ -9,19 +9,47 @@
 //! shipping a prompt change (any byte change re-warms the KV cache once).
 //!
 //! Usage:
-//!   cargo run --release --example extraction_ab --features vulkan -- <model.gguf>
-//! or set OMNIVOX_LLM_MODEL to the GGUF path (mirrors llm_probe.rs).
+//!   cargo run --release --example extraction_ab -- --model <model.gguf> --backend cpu
+//!   cargo run --release --example extraction_ab --features vulkan -- --model <model.gguf> --backend vulkan
 //!
-//! Notes:
-//!   - Runs on CPU (use_gpu=false) so it never fights the live app for the
-//!     GPU. Accuracy is hardware-independent (grammar-constrained greedy
-//!     decode); the printed latency is a CPU proxy.
-//!   - One KV session per profile: the system prompt prefills once, each
-//!     case only pays for its own words — same shape as the app's hot path.
+//! One KV session per profile mirrors the production hot path. Reports use the
+//! same JSON schema as the Command Mode and ASR benchmarks.
+
+mod support;
 
 use omnivoice_lib::llm::engine::{LlamaEngine, LlmEngine};
 use omnivoice_lib::llm::profiles;
 use omnivoice_lib::llm::types::LlmConfig;
+use serde::Serialize;
+use serde_json::json;
+use std::time::Instant;
+
+const PRODUCTION_DEADLINE_MS: u64 = 8_000;
+const STRUCTURED_WARMUP_DICTATIONS: &[&str] = &[
+    "Summarize the launch checklist: verify backups, notify support, and deploy after six pm.",
+    "Write a short note that the design review moved to Tuesday morning.",
+    "Organize these ideas: simpler onboarding, clearer errors, and faster startup.",
+];
+
+const USAGE: &str = "Structured Mode model benchmark
+
+Usage:
+  cargo run --release --example extraction_ab -- --model <model.gguf> --backend cpu [options]
+  cargo run --release --example extraction_ab --features vulkan -- --model <model.gguf> --backend vulkan [options]
+
+Options:
+  --runs <n>                Measured corpus repetitions (default: 1)
+  --warmups <n>             Unmeasured warmup inferences per profile (default: 1)
+  --json <path>             Also write the JSON report to this path
+  --max-p95-ms <ms>         Fail when warm inference p95 exceeds this value
+  --min-quality-pct <pct>   Fail when grounded case pass rate is below this value
+  --source-label <label>    Label this source tree, e.g. baseline or candidate
+  --hardware-label <label>  Stable identifier for the benchmark machine
+
+The model may also be supplied through OMNIVOX_LLM_MODEL. Cold end-to-end time
+is model load + default-profile session ready + first inference and is assessed
+against the app's default 8-second Structured Mode deadline. Screen-context
+capture/merge is intentionally excluded and reported as a separate scope.";
 
 struct Case {
     name: &'static str,
@@ -211,110 +239,235 @@ const NOTES_CASES: &[Case] = &[
     },
 ];
 
-fn main() {
-    let model_path = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("OMNIVOX_LLM_MODEL").ok())
-        .or_else(|| {
-            dirs::data_dir().map(|d| {
-                d.join("omnivox")
-                    .join("llm_models")
-                    .join("Qwen3-1.7B-Q8_0.gguf")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-        })
-        .expect("pass a model path as arg 1 or set OMNIVOX_LLM_MODEL");
+#[derive(Serialize)]
+struct CaseFailure {
+    run: usize,
+    profile: &'static str,
+    case: &'static str,
+    missing: Vec<&'static str>,
+    leaked: Vec<&'static str>,
+    error: Option<String>,
+}
 
+#[derive(Serialize)]
+struct ProfileQuality {
+    profile: &'static str,
+    passed: usize,
+    total: usize,
+    pass_pct: f64,
+}
+
+fn run() -> Result<bool, String> {
+    let args = support::parse_common_args("OMNIVOX_LLM_MODEL", USAGE)?;
     let config = LlmConfig {
-        model_path: model_path.clone(),
-        use_gpu: false,
+        model_path: args.model_path.to_string_lossy().into_owned(),
+        use_gpu: args.backend.use_gpu(),
         ..LlmConfig::default()
     };
+    let config_json = json!({
+        "runs": args.runs,
+        "warmups_per_profile": args.warmups,
+        "n_threads": config.n_threads,
+        "n_ctx": config.n_ctx,
+        "max_tokens": config.max_tokens,
+        "production_deadline_ms": PRODUCTION_DEADLINE_MS,
+        "profiles": ["agent-prompt", "email", "notes-outline"],
+        "execution_scope": {
+            "included": ["LlamaEngine model load", "production profile session creation/KV prompt warm", "grammar-constrained generation", "profile postprocess and grounding"],
+            "excluded": ["audio/ASR", "LlmRunner queue and cancellation", "screen-context capture and prompt merge", "overlay/output delivery"],
+            "screen_context": "excluded from this fair model A/B; acquisition is target-dependent and normally overlaps recording, so it must not be folded into model inference latency",
+        },
+    });
 
-    eprintln!("[extraction_ab] loading {model_path} ...");
-    let engine = LlamaEngine::load(config).expect("failed to load model");
-
+    eprintln!(
+        "[extraction_ab] loading {} on {:?}...",
+        args.model_path.display(),
+        args.backend
+    );
+    let started = Instant::now();
+    let engine = LlamaEngine::load(config).map_err(|error| error.to_string())?;
+    let load_ms = support::elapsed_ms(started);
     let suites: &[(&str, &[Case])] = &[
         ("agent-prompt", AGENT_CASES),
         ("email", EMAIL_CASES),
         ("notes-outline", NOTES_CASES),
     ];
 
+    let mut session_warm_ms = Vec::with_capacity(suites.len());
+    let mut first_inference_ms = Vec::with_capacity(suites.len());
+    let mut warm_samples_ms = Vec::new();
     let mut total = 0usize;
     let mut total_pass = 0usize;
+    let mut failures = Vec::new();
+    let mut profile_quality = Vec::new();
+    let mut cold_end_to_end_ms = None;
+    let mut cold_first_inference_error = None;
 
-    println!("\n============== Structured Mode extraction A/B ==============");
-    println!("model: {model_path}");
-
-    for (profile_id, cases) in suites {
+    for (profile_index, (profile_id, cases)) in suites.iter().enumerate() {
         let profile = profiles::get(profile_id);
-        // One warmed session per profile — mirrors the app's hot path and
-        // amortizes the system-prompt prefill across the suite.
+        let started = Instant::now();
         let mut session = engine
             .new_session_for(profile)
-            .expect("failed to create session");
+            .map_err(|error| format!("failed to create {} session: {error}", profile.id))?;
+        session_warm_ms.push(support::elapsed_ms(started));
 
-        let mut pass = 0usize;
-        let mut suite_ms = 0u128;
-        println!("\n-- profile: {} ({} cases)", profile.id, cases.len());
+        let started = Instant::now();
+        let cold_input = STRUCTURED_WARMUP_DICTATIONS[profile_index];
+        let first_outcome = session
+            .generate_raw(cold_input, &[], None)
+            .and_then(|raw| (profile.postprocess)(&raw, cold_input));
+        let first_ms = support::elapsed_ms(started);
+        first_inference_ms.push(first_ms);
+        if profile_index == 0 {
+            cold_end_to_end_ms = Some(
+                load_ms
+                    .saturating_add(session_warm_ms[0])
+                    .saturating_add(first_ms),
+            );
+            cold_first_inference_error = first_outcome.err().map(|error| error.to_string());
+        }
+        for warmup in 0..args.warmups {
+            let warmup_input = STRUCTURED_WARMUP_DICTATIONS
+                [(profile_index + warmup + 1) % STRUCTURED_WARMUP_DICTATIONS.len()];
+            let _ = session
+                .generate_raw(warmup_input, &[], None)
+                .and_then(|raw| (profile.postprocess)(&raw, warmup_input));
+        }
 
-        for case in *cases {
-            let t0 = std::time::Instant::now();
-            let outcome = session
-                .generate_raw(case.dictation, &[], None)
-                .and_then(|raw| (profile.postprocess)(&raw, case.dictation));
-            let ms = t0.elapsed().as_millis();
-            suite_ms += ms;
+        let mut profile_pass = 0usize;
+        for run in 0..args.runs {
+            eprintln!(
+                "[extraction_ab] profile={} run {}/{}",
+                profile.id,
+                run + 1,
+                args.runs
+            );
+            for case in *cases {
+                let started = Instant::now();
+                let outcome = session
+                    .generate_raw(case.dictation, &[], None)
+                    .and_then(|raw| (profile.postprocess)(&raw, case.dictation));
+                warm_samples_ms.push(support::elapsed_ms(started));
+                total += 1;
 
-            match outcome {
-                Ok(out) => {
-                    let md = out.markdown.to_lowercase();
-                    let missing: Vec<&str> = case
-                        .expect
-                        .iter()
-                        .filter(|kw| !md.contains(&kw.to_lowercase()))
-                        .copied()
-                        .collect();
-                    let leaked: Vec<&str> = case
-                        .reject
-                        .iter()
-                        .filter(|kw| md.contains(&kw.to_lowercase()))
-                        .copied()
-                        .collect();
-                    if missing.is_empty() && leaked.is_empty() {
-                        pass += 1;
-                        println!("  PASS ({ms:>5}ms) {}", case.name);
-                    } else {
-                        println!("  FAIL ({ms:>5}ms) {}", case.name);
-                        if !missing.is_empty() {
-                            println!("       missing: {missing:?}");
+                match outcome {
+                    Ok(output) => {
+                        let markdown = output.markdown.to_lowercase();
+                        let missing = case
+                            .expect
+                            .iter()
+                            .filter(|keyword| !markdown.contains(&keyword.to_lowercase()))
+                            .copied()
+                            .collect::<Vec<_>>();
+                        let leaked = case
+                            .reject
+                            .iter()
+                            .filter(|keyword| markdown.contains(&keyword.to_lowercase()))
+                            .copied()
+                            .collect::<Vec<_>>();
+                        if missing.is_empty() && leaked.is_empty() {
+                            total_pass += 1;
+                            profile_pass += 1;
+                        } else {
+                            failures.push(CaseFailure {
+                                run,
+                                profile: profile.id,
+                                case: case.name,
+                                missing,
+                                leaked,
+                                error: None,
+                            });
                         }
-                        if !leaked.is_empty() {
-                            println!("       leaked (fabrication): {leaked:?}");
-                        }
-                        println!(
-                            "       output: {}",
-                            out.markdown.replace('\n', "\n               ")
-                        );
                     }
-                }
-                Err(e) => {
-                    println!("  FAIL ({ms:>5}ms) {} — error: {e}", case.name);
+                    Err(error) => failures.push(CaseFailure {
+                        run,
+                        profile: profile.id,
+                        case: case.name,
+                        missing: Vec::new(),
+                        leaked: Vec::new(),
+                        error: Some(error.to_string()),
+                    }),
                 }
             }
         }
-
-        total += cases.len();
-        total_pass += pass;
-        println!(
-            "-- {}: {pass}/{} pass, avg {} ms/case",
-            profile.id,
-            cases.len(),
-            suite_ms / cases.len() as u128
-        );
+        let profile_total = args.runs * cases.len();
+        profile_quality.push(ProfileQuality {
+            profile: profile.id,
+            passed: profile_pass,
+            total: profile_total,
+            pass_pct: 100.0 * profile_pass as f64 / profile_total as f64,
+        });
     }
 
-    println!("\ntotal: {total_pass}/{total} pass");
-    println!("=============================================================\n");
+    let pass_pct = 100.0 * total_pass as f64 / total as f64;
+    let cold_end_to_end_ms = cold_end_to_end_ms
+        .ok_or_else(|| "structured suite did not produce a cold end-to-end sample".to_string())?;
+    let deadline_passed =
+        cold_first_inference_error.is_none() && cold_end_to_end_ms <= PRODUCTION_DEADLINE_MS;
+    let backend_observation = support::BackendObservation::model_path(
+        args.backend,
+        "Vulkan was requested and the LlamaEngine loaded, but the llama_cpp API used here exposes neither an actual offloaded-layer count nor fallback device",
+    );
+    support::finish_report(support::ReportInput {
+        benchmark: "structured_extraction_ab".to_string(),
+        harness_sha256: support::harness_sha256(&[
+            include_bytes!("extraction_ab.rs"),
+            include_bytes!("support/mod.rs"),
+        ]),
+        production: support::production_fingerprint(&[
+            ("src/llm/engine.rs", include_bytes!("../src/llm/engine.rs")),
+            (
+                "src/llm/grammar.rs",
+                include_bytes!("../src/llm/grammar.rs"),
+            ),
+            (
+                "src/llm/profiles.rs",
+                include_bytes!("../src/llm/profiles.rs"),
+            ),
+            ("src/llm/prompt.rs", include_bytes!("../src/llm/prompt.rs")),
+            ("src/llm/types.rs", include_bytes!("../src/llm/types.rs")),
+        ]),
+        backend_observation,
+        config: config_json,
+        phases: vec![
+            support::PhaseReport::new("model_load", "cold_component", vec![load_ms]),
+            support::PhaseReport::new("profile_session_ready", "cold_component", session_warm_ms),
+            support::PhaseReport::new(
+                "first_profile_inference",
+                "cold_component",
+                first_inference_ms,
+            ),
+            support::PhaseReport::new(
+                "cold_end_to_end",
+                "cold_end_to_end",
+                vec![cold_end_to_end_ms],
+            ),
+            support::PhaseReport::new("corpus_inference", "warm", warm_samples_ms),
+        ],
+        quality: json!({
+            "metric": "grounded_case_pass_pct",
+            "quality_pct": pass_pct,
+            "passed_cases": total_pass,
+            "total_cases": total,
+            "profiles": profile_quality,
+            "cold_default_profile": "agent-prompt",
+            "cold_first_inference_error": cold_first_inference_error,
+            "cold_end_to_end_deadline_ms": PRODUCTION_DEADLINE_MS,
+            "cold_end_to_end_within_deadline": deadline_passed,
+            "failures": failures,
+        }),
+        quality_pct: pass_pct,
+        additional_thresholds: vec![support::ThresholdResult {
+            metric: "cold_end_to_end_ms".to_string(),
+            operator: "<=",
+            expected: PRODUCTION_DEADLINE_MS as f64,
+            actual: cold_end_to_end_ms as f64,
+            passed: deadline_passed,
+        }],
+        args,
+    })
+}
+
+fn main() {
+    support::run_or_exit(run);
 }

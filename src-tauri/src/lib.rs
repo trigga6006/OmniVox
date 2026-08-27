@@ -8,13 +8,16 @@ pub mod focus;
 pub mod hotkey;
 pub mod llm;
 pub mod llm_models;
+pub mod meeting;
 pub mod models;
 pub mod output;
+pub mod perf;
 pub mod pipeline;
 pub mod postprocess;
 pub mod screen_context;
 pub mod state;
 pub mod storage;
+pub mod structured_output;
 
 use tauri::Manager;
 
@@ -192,8 +195,12 @@ fn overlay_watchdog_tick(app: &tauri::AppHandle, window: &tauri::WebviewWindow) 
     // Off every monitor — reposition to the primary work area, keeping the
     // current size (SWP_NOSIZE) so we don't clip an expanded pill, and assert
     // topmost in the same call.
-    let Ok(Some(primary)) = app.primary_monitor() else { return };
-    let Ok(size) = window.outer_size() else { return };
+    let Ok(Some(primary)) = app.primary_monitor() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
     let wa = primary.work_area();
     // 12px gap above the work-area bottom — matches setup_overlay_window.
     let margin_phys = (12.0 * primary.scale_factor()).round() as i32;
@@ -203,7 +210,15 @@ fn overlay_watchdog_tick(app: &tauri::AppHandle, window: &tauri::WebviewWindow) 
     eprintln!("overlay watchdog: pill was off-screen — repositioning to primary monitor");
     // SAFETY: as above; SWP_NOSIZE keeps the current size, we only move + topmost.
     unsafe {
-        SetWindowPos(hwnd, HWND_TOPMOST, x, y.max(0), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y.max(0),
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
 }
 
@@ -242,8 +257,14 @@ fn copy_bundled_resources(app: &tauri::AppHandle, state: &state::AppState) {
     use models::downloader::model_filename;
     use models::manager::BUNDLED_MODEL_ID;
 
-    let filename = model_filename(BUNDLED_MODEL_ID);
-    let target = state.models_dir.join(&filename);
+    let filename = match model_filename(BUNDLED_MODEL_ID) {
+        Ok(filename) => filename,
+        Err(error) => {
+            eprintln!("Bundled model manifest is invalid: {error}");
+            return;
+        }
+    };
+    let target = state.models_dir.join(filename);
 
     if target.exists() {
         return;
@@ -254,16 +275,13 @@ fn copy_bundled_resources(app: &tauri::AppHandle, state: &state::AppState) {
         tauri::path::BaseDirectory::Resource,
     );
 
-    if let Ok(source) = resource_path {
-        if source.exists() {
-            if std::fs::copy(&source, &target).is_ok() {
-                eprintln!("Bundled Whisper model installed: {BUNDLED_MODEL_ID}");
-                // The cached model list in ModelManager was built before the
-                // copy completed, so it still says the bundled model isn't
-                // downloaded.  Invalidate so the UI reflects reality.
-                state.model_manager.invalidate_cache();
-            }
-        }
+    if resource_path.is_ok_and(|source| source.exists() && std::fs::copy(&source, &target).is_ok())
+    {
+        eprintln!("Bundled Whisper model installed: {BUNDLED_MODEL_ID}");
+        // The cached model list in ModelManager was built before the
+        // copy completed, so it still says the bundled model isn't
+        // downloaded.  Invalidate so the UI reflects reality.
+        state.model_manager.invalidate_cache();
     }
 }
 
@@ -331,15 +349,18 @@ fn load_default_model_deferred(app_handle: &tauri::AppHandle, state: &state::App
 fn load_default_llm_deferred(app_handle: &tauri::AppHandle, state: &state::AppState) {
     use tauri::Emitter;
 
-    let Ok(settings) = crate::storage::settings::get_settings(&state.db) else {
+    let Some(settings) = state.settings.read().ok().map(|s| s.values().clone()) else {
         return;
     };
-    if !settings.structured_mode {
+    if !settings.structured_mode && !settings.command_mode {
         return;
     }
     let Some(model_id) = settings.active_llm_model_id else {
         return;
     };
+    let load_epoch = state
+        .llm_load_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
 
     // Skip if the file isn't actually on disk — avoids a guaranteed failure
     // and keeps the degraded banner from firing on first post-startup dictation.
@@ -349,10 +370,18 @@ fn load_default_llm_deferred(app_handle: &tauri::AppHandle, state: &state::AppSt
     }
 
     eprintln!("Loading LLM model in background...");
-    match commands::llm::load_and_activate_llm_with_status(&model_id, state, Some(app_handle)) {
-        Ok(()) => {
+    match commands::llm::load_and_activate_llm_with_status_at_epoch(
+        &model_id,
+        state,
+        Some(app_handle),
+        load_epoch,
+    ) {
+        Ok(true) => {
             eprintln!("LLM model loaded successfully");
             let _ = app_handle.emit("llm-model-loaded", &model_id);
+        }
+        Ok(false) => {
+            eprintln!("Deferred LLM load canceled by a settings change");
         }
         Err(e) => {
             eprintln!("Failed to load LLM (Structured Mode will degrade): {e}");
@@ -422,7 +451,7 @@ unsafe fn suppress_crt_asserts() {
     }
 
     // Only act if the debug UCRT is loaded (debug builds only).
-    let ucrtd = GetModuleHandleA(b"ucrtbased.dll\0".as_ptr());
+    let ucrtd = GetModuleHandleA(c"ucrtbased.dll".as_ptr().cast());
     if ucrtd.is_null() {
         return;
     }
@@ -445,14 +474,14 @@ unsafe fn suppress_crt_asserts() {
     }
 
     // Try _CrtSetReportHook2 first (most reliable)
-    let proc = GetProcAddress(ucrtd, b"_CrtSetReportHook2\0".as_ptr());
+    let proc = GetProcAddress(ucrtd, c"_CrtSetReportHook2".as_ptr().cast());
     if !proc.is_null() {
         let set_hook: SetReportHook2 = std::mem::transmute(proc);
         set_hook(0, Some(suppress_hook)); // 0 = _CRT_RPTHK_INSTALL
     }
 
     // Also disable assertion dialog via _CrtSetReportMode as belt-and-suspenders.
-    let proc = GetProcAddress(ucrtd, b"_CrtSetReportMode\0".as_ptr());
+    let proc = GetProcAddress(ucrtd, c"_CrtSetReportMode".as_ptr().cast());
     if !proc.is_null() {
         let set_mode: SetReportMode = std::mem::transmute(proc);
         set_mode(2, 0); // _CRT_ASSERT = 2, disable all output
@@ -461,6 +490,14 @@ unsafe fn suppress_crt_asserts() {
 
 /// Remove `.part` files left behind by interrupted model downloads.
 /// Only deletes files older than 1 hour to avoid racing with an active download.
+fn is_model_part_file_name(name: &str) -> bool {
+    let valid_base = |base: &str| base.ends_with(".bin") || base.ends_with(".gguf");
+    if let Some((base, token)) = name.rsplit_once(".part-") {
+        return valid_base(base) && uuid::Uuid::parse_str(token).is_ok();
+    }
+    name.strip_suffix(".part").is_some_and(valid_base)
+}
+
 fn cleanup_part_files(models_dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(models_dir) else {
         return;
@@ -469,7 +506,12 @@ fn cleanup_part_files(models_dir: &std::path::Path) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("part") {
+        let is_regular_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+        let is_partial_model = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_model_part_file_name);
+        if is_regular_file && is_partial_model {
             let is_stale = entry
                 .metadata()
                 .ok()
@@ -537,9 +579,18 @@ pub fn run() {
 
             // Clean up orphaned .part files from interrupted downloads
             cleanup_part_files(&state.models_dir);
+            cleanup_part_files(&state.llm_models_dir);
 
             // Load persisted settings (output mode, etc.) into in-memory state
             apply_persisted_settings(&state);
+
+            // Enforce transcript privacy on every launch without delaying the
+            // UI. This also repairs stale rows left by a previous crash before
+            // an older-than cutoff or history-disable cleanup completed.
+            crate::storage::privacy::schedule_retention_cleanup(app.handle(), true);
+            if let Err(error) = crate::storage::meetings::recover_interrupted(&state.db) {
+                eprintln!("Meeting recovery failed: {error}");
+            }
 
             // Reconcile launch-at-startup with the persisted setting — the
             // registry entry can drift (exe moved, user cleaned it manually).
@@ -592,9 +643,7 @@ pub fn run() {
                 // Restore the active mode's Structured Mode profile before
                 // the deferred LLM load below so the runner warms the right
                 // system prompt on the first try.
-                if let Ok(mode) =
-                    crate::storage::context_modes::get_mode(&state.db, &active_id)
-                {
+                if let Ok(mode) = crate::storage::context_modes::get_mode(&state.db, &active_id) {
                     *state.active_structured_profile.lock().unwrap() =
                         crate::llm::profiles::get(&mode.structured_profile);
                 }
@@ -628,6 +677,7 @@ pub fn run() {
 
                 let st = handle.state::<state::AppState>();
                 load_default_model_deferred(&handle, &st);
+                meeting::resume_recovered_chunks(&handle);
 
                 // Restore Structured Mode if it was on at last shutdown.
                 // Runs after the Whisper model so it doesn't compete with
@@ -662,6 +712,7 @@ pub fn run() {
             // sleep), which previously left the pill gone until a manual
             // "Reset Pill".  This re-asserts topmost + on-screen automatically.
             start_overlay_watchdog(app.handle().clone());
+            meeting::start_call_detection(app.handle().clone());
 
             // Install the hotkey via a low-level keyboard hook.
             hotkey::install(app.handle().clone());
@@ -686,6 +737,8 @@ pub fn run() {
             commands::stop_recording,
             commands::cancel_recording,
             commands::get_audio_devices,
+            commands::get_selected_audio_device,
+            commands::get_pipeline_traces,
             commands::set_audio_device,
             commands::open_mic_settings,
             commands::open_accessibility_settings,
@@ -726,13 +779,14 @@ pub fn run() {
             commands::get_analytics_records,
             // Settings & hotkey commands (5)
             commands::get_settings,
+            commands::get_settings_snapshot,
+            commands::patch_settings,
             commands::update_settings,
             commands::suspend_hotkey,
             commands::feed_hotkey_event,
             commands::update_hotkey,
             commands::resize_overlay,
             commands::show_main_window,
-            commands::recover_overlay,
             // Notes commands (4)
             commands::add_note,
             commands::update_note,
@@ -778,16 +832,98 @@ pub fn run() {
             commands::list_app_bindings,
             commands::add_app_binding,
             commands::delete_app_binding,
-            // LLM / Structured Mode commands (8)
+            // LLM / Structured Mode commands (11)
             commands::list_llm_models,
             commands::download_llm_model,
             commands::delete_llm_model,
             commands::get_active_llm_model,
             commands::set_active_llm_model,
             commands::llm_test_extract,
+            commands::llm_test_cleanup,
             commands::paste_structured_output,
+            commands::discard_structured_output,
+            commands::set_structured_panel_active,
             commands::get_llm_diagnostics,
+            // Meeting Mode
+            commands::meeting_start,
+            commands::meeting_pause,
+            commands::meeting_resume,
+            commands::meeting_stop,
+            commands::meeting_state,
+            commands::test_meeting_audio,
+            commands::list_meetings,
+            commands::list_meeting_recovery_items,
+            commands::list_meeting_templates,
+            commands::save_meeting_as_template,
+            commands::delete_meeting_template,
+            commands::list_deleted_meetings,
+            commands::search_meetings,
+            commands::search_deleted_meetings,
+            commands::get_meeting,
+            commands::update_meeting_notes,
+            commands::update_meeting_ai_options,
+            commands::update_meeting_metadata,
+            commands::update_meeting_title,
+            commands::set_meeting_favorite,
+            commands::set_meeting_tags,
+            commands::update_meeting_segment,
+            commands::update_meeting_segment_speaker,
+            commands::set_meeting_action_completed,
+            commands::list_meeting_action_items,
+            commands::add_meeting_action_item,
+            commands::update_meeting_action_item,
+            commands::set_meeting_action_item_completed,
+            commands::delete_meeting_action_item,
+            commands::add_meeting_marker,
+            commands::update_meeting_marker,
+            commands::delete_meeting_marker,
+            commands::update_meeting_summary,
+            commands::list_meeting_summary_versions,
+            commands::restore_meeting_summary_version,
+            commands::delete_meeting,
+            commands::restore_meeting,
+            commands::permanently_delete_meeting,
+            commands::estimate_meeting_summary,
+            commands::ask_meeting_question,
+            commands::delete_meeting_question,
+            commands::summarize_meeting,
+            commands::retry_meeting_transcription,
+            commands::get_meeting_provider_settings,
+            commands::get_meeting_usage_stats,
+            commands::list_meeting_ai_usage,
+            commands::save_meeting_provider_settings,
+            commands::save_openrouter_key,
+            commands::remove_openrouter_key,
+            commands::get_openrouter_status,
+            commands::list_openrouter_models,
+            commands::open_openrouter_credits,
+            commands::open_openrouter_keys,
+            commands::export_meeting,
+            commands::reveal_meeting_export,
+            commands::open_meeting_drawer,
+            commands::close_meeting_drawer,
+            commands::dismiss_meeting_widget,
+            commands::dismiss_meeting_suggestion,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniVox application");
+}
+
+#[cfg(test)]
+mod model_part_cleanup_tests {
+    use super::is_model_part_file_name;
+
+    #[test]
+    fn recognizes_current_uuid_partial_artifacts_only() {
+        assert!(is_model_part_file_name(
+            "ggml-base.en.bin.part-550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(is_model_part_file_name(
+            "Qwen3-1.7B-Q8_0.gguf.part-550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(is_model_part_file_name("ggml-base.en.bin.part"));
+        assert!(!is_model_part_file_name("notes.part"));
+        assert!(!is_model_part_file_name("model.bin.part-not-a-uuid"));
+        assert!(!is_model_part_file_name("model.bin"));
+    }
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BarChart3, CalendarDays, RefreshCw, Zap } from "lucide-react";
 import { getAnalyticsRecords, type AnalyticsRecord } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Button, Card, EmptyState as KitEmptyState, PageHeader, Spinner } from "@/components/ui";
+import { Button, Card, EmptyState as KitEmptyState, PageHeader, Skeleton } from "@/components/ui";
 import {
   computeAnalytics,
   compact,
@@ -17,7 +17,7 @@ import {
 /** Instant hover tooltip anchored above a chart bar (parent must be `group relative`). */
 function BarTooltip({ children }: { children: React.ReactNode }) {
   return (
-    <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-surface-3 px-2 py-1 text-[10.5px] leading-none opacity-0 shadow-md transition-opacity duration-150 group-hover:opacity-100">
+    <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-surface-3 px-2 py-1 text-2xs leading-none opacity-0 shadow-[var(--shadow-md)] transition-opacity duration-150 group-hover:opacity-100">
       {children}
     </div>
   );
@@ -72,8 +72,28 @@ export function UserAnalyticsPage() {
       />
 
       {loading && !data ? (
-        <div className="flex flex-1 items-center justify-center">
-          <Spinner />
+        /* Card-shaped skeletons in the dashboard's own rhythm — the real
+           cards land where these stood instead of popping in behind a
+           centered spinner. */
+        <div className="mt-5 flex flex-col gap-4">
+          <Card className="space-y-3 p-5">
+            <Skeleton className="h-2.5 w-20" />
+            <Skeleton className="h-24 w-full" />
+          </Card>
+          <Card className="space-y-3 p-5">
+            <Skeleton className="h-2.5 w-16" />
+            <Skeleton className="h-20 w-full" />
+          </Card>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card className="space-y-3 p-5">
+              <Skeleton className="h-2.5 w-20" />
+              <Skeleton className="h-16 w-full" />
+            </Card>
+            <Card className="space-y-3 p-5">
+              <Skeleton className="h-2.5 w-20" />
+              <Skeleton className="h-16 w-full" />
+            </Card>
+          </div>
         </div>
       ) : !data || data.totalMessages === 0 ? (
         <div className="flex flex-1 items-center justify-center">
@@ -179,7 +199,7 @@ function LedgerColumn({
           <div
             key={row.label}
             className={cn(
-              "flex items-center justify-between gap-3 py-2.5 text-[13px]",
+              "flex items-center justify-between gap-3 py-2.5 text-sm",
               i > 0 && "border-t border-border/40"
             )}
           >
@@ -269,11 +289,13 @@ function HeatMapCard({ data }: { data: AnalyticsData }) {
       title="Activity"
       delay={0.42}
       aside={
-        <div className="flex items-center gap-1.5 text-[10px] text-text-muted">
+        <div className="flex items-center gap-1.5 font-mono text-2xs text-text-muted">
           <span>Less</span>
           {[0, 1, 2, 3, 4].map((l) => (
             <span
               key={l}
+              // Chart geometry, deliberately off the radius scale: --radius-s
+              // (6px) on a 10px heat cell renders as a dot, not a square.
               className="h-[10px] w-[10px] rounded-[2px]"
               style={cellStyle({ level: l, future: false } as HeatCell)}
             />
@@ -289,7 +311,7 @@ function HeatMapCard({ data }: { data: AnalyticsData }) {
           <div className="flex flex-1 gap-[3px]">
             {monthMarks.map((label, i) => (
               <div key={i} className="max-w-[16px] flex-1">
-                <span className="block whitespace-nowrap text-[9px] text-text-muted">
+                <span className="block whitespace-nowrap font-mono text-2xs text-text-muted">
                   {label}
                 </span>
               </div>
@@ -303,7 +325,7 @@ function HeatMapCard({ data }: { data: AnalyticsData }) {
             {WEEKDAY_LABELS.map((label, i) => (
               <span
                 key={i}
-                className="flex-1 text-right text-[9px] leading-none text-text-muted"
+                className="flex-1 text-right font-mono text-2xs leading-none text-text-muted"
               >
                 {label}
               </span>
@@ -314,6 +336,8 @@ function HeatMapCard({ data }: { data: AnalyticsData }) {
               {week.map((cell) => (
                 <div
                   key={cell.date}
+                  // Chart geometry (see legend swatch above): 2px is the only
+                  // radius that reads as a square on a ~10px heat cell.
                   className="aspect-square w-full rounded-[2px]"
                   style={cellStyle(cell)}
                   title={
@@ -349,7 +373,9 @@ function PeakHoursCard({ data }: { data: AnalyticsData }) {
               style={{ height: "100%" }}
             >
               <div
-                className="w-full rounded-[2px] transition-colors"
+                // Chart geometry: bars are ~3px wide, so the radius scale
+                // would round them into capsules.
+                className="w-full rounded-[2px] transition-colors duration-[var(--dur-2)] ease-out"
                 style={{
                   height: `${Math.max(count > 0 ? 6 : 2, (count / max) * 100)}%`,
                   background: isPeak
@@ -369,7 +395,7 @@ function PeakHoursCard({ data }: { data: AnalyticsData }) {
           );
         })}
       </div>
-      <div className="mt-2 flex justify-between text-[9px] text-text-muted">
+      <div className="mt-2 flex justify-between font-mono text-2xs text-text-muted">
         <span>12a</span>
         <span>6a</span>
         <span>12p</span>
@@ -402,8 +428,8 @@ function ModelsCard({ data }: { data: AnalyticsData }) {
         {top.map((m) => (
           <div key={m.name}>
             <div className="mb-1 flex items-baseline justify-between">
-              <span className="text-[13px] text-text-secondary">{prettyModel(m.name)}</span>
-              <span className="font-mono text-[11px] tabular-nums text-text-muted">
+              <span className="text-sm text-text-secondary">{prettyModel(m.name)}</span>
+              <span className="font-mono text-2xs tabular-nums text-text-muted">
                 {compact(m.count)} · {Math.round(m.percent)}%
               </span>
             </div>
@@ -436,7 +462,7 @@ function TrendCard({ data }: { data: AnalyticsData }) {
       title="Last 30 days"
       delay={0.6}
       aside={
-        <span className="font-mono text-[11px] tabular-nums text-text-muted">
+        <span className="font-mono text-2xs tabular-nums text-text-muted">
           {compact(total)} words
         </span>
       }
@@ -451,6 +477,7 @@ function TrendCard({ data }: { data: AnalyticsData }) {
               style={{ height: "100%" }}
             >
               <div
+                // Chart geometry — same reason as the peak-hours bars above.
                 className="w-full rounded-[2px]"
                 style={{
                   height: `${Math.max(d.words > 0 ? 4 : 2, (d.words / max) * 100)}%`,

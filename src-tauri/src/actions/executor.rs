@@ -36,8 +36,28 @@ fn chord(enigo: &mut Enigo, mods: &[Key], key: Key) -> Result<(), String> {
 
 /// Fire a keyboard chord into the foreground app.
 pub fn run_chord(c: KeyChord) -> Result<(), String> {
-    let mut enigo =
-        Enigo::new(&Settings::default()).map_err(|e| format!("keystroke engine init failed: {e}"))?;
+    crate::output::router::OutputRouter::with_output_transaction(|| run_chord_unlocked(c, None))
+}
+
+/// Target-bound chord variant. The target is checked only after the output
+/// transaction is acquired, closing the wait-to-lock focus race.
+pub fn run_chord_to_target(c: KeyChord, target: crate::focus::WindowTarget) -> Result<(), String> {
+    crate::output::router::OutputRouter::with_output_transaction(|| {
+        run_chord_unlocked(c, Some(target))
+    })
+}
+
+fn run_chord_unlocked(
+    c: KeyChord,
+    target: Option<crate::focus::WindowTarget>,
+) -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("keystroke engine init failed: {e}"))?;
+    if let Some(target) = target {
+        if !crate::focus::verify_foreground_target(target.hwnd, target.pid) {
+            return Err("Target window is not in focus".into());
+        }
+    }
     match c {
         KeyChord::Copy => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('c')),
         KeyChord::Paste => chord(&mut enigo, &[PRIMARY_MOD], Key::Unicode('v')),
@@ -89,6 +109,11 @@ fn screenshot(_enigo: &mut Enigo) -> Result<(), String> {
 /// keyboards; `enigo`'s media-key coverage varies by version).
 #[cfg(windows)]
 pub fn run_media(a: MediaAction) -> Result<(), String> {
+    crate::output::router::OutputRouter::with_output_transaction(|| run_media_unlocked(a))
+}
+
+#[cfg(windows)]
+fn run_media_unlocked(a: MediaAction) -> Result<(), String> {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         keybd_event, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
     };
@@ -283,28 +308,11 @@ pub fn run_type_text(
         return Err("stopped".into());
     }
     crate::output::router::OutputRouter::new()
-        .paste_text(text, true)
-        .map_err(|e| e.to_string())?;
-    if submit {
-        // A stop spoken during the paste + post-paste guard must abort the
-        // submit (B2-13) before we re-verify identity and press Enter.
-        if should_cancel() {
-            return Err("stopped".into());
-        }
-        // Re-check identity between the paste and the Enter: a focus change in
-        // that window must not turn the paste into a submit somewhere else.
-        if !crate::focus::verify_foreground_target(target.hwnd, target.pid) {
-            return Err("Target window changed before send — not pressing Enter".into());
-        }
-        // paste_text already held the post-paste guard, so the text has landed
-        // by the time Enter fires.
-        let mut enigo = Enigo::new(&Settings::default())
-            .map_err(|e| format!("keystroke engine init failed: {e}"))?;
-        enigo
-            .key(Key::Return, Direction::Click)
-            .map_err(|e| format!("Send (Enter) failed: {e}"))?;
-    }
-    Ok(())
+        .paste_text_to_target_with_submit(text, true, target, submit, &should_cancel)
+        .map_err(|e| match e {
+            crate::error::AppError::Output(message) if message == "stopped" => message,
+            other => other.to_string(),
+        })
 }
 
 /// Open a web/Google search in the user's DEFAULT browser.
@@ -342,8 +350,7 @@ pub(crate) fn validate_open_url(target: &str) -> Result<String, String> {
     } else {
         format!("https://{t}")
     };
-    let parsed =
-        url::Url::parse(&normalized).map_err(|_| "Not a valid URL".to_string())?;
+    let parsed = url::Url::parse(&normalized).map_err(|_| "Not a valid URL".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("Refusing to open a non-web URL".into());
     }
@@ -407,7 +414,10 @@ mod tests {
 
     #[test]
     fn accepts_plain_domain_and_prefixes_https() {
-        assert_eq!(validate_open_url("github.com").unwrap(), "https://github.com");
+        assert_eq!(
+            validate_open_url("github.com").unwrap(),
+            "https://github.com"
+        );
         assert_eq!(
             validate_open_url("https://youtube.com").unwrap(),
             "https://youtube.com"

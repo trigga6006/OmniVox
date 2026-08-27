@@ -144,7 +144,7 @@ function VocabularyTab() {
           return (
             <Card
               key={entry.id}
-              className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm"
+              className="flex items-center gap-2 border-amber-400/40 p-3 shadow-[var(--shadow-sm)]"
             >
               <Input
                 value={editWord}
@@ -209,7 +209,7 @@ function VocabularyTab() {
 
       {/* Inline add row */}
       {adding && (
-        <Card className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm">
+        <Card className="flex items-center gap-2 border-amber-400/40 p-3 shadow-[var(--shadow-sm)]">
           <Input
             ref={wordRef}
             value={newWord}
@@ -367,7 +367,7 @@ function WordsTab() {
           return (
             <Card
               key={entry.id}
-              className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm"
+              className="flex items-center gap-2 border-amber-400/40 p-3 shadow-[var(--shadow-sm)]"
             >
               <Input
                 value={editPhrase}
@@ -441,7 +441,7 @@ function WordsTab() {
 
       {/* Inline add row */}
       {adding && (
-        <Card className="flex items-center gap-2 border-amber-400/40 p-3 shadow-sm">
+        <Card className="flex items-center gap-2 border-amber-400/40 p-3 shadow-[var(--shadow-sm)]">
           <Input
             ref={phraseRef}
             value={newPhrase}
@@ -615,7 +615,7 @@ function SnippetsTab() {
           return (
             <Card
               key={snippet.id}
-              className="flex flex-col gap-2 border-amber-400/40 p-3 shadow-sm"
+              className="flex flex-col gap-2 border-amber-400/40 p-3 shadow-[var(--shadow-sm)]"
             >
               <div className="flex items-center gap-2">
                 <Input
@@ -704,7 +704,7 @@ function SnippetsTab() {
 
       {/* Inline add */}
       {adding && (
-        <Card className="flex flex-col gap-2 border-amber-400/40 p-3 shadow-sm">
+        <Card className="flex flex-col gap-2 border-amber-400/40 p-3 shadow-[var(--shadow-sm)]">
           <div className="flex items-center gap-2">
             <Input
               ref={triggerRef}

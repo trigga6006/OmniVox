@@ -60,22 +60,58 @@ const ICON_OPTIONS = [
   { name: "scale", Icon: Scale },
 ] as const;
 
-// Painterly mosaic tesserae (keys preserved for saved modes).
+/**
+ * The six mode colors. The *keys* are historical (`amber`, `blue`, …) and are
+ * what the database stores, so they can never change; the *values* are now the
+ * canonical role tokens from tokens.css, which the swatches used to shadow with
+ * a private set of painterly hexes under the very same names. One palette, one
+ * set of names — and light theme remaps these tokens, so the swatches follow.
+ */
 const COLOR_OPTIONS = [
-  { name: "amber", class: "bg-amber-500" },   // salmon (via token)
-  { name: "blue", class: "bg-[#6e809b]" },    // slate
-  { name: "green", class: "bg-[#9ba97b]" },   // sage
-  { name: "purple", class: "bg-[#a1768e]" },  // plum
-  { name: "red", class: "bg-[#c76a4c]" },     // clay
-  { name: "cyan", class: "bg-[#5e948c]" },    // teal
+  { name: "amber", fill: "bg-[var(--color-lava)]", text: "text-[var(--color-lava)]", tint: "bg-[var(--color-lava)]/15" },
+  { name: "blue", fill: "bg-[var(--color-slate)]", text: "text-[var(--color-slate)]", tint: "bg-[var(--color-slate)]/15" },
+  { name: "green", fill: "bg-[var(--color-sage)]", text: "text-[var(--color-sage)]", tint: "bg-[var(--color-sage)]/15" },
+  { name: "purple", fill: "bg-[var(--color-plum)]", text: "text-[var(--color-plum)]", tint: "bg-[var(--color-plum)]/15" },
+  { name: "red", fill: "bg-[var(--color-clay)]", text: "text-[var(--color-clay)]", tint: "bg-[var(--color-clay)]/15" },
+  { name: "cyan", fill: "bg-[var(--color-teal)]", text: "text-[var(--color-teal)]", tint: "bg-[var(--color-teal)]/15" },
 ] as const;
+
+/**
+ * Rows written by older builds (or edited by hand) can carry the retired
+ * literal instead of the name. Reading through this map keeps those modes
+ * rendering their intended color instead of silently falling back to amber.
+ */
+const LEGACY_COLOR_MAP: Record<string, string> = {
+  "#f59e0b": "amber",
+  "#6e809b": "blue",
+  "#9ba97b": "green",
+  "#a1768e": "purple",
+  "#c76a4c": "red",
+  "#5e948c": "cyan",
+};
+
+/** Stored value → a name COLOR_OPTIONS knows. */
+export function normalizeModeColor(stored: string | null | undefined): string {
+  if (!stored) return "amber";
+  const key = stored.trim().toLowerCase();
+  if (COLOR_OPTIONS.some((o) => o.name === key)) return key;
+  return LEGACY_COLOR_MAP[key] ?? "amber";
+}
 
 function getIconComponent(iconName: string) {
   return ICON_OPTIONS.find((o) => o.name === iconName)?.Icon ?? Mic;
 }
 
-function getColorClass(colorName: string) {
-  return COLOR_OPTIONS.find((o) => o.name === colorName)?.class ?? "bg-amber-500";
+/**
+ * All three renderings of one mode color, as literal class strings.
+ *
+ * They have to be literal: the previous code derived them at runtime
+ * (`colorCls + "/15"`, `colorCls.replace("bg-", "text-")`), which Tailwind's
+ * source scanner never sees, so those two classes were never emitted.
+ */
+function getModeColor(colorName: string) {
+  const name = normalizeModeColor(colorName);
+  return COLOR_OPTIONS.find((o) => o.name === name) ?? COLOR_OPTIONS[0];
 }
 
 export const DEFAULT_PROMPT = `You are a dictation cleanup assistant. /no_think
@@ -105,7 +141,7 @@ function FormSection({
     <div>
       <span className={cn("mb-2 block", eyebrowClass)}>{label}</span>
       {children}
-      {hint && <p className="mt-1.5 text-[11px] text-text-muted">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs text-text-muted">{hint}</p>}
     </div>
   );
 }
@@ -225,7 +261,7 @@ export function ContextModesPage() {
         <div className="grid gap-2.5">
           {modes.map((mode, i) => {
             const Icon = getIconComponent(mode.icon);
-            const colorCls = getColorClass(mode.color);
+            const modeColor = getModeColor(mode.color);
             const isActive = mode.id === activeId;
 
             return (
@@ -244,22 +280,22 @@ export function ContextModesPage() {
                   {/* Icon */}
                   <div
                     className={cn(
-                      "flex h-10 w-10 items-center justify-center rounded-xl",
-                      colorCls + "/15"
+                      "flex h-10 w-10 items-center justify-center rounded-[var(--radius-l)]",
+                      modeColor.tint
                     )}
                   >
-                    <Icon size={17} className={colorCls.replace("bg-", "text-")} />
+                    <Icon size={17} className={modeColor.text} />
                   </div>
 
                   {/* Info */}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="truncate text-[14px] font-medium text-text-primary">
+                      <span className="truncate text-sm font-medium text-text-primary">
                         {mode.name}
                       </span>
                       {isActive && <Badge tone="green">Active</Badge>}
                       {mode.is_builtin && (
-                        <span className="text-[10.5px] text-text-muted">Built-in</span>
+                        <span className="text-xs text-text-muted">Built-in</span>
                       )}
                     </div>
                     <p className="mt-0.5 truncate text-xs text-text-muted">
@@ -325,7 +361,7 @@ function ModeForm({
   const [name, setName] = useState(mode?.name ?? "");
   const [description, setDescription] = useState(mode?.description ?? "");
   const [icon, setIcon] = useState(mode?.icon ?? "mic");
-  const [color, setColor] = useState(mode?.color ?? "amber");
+  const [color, setColor] = useState(() => normalizeModeColor(mode?.color));
   const [writingStyle, setWritingStyle] = useState(mode?.writing_style ?? "formal");
   // Empty (legacy rows) means the default agent-prompt profile.
   const [structuredProfile, setStructuredProfile] = useState(
@@ -523,15 +559,17 @@ function ModeForm({
 
           <FormSection label="Color">
             <div className="flex gap-1.5">
-              {COLOR_OPTIONS.map(({ name: n, class: cls }) => (
+              {COLOR_OPTIONS.map(({ name: n, fill }) => (
                 <button
                   key={n}
+                  aria-label={`${n} mode color`}
+                  aria-pressed={color === n}
                   onClick={() => setColor(n)}
                   className={cn(
-                    "h-7 w-7 rounded-full transition-colors duration-200",
-                    cls,
+                    "h-7 w-7 rounded-full transition-[opacity,scale] duration-[var(--dur-2)] ease-out",
+                    fill,
                     color === n
-                      ? "scale-110 ring-2 ring-white/45 ring-offset-2 ring-offset-surface-0"
+                      ? "scale-110 ring-2 ring-border-hover ring-offset-2 ring-offset-surface-0"
                       : "opacity-70 hover:opacity-100"
                   )}
                 />
@@ -769,7 +807,7 @@ function ModeForm({
           </Button>
         </div>
         {!isEdit && (
-          <p className="text-[11px] text-text-muted">
+          <p className="text-xs text-text-muted">
             After creating, you'll be able to add custom words, snippets, and app bindings.
           </p>
         )}

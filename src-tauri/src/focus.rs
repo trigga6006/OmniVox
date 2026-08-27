@@ -42,6 +42,21 @@ pub(crate) fn foreground_identity_ok(
     }
 }
 
+/// Identity check for platforms (macOS) where the capture target is itself a
+/// process id rather than a native window handle. Both the independently
+/// captured expected pid and the currently observed frontmost pid must agree.
+#[cfg(any(target_os = "macos", test))]
+fn process_pid_identity_ok(
+    target: isize,
+    expected_pid: Option<u32>,
+    observed_pid: Option<u32>,
+) -> bool {
+    let Ok(target_pid) = u32::try_from(target) else {
+        return false;
+    };
+    target_pid != 0 && expected_pid == Some(target_pid) && observed_pid == Some(target_pid)
+}
+
 /// PID that currently owns `hwnd`, or `None` if it can't be resolved.
 #[cfg(target_os = "windows")]
 pub(crate) fn pid_for_hwnd(hwnd: isize) -> Option<u32> {
@@ -57,15 +72,19 @@ pub(crate) fn pid_for_hwnd(hwnd: isize) -> Option<u32> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub(crate) fn pid_for_hwnd(pid: isize) -> Option<u32> {
+    u32::try_from(pid).ok().filter(|pid| *pid != 0)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub(crate) fn pid_for_hwnd(_hwnd: isize) -> Option<u32> {
     None
 }
 
 /// Verify `hwnd` still exists, is the current foreground window, and is owned by
 /// `expected_pid` (when known).  The gate before any focus-dependent primitive
-/// (paste / Enter / keystroke).  Windows-only; other platforms return `true`
-/// (focus identity is not enforced there).
+/// (paste / Enter / keystroke).
 #[cfg(target_os = "windows")]
 pub fn verify_foreground_target(hwnd: isize, expected_pid: Option<u32>) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsWindow};
@@ -79,7 +98,17 @@ pub fn verify_foreground_target(hwnd: isize, expected_pid: Option<u32>) -> bool 
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn verify_foreground_target(pid: isize, expected_pid: Option<u32>) -> bool {
+    let observed_pid = capture_foreground_window().and_then(|pid| u32::try_from(pid).ok());
+    process_pid_identity_ok(pid, expected_pid, observed_pid)
+}
+
+/// Linux capture currently has no supported foreground identity primitive.
+/// Callers that require a restore still fail in `restore_foreground_window`;
+/// this explicit compatibility behavior applies only when a caller already has
+/// a platform target from another source.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn verify_foreground_target(_hwnd: isize, _expected_pid: Option<u32>) -> bool {
     true
 }
@@ -105,7 +134,32 @@ pub fn window_identity_ok(hwnd: isize, expected_pid: Option<u32>) -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn window_identity_ok(pid: isize, expected_pid: Option<u32>) -> bool {
+    let observed_pid = unsafe {
+        let Some(cls) = objc::runtime::Class::get("NSRunningApplication") else {
+            return false;
+        };
+        let app: *mut objc::runtime::Object = objc::msg_send![
+            cls,
+            runningApplicationWithProcessIdentifier: pid as i32
+        ];
+        if app.is_null() {
+            return false;
+        }
+        let terminated: objc::runtime::BOOL = objc::msg_send![app, isTerminated];
+        if terminated != 0 {
+            return false;
+        }
+        let live_pid: i32 = objc::msg_send![app, processIdentifier];
+        u32::try_from(live_pid).ok()
+    };
+    process_pid_identity_ok(pid, expected_pid, observed_pid)
+}
+
+/// Linux cannot currently prove native window/process identity. Keep this
+/// compatibility path explicit; focus-restoring output remains disabled there.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn window_identity_ok(_hwnd: isize, _expected_pid: Option<u32>) -> bool {
     true
 }
@@ -372,42 +426,44 @@ fn deselect_after_focus_restore(hwnd: isize, expected_pid: Option<u32>) {
         }
     }
 
-    // Re-verify identity immediately before the enigo injection — the 50 ms
-    // settle and the GUI-info probe above are a window in which focus could
-    // have changed; the arrows must only land in the still-verified target
-    // (B2-15).
-    if !verify_foreground_target(hwnd, expected_pid) {
-        return;
-    }
-
-    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-    if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
-        let _ = enigo.key(Key::RightArrow, Direction::Click);
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let _ = enigo.key(Key::LeftArrow, Direction::Click);
-    }
+    // The router acquires the same process-wide transaction used by every
+    // paste/command, then re-verifies identity immediately before each arrow.
+    // This closes both the focus-check-to-injection race and cross-mode output
+    // interleaving (B2-15).
+    let target = WindowTarget {
+        hwnd,
+        pid: expected_pid,
+    };
+    let _ = crate::output::router::OutputRouter::new().deselect_target(target);
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn restore_foreground_window(pid: isize, _expected_pid: Option<u32>) -> bool {
-    let mut activated = false;
-    unsafe {
-        let cls =
-            objc::runtime::Class::get("NSRunningApplication").expect("NSRunningApplication class");
+pub(crate) fn restore_foreground_window(pid: isize, expected_pid: Option<u32>) -> bool {
+    if verify_foreground_target(pid, expected_pid) {
+        return true;
+    }
+    let activated = unsafe {
+        let Some(cls) = objc::runtime::Class::get("NSRunningApplication") else {
+            return false;
+        };
         let app: *mut objc::runtime::Object = objc::msg_send![
             cls,
             runningApplicationWithProcessIdentifier: pid as i32
         ];
-        if !app.is_null() {
-            let _: objc::runtime::BOOL = objc::msg_send![
-                app,
-                activateWithOptions: 0x02u64
-            ];
-            activated = true;
+        if app.is_null() {
+            return false;
         }
+        let activated: objc::runtime::BOOL = objc::msg_send![
+            app,
+            activateWithOptions: 0x02u64
+        ];
+        activated != 0
+    };
+    if !activated {
+        return false;
     }
     std::thread::sleep(std::time::Duration::from_millis(50));
-    activated
+    verify_foreground_target(pid, expected_pid)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -425,7 +481,7 @@ pub fn restore_foreground_window_public(hwnd: isize, expected_pid: Option<u32>) 
 
 #[cfg(test)]
 mod tests {
-    use super::foreground_identity_ok;
+    use super::{foreground_identity_ok, process_pid_identity_ok};
 
     #[test]
     fn identity_matches_when_foreground_and_pid_agree() {
@@ -436,19 +492,40 @@ mod tests {
     fn identity_rejected_when_foreground_differs() {
         // Window still exists + PID would match, but a different window is
         // foreground now — refuse (the H1/H2 redirect).
-        assert!(!foreground_identity_ok(true, 20, 10, Some(5), Some(5), true));
+        assert!(!foreground_identity_ok(
+            true,
+            20,
+            10,
+            Some(5),
+            Some(5),
+            true
+        ));
     }
 
     #[test]
     fn identity_rejected_on_pid_mismatch() {
         // Same HWND value is foreground, but a different process owns it now —
         // a recycled handle (M8). Refuse.
-        assert!(!foreground_identity_ok(true, 10, 10, Some(9), Some(5), true));
+        assert!(!foreground_identity_ok(
+            true,
+            10,
+            10,
+            Some(9),
+            Some(5),
+            true
+        ));
     }
 
     #[test]
     fn identity_rejected_when_window_gone() {
-        assert!(!foreground_identity_ok(false, 10, 10, Some(5), Some(5), true));
+        assert!(!foreground_identity_ok(
+            false,
+            10,
+            10,
+            Some(5),
+            Some(5),
+            true
+        ));
     }
 
     #[test]
@@ -463,5 +540,22 @@ mod tests {
     fn identity_ok_without_expected_pid_when_not_required() {
         // Non-Windows: no pid to correlate — IsWindow + foreground is enough.
         assert!(foreground_identity_ok(true, 10, 10, None, None, false));
+    }
+
+    #[test]
+    fn process_target_requires_expected_and_observed_pid_to_match() {
+        assert!(process_pid_identity_ok(42, Some(42), Some(42)));
+        assert!(!process_pid_identity_ok(42, None, Some(42)));
+        assert!(!process_pid_identity_ok(42, Some(42), Some(99)));
+        assert!(!process_pid_identity_ok(0, Some(0), Some(0)));
+        assert!(!process_pid_identity_ok(-1, None, None));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_foreground_verification_fails_without_captured_identity() {
+        if let Some(pid) = super::capture_foreground_window() {
+            assert!(!super::verify_foreground_target(pid, None));
+        }
     }
 }

@@ -269,7 +269,7 @@ export function QuickToggles({
           width: 22,
           height: 1,
           background:
-            "linear-gradient(90deg, rgba(255,235,200,0) 0%, rgba(255,235,200,0.18) 50%, rgba(255,235,200,0) 100%)",
+            "linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--color-amber-100) 18%, transparent) 50%, transparent 100%)",
           borderRadius: 1,
         }}
       />

@@ -136,12 +136,12 @@ const styles = `
   width: 196px;
   margin-bottom: 4px;
   border-radius: 13px;
-  background: linear-gradient(180deg, #17171b 0%, #100f12 100%);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: linear-gradient(180deg, var(--color-surface-1) 0%, var(--color-surface-0) 100%);
+  border: 1px solid var(--color-border);
   overflow: hidden;
   isolation: isolate;
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
+    inset 0 1px 0 color-mix(in srgb, var(--color-cream) 5%, transparent),
     0 1px 2px rgba(0,0,0,0.5),
     0 10px 24px -8px rgba(0,0,0,0.7),
     0 24px 48px -16px rgba(0,0,0,0.85);
@@ -156,7 +156,7 @@ const styles = `
   height: 1px;
   background: linear-gradient(90deg,
     transparent 0%,
-    rgba(255,255,255,0.10) 50%,
+    color-mix(in srgb, var(--color-cream) 10%, transparent) 50%,
     transparent 100%);
   pointer-events: none;
   z-index: 2;
@@ -211,10 +211,10 @@ const styles = `
   transition: background 140ms ease, color 140ms ease;
 }
 .ms-item:hover {
-  background: rgba(255,255,255,0.04);
+  background: color-mix(in srgb, var(--color-cream) 4%, transparent);
 }
 .ms-item--active {
-  background: rgba(255,255,255,0.05);
+  background: color-mix(in srgb, var(--color-cream) 5%, transparent);
 }
 .ms-item--active::before {
   content: "";
@@ -234,7 +234,7 @@ const styles = `
   font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 500;
-  color: rgba(244,244,245,0.78);
+  color: color-mix(in srgb, var(--color-text-primary) 78%, transparent);
   letter-spacing: -0.005em;
   min-width: 0;
   overflow: hidden;
@@ -255,7 +255,7 @@ const styles = `
   margin: 3px 12px;
   background: linear-gradient(90deg,
     transparent 0%,
-    rgba(255,255,255,0.09) 50%,
+    color-mix(in srgb, var(--color-cream) 9%, transparent) 50%,
     transparent 100%);
 }
 
@@ -277,7 +277,7 @@ const styles = `
   transition: background 140ms ease;
 }
 .ms-open:hover {
-  background: rgba(255,255,255,0.04);
+  background: color-mix(in srgb, var(--color-cream) 4%, transparent);
 }
 .ms-open-logo {
   opacity: 0.5;

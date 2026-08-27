@@ -30,15 +30,16 @@ jobs:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3a8b2ad3ea1212417907ff0e1b3d0c4e121bef40 # 1.94.0
         with:
-          components: clippy
+          toolchain: 1.94.0
+          components: clippy, rustfmt
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: src-tauri
           # CARGO_TARGET_DIR points at C:\b (MAX_PATH mitigation), so the
@@ -49,26 +50,41 @@ jobs:
           key: rust-health
 
       - name: Set up MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
 
       - name: Install Ninja
-        uses: seanmiddleditch/gha-setup-ninja@master
+        uses: seanmiddleditch/gha-setup-ninja@7e868db0f3406270dd46e1dac26c65f621456723
+
+      # Vulkan is a release-path feature, so health checks compile and lint
+      # the same whisper/llama backend that ships to users.
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa # v1
+        with:
+          vulkan_version: 1.4.309.0
+          install_runtime: true
+          cache: true
+          stripdown: false
 
       # Prebuilt binaries instead of `cargo install` — compiling the three
       # audit tools from source burned 5+ minutes per run.
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa
+        with:
+          version: 1.21.1
 
       - name: Install audit tools
-        run: cargo binstall cargo-audit cargo-deny cargo-machete --no-confirm --force
+        run: cargo binstall cargo-audit@0.22.2 cargo-deny@0.20.2 cargo-machete@0.9.2 --no-confirm --force
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --all-targets
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets
+      - name: Run Clippy (shipping Vulkan backend)
+        run: cargo clippy --all-targets --features vulkan
 
       - name: Audit Rust advisories
         run: cargo audit

@@ -144,7 +144,10 @@ pub enum CommandIntent {
     /// and presses Enter themselves).  `submit: true` also presses Enter to
     /// send it — consequential, so the pipeline routes any intent/chain
     /// containing one through the confirm pill before executing.
-    TypeText { text: String, submit: bool },
+    TypeText {
+        text: String,
+        submit: bool,
+    },
     /// Act on OmniVox's own scratchpad window.  Executed in the pipeline (it
     /// needs the Tauri `AppHandle`; the executor is OS-only).
     Scratchpad(ScratchpadAction),
@@ -385,7 +388,8 @@ mod tests {
 
     #[test]
     fn from_llm_list_parses_clean_chain() {
-        let json = r#"[{"action":"open_app","target":"Spotify"},{"action":"play_pause","target":""}]"#;
+        let json =
+            r#"[{"action":"open_app","target":"Spotify"},{"action":"play_pause","target":""}]"#;
         assert_eq!(
             CommandIntent::from_llm_list(json),
             vec![

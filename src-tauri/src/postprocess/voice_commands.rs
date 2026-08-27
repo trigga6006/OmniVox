@@ -110,25 +110,101 @@ pub fn default_command_table() -> Vec<CommandDef> {
     use TriggerScope::{Anywhere, EndOfUtterance};
     use VoiceCommand::*;
     vec![
-        CommandDef { phrase: "new line".into(), command: NewLine, scope: Anywhere },
-        CommandDef { phrase: "new paragraph".into(), command: NewParagraph, scope: Anywhere },
-        CommandDef { phrase: "delete last word".into(), command: DeleteLastWord, scope: Anywhere },
-        CommandDef { phrase: "select all".into(), command: SelectAll, scope: Anywhere },
-        CommandDef { phrase: "copy that".into(), command: Copy, scope: Anywhere },
-        CommandDef { phrase: "cut that".into(), command: Cut, scope: Anywhere },
-        CommandDef { phrase: "undo that".into(), command: Undo, scope: Anywhere },
-        CommandDef { phrase: "redo that".into(), command: Redo, scope: Anywhere },
-        CommandDef { phrase: "press tab".into(), command: PressTab, scope: Anywhere },
-        CommandDef { phrase: "press escape".into(), command: PressEscape, scope: Anywhere },
-        CommandDef { phrase: "press enter".into(), command: PressEnter, scope: Anywhere },
-        CommandDef { phrase: "bullet point".into(), command: BulletItem, scope: Anywhere },
-        CommandDef { phrase: "next bullet".into(), command: BulletItem, scope: Anywhere },
-        CommandDef { phrase: "number item".into(), command: NumberedItem, scope: Anywhere },
-        CommandDef { phrase: "numbered item".into(), command: NumberedItem, scope: Anywhere },
-        CommandDef { phrase: "next number".into(), command: NumberedItem, scope: Anywhere },
-        CommandDef { phrase: "end list".into(), command: EndList, scope: Anywhere },
-        CommandDef { phrase: "end of list".into(), command: EndList, scope: Anywhere },
-        CommandDef { phrase: "send".into(), command: Send, scope: EndOfUtterance },
+        CommandDef {
+            phrase: "new line".into(),
+            command: NewLine,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "new paragraph".into(),
+            command: NewParagraph,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "delete last word".into(),
+            command: DeleteLastWord,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "select all".into(),
+            command: SelectAll,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "copy that".into(),
+            command: Copy,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "cut that".into(),
+            command: Cut,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "undo that".into(),
+            command: Undo,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "redo that".into(),
+            command: Redo,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "press tab".into(),
+            command: PressTab,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "press escape".into(),
+            command: PressEscape,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "press enter".into(),
+            command: PressEnter,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "bullet point".into(),
+            command: BulletItem,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "next bullet".into(),
+            command: BulletItem,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "number item".into(),
+            command: NumberedItem,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "numbered item".into(),
+            command: NumberedItem,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "next number".into(),
+            command: NumberedItem,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "end list".into(),
+            command: EndList,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "end of list".into(),
+            command: EndList,
+            scope: Anywhere,
+        },
+        CommandDef {
+            phrase: "send".into(),
+            command: Send,
+            scope: EndOfUtterance,
+        },
     ]
 }
 
@@ -146,14 +222,37 @@ pub fn default_disabled_command_table() -> Vec<CommandDef> {
     use TriggerScope::EndOfUtterance;
     use VoiceCommand::*;
     vec![
-        CommandDef { phrase: "mouse click".into(), command: MouseClick, scope: EndOfUtterance },
-        CommandDef { phrase: "right click".into(), command: MouseRightClick, scope: EndOfUtterance },
-        CommandDef { phrase: "double click".into(), command: MouseDoubleClick, scope: EndOfUtterance },
-        CommandDef { phrase: "scroll up".into(), command: ScrollUp, scope: EndOfUtterance },
-        CommandDef { phrase: "scroll down".into(), command: ScrollDown, scope: EndOfUtterance },
+        CommandDef {
+            phrase: "mouse click".into(),
+            command: MouseClick,
+            scope: EndOfUtterance,
+        },
+        CommandDef {
+            phrase: "right click".into(),
+            command: MouseRightClick,
+            scope: EndOfUtterance,
+        },
+        CommandDef {
+            phrase: "double click".into(),
+            command: MouseDoubleClick,
+            scope: EndOfUtterance,
+        },
+        CommandDef {
+            phrase: "scroll up".into(),
+            command: ScrollUp,
+            scope: EndOfUtterance,
+        },
+        CommandDef {
+            phrase: "scroll down".into(),
+            command: ScrollDown,
+            scope: EndOfUtterance,
+        },
         CommandDef {
             phrase: "switch window".into(),
-            command: KeyCombo { modifiers: vec![KeyModifier::Alt], key: ComboKey::Tab },
+            command: KeyCombo {
+                modifiers: vec![KeyModifier::Alt],
+                key: ComboKey::Tab,
+            },
             scope: EndOfUtterance,
         },
     ]
@@ -232,9 +331,9 @@ pub fn action_to_command(action: &str) -> Option<VoiceCommand> {
         "mouse:scroll_down" => Some(VoiceCommand::ScrollDown),
         other if other.starts_with("key:") => parse_key_combo(other),
         // Everything after "launch:" is the raw command line (no shell).
-        other if other.starts_with("launch:") => {
-            Some(VoiceCommand::LaunchApp(other["launch:".len()..].to_string()))
-        }
+        other if other.starts_with("launch:") => Some(VoiceCommand::LaunchApp(
+            other["launch:".len()..].to_string(),
+        )),
         _ => None,
     }
 }
@@ -271,13 +370,15 @@ pub fn command_to_action(cmd: &VoiceCommand) -> String {
 fn encode_key_combo(modifiers: &[KeyModifier], key: &ComboKey) -> String {
     let mut parts: Vec<String> = modifiers
         .iter()
-        .map(|m| match m {
-            KeyModifier::Ctrl => "ctrl",
-            KeyModifier::Alt => "alt",
-            KeyModifier::Shift => "shift",
-            KeyModifier::Meta => "meta",
-        }
-        .to_string())
+        .map(|m| {
+            match m {
+                KeyModifier::Ctrl => "ctrl",
+                KeyModifier::Alt => "alt",
+                KeyModifier::Shift => "shift",
+                KeyModifier::Meta => "meta",
+            }
+            .to_string()
+        })
         .collect();
     parts.push(match key {
         ComboKey::Char(c) => c.to_string(),
@@ -585,8 +686,7 @@ pub fn resolve_list_segments(
 ) -> Vec<OutputSegment> {
     use VoiceCommand::{BulletItem, EndList, NumberedItem};
 
-    let is_list_cmd =
-        |c: &VoiceCommand| matches!(c, BulletItem | NumberedItem | EndList);
+    let is_list_cmd = |c: &VoiceCommand| matches!(c, BulletItem | NumberedItem | EndList);
     if !segments
         .iter()
         .any(|s| matches!(s, OutputSegment::Command(c) if is_list_cmd(c)))
@@ -678,10 +778,7 @@ pub fn resolve_list_segments(
             OutputSegment::Command(cmd) => {
                 flush(&mut buf, &mut open_marker, &mut out);
                 pending_break = false;
-                at_line_start = matches!(
-                    cmd,
-                    VoiceCommand::NewLine | VoiceCommand::NewParagraph
-                );
+                at_line_start = matches!(cmd, VoiceCommand::NewLine | VoiceCommand::NewParagraph);
                 out.push(OutputSegment::Command(cmd));
             }
         }
@@ -1200,10 +1297,7 @@ mod tests {
     fn press_tab_not_matched_inside_word() {
         // "press table" should NOT match "press tab" (boundary enforced).
         let result = parse_commands("press table");
-        assert_eq!(
-            result,
-            vec![OutputSegment::Text("press table".to_string())]
-        );
+        assert_eq!(result, vec![OutputSegment::Text("press table".to_string())]);
     }
 
     #[test]
@@ -1330,7 +1424,10 @@ mod tests {
 
     #[test]
     fn custom_key_combo_round_trips_through_parser() {
-        let cmd = key_combo(&[KeyModifier::Ctrl, KeyModifier::Shift], ComboKey::Char('k'));
+        let cmd = key_combo(
+            &[KeyModifier::Ctrl, KeyModifier::Shift],
+            ComboKey::Char('k'),
+        );
         let table = vec![CommandDef {
             phrase: "command palette".to_string(),
             command: cmd.clone(),
@@ -1470,9 +1567,7 @@ mod tests {
 
     #[test]
     fn end_list_resets_numbering_and_breaks_line() {
-        let result = parse_lists(
-            "number item one end list and then number item two",
-        );
+        let result = parse_lists("number item one end list and then number item two");
         assert_eq!(
             result,
             vec![OutputSegment::Text("1. One\nand then\n1. Two".to_string())]
@@ -1556,10 +1651,7 @@ mod tests {
     #[test]
     fn resolver_is_identity_without_list_markers() {
         let segments = parse_commands("hello new line world");
-        assert_eq!(
-            resolve_list_segments(segments.clone(), true),
-            segments
-        );
+        assert_eq!(resolve_list_segments(segments.clone(), true), segments);
     }
 
     #[test]

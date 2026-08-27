@@ -486,7 +486,10 @@ fn counted_header_with_ordinal_items_becomes_numbered() {
     );
     assert!(result.contains("2. Write the API endpoints for the new service layer."));
     assert!(result.contains("3. Deploy everything to the staging environment for review."));
-    assert!(!result.contains("First,"), "spoken ordinal should be stripped: {result}");
+    assert!(
+        !result.contains("First,"),
+        "spoken ordinal should be stripped: {result}"
+    );
 }
 
 #[test]
@@ -497,7 +500,10 @@ fn counted_header_without_ordinals_stays_bulleted() {
                  Run the regression tests against the release branch.";
     let result = format_lists(input);
     assert!(result.contains("- Update the settings panel copy"));
-    assert!(!result.contains("1. "), "non-ordinal items stay bullets: {result}");
+    assert!(
+        !result.contains("1. "),
+        "non-ordinal items stay bullets: {result}"
+    );
 }
 
 #[test]
@@ -509,8 +515,14 @@ fn ordinal_only_run_still_stays_prose() {
                  Fourth, we review the incident postmortem from last week. \
                  Fifth, we close out the roadmap review with the stakeholders.";
     let result = format_lists(input);
-    assert!(!result.contains("- "), "ordinal-only runs stay prose: {result}");
-    assert!(!result.contains("1. "), "ordinal-only runs stay prose: {result}");
+    assert!(
+        !result.contains("- "),
+        "ordinal-only runs stay prose: {result}"
+    );
+    assert!(
+        !result.contains("1. "),
+        "ordinal-only runs stay prose: {result}"
+    );
 }
 
 // ── UTF-8 boundary safety ──────────────────────────────────────
@@ -521,12 +533,12 @@ fn ordinal_only_run_still_stays_prose() {
 #[test]
 fn multibyte_before_period_does_not_panic() {
     for input in [
-        "I don\u{2019}t.",                // curly apostrophe
+        "I don\u{2019}t.", // curly apostrophe
         "She can\u{2019}t. Really.",
-        "Wait \u{2014} I can\u{2019}t.",  // em-dash + curly apostrophe
-        "Well\u{2026}. Fine.",            // ellipsis then period
-        "It costs 20\u{00b0}. Hot.",      // degree sign
-        "Caf\u{00e9}. Yes.",              // multibyte alphabetic before period
+        "Wait \u{2014} I can\u{2019}t.", // em-dash + curly apostrophe
+        "Well\u{2026}. Fine.",           // ellipsis then period
+        "It costs 20\u{00b0}. Hot.",     // degree sign
+        "Caf\u{00e9}. Yes.",             // multibyte alphabetic before period
     ] {
         // Must not panic; we only assert it produces *some* output.
         let out = format_lists(input);

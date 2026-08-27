@@ -1,3 +1,60 @@
+/* ── Self-hosted webfonts ───────────────────────────────────────
+   Geist + Geist Mono are bundled (src/assets/fonts/, extracted from
+   the official vercel/geist-font v1.7.2 release). A local-first
+   dictation app must not phone Google Fonts from six windows — this
+   is declared ONCE here and every entry CSS (globals.css) pulls it
+   in, so the main window, overlay, scratchpad, meeting drawer,
+   meeting widget and meeting suggestion all share one source.
+   Only the weights the app actually renders are shipped. */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/Geist-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/Geist-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/Geist-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/Geist-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../assets/fonts/GeistMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../assets/fonts/GeistMono-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   /* ═══════════════════════════════════════════════════════════
      OmniVox — Design System · Graphite · Amber · Dev-grade
@@ -92,6 +149,7 @@
   --font-mono:    'Geist Mono', 'IBM Plex Mono', Consolas, monospace;
 
   /* Type scale — tight 1.2 ratio. */
+  --text-2xs:  0.6875rem;   /* 11 — mono/uppercase labels ONLY (pills, eyebrows) */
   --text-xs:   0.75rem;     /* 12 */
   --text-sm:   0.875rem;    /* 14 */
   --text-base: 0.9375rem;   /* 15 */
@@ -100,23 +158,25 @@
   --text-2xl:  1.5rem;      /* 24 */
   --text-3xl:  1.875rem;    /* 30 */
 
-  /* Animations */
+  /* Animations — entrances answer, they don't perform: all ≤240ms. */
   --animate-recording-pulse: recording-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-recording-ring:  recording-ring  2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-breathe:         breathe 3s ease-in-out infinite;
-  --animate-fade-in:         fade-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  --animate-slide-up:        slide-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  --animate-scale-in:        scale-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  --animate-progress-sweep:  progress-sweep 1.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  --animate-shimmer:         shimmer 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-spin-slow:       spin-slow 2s linear infinite;
+  --animate-fade-in:         fade-in 0.2s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  --animate-slide-up:        slide-up 0.24s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  --animate-scale-in:        scale-in 0.2s cubic-bezier(0.23, 1, 0.32, 1) forwards;
 
-  /* Easing curves */
+  /* Easing curves.
+     `--ease-out` / `--ease-in-out` deliberately OVERRIDE Tailwind's
+     defaults so the plain `ease-out` / `ease-in-out` utilities carry
+     the design system's curves. `--ease-out-quint` is kept as-is so
+     existing call sites keep working. */
+  --ease-out:       cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out:    cubic-bezier(0.77, 0, 0.175, 1);
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
-
-  /* Shadows — matte: soft, neutral black, never colored. */
-  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.45);
-  --shadow:     0 2px 6px -2px rgb(0 0 0 / 0.55), 0 1px 2px rgb(0 0 0 / 0.50);
-  --shadow-md:  0 10px 28px -14px rgb(0 0 0 / 0.70), 0 3px 8px -4px rgb(0 0 0 / 0.50);
-  --shadow-lg:  0 24px 56px -24px rgb(0 0 0 / 0.80), 0 8px 18px -10px rgb(0 0 0 / 0.55);
 
   /* Analytics — amber heatmap ramp + chart bars. */
   --heat-0: var(--color-surface-2);
@@ -128,6 +188,64 @@
   --bar-empty:       var(--color-surface-2);
   --bar-fill:        color-mix(in oklch, var(--color-lava) 40%, var(--color-surface-2));
   --bar-fill-strong: var(--color-lava);
+}
+
+/* ── Raw metric tokens ───────────────────────────────────────
+   Deliberately declared OUTSIDE `@theme`, for two reasons:
+
+   1. Collision. Tailwind's `--radius-*` namespace would mint
+      `rounded-s` / `rounded-m` / `rounded-l` utilities, and
+      `rounded-s` clashes with the logical-property family
+      (`rounded-s-*`).
+   2. Tree-shaking. Tailwind only emits the `@theme` variables that
+      some generated utility references, so a token nobody has
+      migrated onto yet (`--content-w`, `--control-h-l`, `--dur-4`)
+      would silently resolve to nothing. These are a contract for
+      P2/P3, so they must exist from day one.
+
+   Reference radii as `rounded-[var(--radius-m)]` — tailwind-merge
+   still reads that as the border-radius group, so a caller's
+   `rounded-full` wins. */
+
+:root {
+  --radius-s: 6px;   /* chips, kbd, small inputs, menu items       */
+  --radius-m: 8px;   /* controls: Button, Input, Select, rows      */
+  --radius-l: 12px;  /* cards, popovers, panels                    */
+
+  /* Shadows — matte: soft, neutral black, never colored.
+     Also outside `@theme`, and for a third reason: Tailwind INLINES a
+     `--shadow-*` theme value into the `shadow-sm` / `shadow-lg` utilities it
+     generates, so the light-theme remap below could never be read — every
+     surface kept its near-black dark-mode shadow on paper. Declared here they
+     stay real custom properties, and call sites reference them explicitly as
+     `shadow-[var(--shadow-lg)]`, which compiles to a `var()` the
+     `[data-theme="light"]` block can override. */
+  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.45);
+  --shadow:     0 2px 6px -2px rgb(0 0 0 / 0.55), 0 1px 2px rgb(0 0 0 / 0.50);
+  --shadow-md:  0 10px 28px -14px rgb(0 0 0 / 0.70), 0 3px 8px -4px rgb(0 0 0 / 0.50);
+  --shadow-lg:  0 24px 56px -24px rgb(0 0 0 / 0.80), 0 8px 18px -10px rgb(0 0 0 / 0.55);
+
+  /* Motion durations — chosen by how often the user sees them.
+     Use as `duration-[var(--dur-2)]`; keep transition property lists
+     named (never `transition-all`). */
+  --dur-1: 120ms;  /* press feedback, tooltips (subsequent: 0ms)      */
+  --dur-2: 160ms;  /* hover fades, toggle tracks, segmented indicator */
+  --dur-3: 200ms;  /* dropdowns, popovers, list row enter/exit        */
+  --dur-4: 240ms;  /* modals, drawers, tab crossfades                 */
+
+  /* Control metrics — density. Rows are 28/32/36, never 40+. */
+  --control-h-s: 28px;  /* compact buttons, chips        */
+  --control-h-m: 32px;  /* default buttons, inputs, rows */
+  --control-h-l: 36px;  /* primary CTAs, nav rows        */
+  --content-w:  720px;  /* single shared page measure (Settings keeps its masonry) */
+
+  /* Omni Impact wordmark gradient — the developer's brand colours, not app
+     roles, so they get their own names rather than being forced onto
+     --color-slate / --color-teal (whose values differ). Declared here, not in
+     `@theme`: nothing generates a utility from them, and Tailwind drops
+     `@theme` vars no utility references. */
+  --brand-omni-slate: #6e809b;
+  --brand-omni-teal:  #5e948c;
 }
 
 /* ── Light Theme: Cool Paper (graphite) ──────────────────────
@@ -148,8 +266,41 @@
   --color-amber-400: #97400b;
   --color-amber-500: #92400e;
 
+  --color-violet-200: #5b21b6;
   --color-violet-300: #7c3aed;
   --color-violet-400: #6d28d9;
+
+  /* Recording red — the dark-mode ramp is far too light for paper.
+     Every step is deepened so `text-recording-*` clears 4.5:1 on the
+     #fafafa surface; 500/600 are only ever used at low alpha for
+     fills/borders, where deeper simply reads as a cleaner tint.
+     Contrast vs #fafafa: 300 4.63 · 400 6.20 · 500 7.96 · 600 9.60 */
+  --color-recording-300: #dc2626;
+  --color-recording-400: #b91c1c;
+  --color-recording-500: #991b1b;
+  --color-recording-600: #7f1d1d;
+
+  /* Command-mode blue. Same story — Badge `blue` renders
+     text-indigo-300, which was #93c5fd (≈1.7:1) on paper.
+     Contrast vs #fafafa: 200 4.95 · 300 6.42 · 400 8.36 · 500 9.92 · 600 14.9 */
+  --color-indigo-200: #2563eb;
+  --color-indigo-300: #1d4ed8;
+  --color-indigo-400: #1e40af;
+  --color-indigo-500: #1e3a8a;
+  --color-indigo-600: #172554;
+
+  /* Canonical role tokens — the dark values are all pastel-bright and
+     illegible on paper. Contrast vs #fafafa:
+     lava 4.81 · clay 6.20 · ochre 4.72 · sage 4.81 · teal 5.25 ·
+     plum 6.81 · slate 7.26 · cream 10.0 */
+  --color-lava:   #b45309;
+  --color-clay:   #b91c1c;
+  --color-ochre:  #a16207;
+  --color-sage:   #15803d;
+  --color-teal:   #0f766e;
+  --color-plum:   #6d28d9;
+  --color-slate:  #475569;
+  --color-cream:  #3f3f46;
 
   --color-text-primary:   #18181b;
   --color-text-secondary: #52525b;
@@ -159,8 +310,10 @@
   --color-border-hover:  rgba(0,0,0,0.18);
   --color-border-active: rgba(180,83,9,0.55);
 
-  --color-success: #16a34a;
-  --color-error:   #dc2626;
+  /* #16a34a only reached 3.16:1 on #fafafa and Badge `green` renders
+     `text-success` — deepened to match --color-sage (4.81:1). */
+  --color-success: #15803d;
+  --color-error:   #dc2626;  /* 4.63:1 */
 
   --color-gradient-from: #fafafa;
   --color-gradient-to:   #ffffff;
@@ -214,7 +367,7 @@
 @keyframes slide-up {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -225,12 +378,24 @@
 @keyframes scale-in {
   from {
     opacity: 0;
-    transform: scale(0.94);
+    transform: scale(0.97);
   }
   to {
     opacity: 1;
     transform: scale(1);
   }
+}
+
+/* Indeterminate Progress — a 35%-wide fill sweeping the track. */
+@keyframes progress-sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+/* Skeleton shimmer — a highlight band crossing the placeholder tile. */
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
 }
 
 @keyframes bar-bounce {

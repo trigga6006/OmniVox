@@ -26,7 +26,7 @@ pub fn normalize_peak(samples: &mut [f32]) {
     let peak = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
 
     // Skip if silence or already loud enough
-    if peak < SILENCE_THRESHOLD || peak >= TARGET_PEAK {
+    if !(SILENCE_THRESHOLD..TARGET_PEAK).contains(&peak) {
         return;
     }
 

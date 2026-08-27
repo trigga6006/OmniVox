@@ -24,7 +24,7 @@ pub struct LlmConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(2).max(2).min(8) as i32)
+            .map(|n| n.get().saturating_sub(2).clamp(2, 8) as i32)
             .unwrap_or(4);
         Self {
             model_path: String::new(),
@@ -43,6 +43,23 @@ impl Default for LlmConfig {
             // slots with a few items each).  192 was too tight and would
             // cause the model to truncate mid-JSON on rich dictations.
             max_tokens: 384,
+        }
+    }
+}
+
+impl LlmConfig {
+    /// Sizing for the cleanup stage.  The normalizer rewrites its input rather
+    /// than distilling it, so output length tracks input length: the 384-token
+    /// Structured Mode budget would truncate a normal dictation mid-sentence.
+    /// The vendor's own ceiling is `1.3 × input_tokens + 32`, evaluated at the
+    /// documented ~1,000-token per-pass input limit.  `n_ctx` stays at the
+    /// default 4,096, which comfortably holds prompt + output.
+    pub fn for_cleanup(model_path: String, use_gpu: bool) -> Self {
+        Self {
+            model_path,
+            use_gpu,
+            max_tokens: 1_332,
+            ..Self::default()
         }
     }
 }

@@ -169,21 +169,30 @@ pub fn create_mode(
     })
 }
 
-pub fn update_mode(
-    db: &Database,
-    id: &str,
-    name: &str,
-    description: &str,
-    icon: &str,
-    color: &str,
-    writing_style: &str,
-    structured_profile: &str,
-) -> AppResult<()> {
+pub struct ModeEdits<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub icon: &'a str,
+    pub color: &'a str,
+    pub writing_style: &'a str,
+    pub structured_profile: &'a str,
+}
+
+pub fn update_mode(db: &Database, id: &str, edits: ModeEdits<'_>) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     let conn = db.conn()?;
     conn.execute(
         "UPDATE context_modes SET name=?1, description=?2, icon=?3, color=?4, structured_profile=?5, updated_at=?6, writing_style=?7 WHERE id=?8",
-        params![name, description, icon, color, structured_profile, now, writing_style, id],
+        params![
+            edits.name,
+            edits.description,
+            edits.icon,
+            edits.color,
+            edits.structured_profile,
+            now,
+            edits.writing_style,
+            id,
+        ],
     )?;
     Ok(())
 }
@@ -247,8 +256,7 @@ mod tests {
     use super::*;
 
     fn temp_db() -> (Database, std::path::PathBuf) {
-        let dir =
-            std::env::temp_dir().join(format!("omnivox-modes-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("omnivox-modes-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = Database::init(&dir.join("t.db")).unwrap();
         (db, dir)

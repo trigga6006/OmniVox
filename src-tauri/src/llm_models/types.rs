@@ -1,5 +1,32 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmLanguageSupport {
+    Multilingual,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmCapabilityTier {
+    Fast,
+    Quality,
+}
+
+/// Which pipeline stage a catalog entry is usable for.
+///
+/// The two purposes are NOT interchangeable: Structured Mode drives its model
+/// with GBNF-constrained JSON prompts, while a cleanup model is a single-task
+/// text normalizer that only understands its own documented prompt format.
+/// Activation paths key off this so a cleanup model can never be installed as
+/// the Structured Mode extractor (and vice versa).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LlmModelPurpose {
+    Structured,
+    Cleanup,
+}
+
 /// Catalog entry for a downloadable LLM model.
 ///
 /// Mirrors `ModelInfo` for Whisper but with LLM-specific fields (quantization
@@ -13,6 +40,17 @@ pub struct LlmModelInfo {
     pub name: String,
     pub size_bytes: u64,
     pub quantization: String,
+    /// Stable catalog metadata; do not infer these fields from the ID or file
+    /// suffix at call sites.
+    pub family: String,
+    pub parameter_count_millions: u32,
+    pub language_support: LlmLanguageSupport,
+    pub capability_tier: LlmCapabilityTier,
+    /// Which pipeline stage this entry may be activated for.
+    pub purpose: LlmModelPurpose,
+    /// Approximate RAM budget for weights, a 4k context, and native runtime
+    /// overhead. It is intentionally larger than `size_bytes`.
+    pub estimated_memory_mb: u64,
     /// Context window the model was trained with (tokens).
     pub context_length: u32,
     pub description: String,

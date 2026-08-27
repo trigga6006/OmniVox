@@ -28,7 +28,7 @@ pub enum WritingStyle {
 
 impl WritingStyle {
     /// Parse from the settings string value. Falls back to `Formal` for unknown values.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "casual" => Self::Casual,
             "very_casual" => Self::VeryCasual,

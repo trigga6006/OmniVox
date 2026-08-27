@@ -1,5 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
+
+const noopUnlisten: UnlistenFn = () => {};
+
+export function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+async function listenSafe<T>(event: string, callback: (event: Event<T>) => void): Promise<UnlistenFn> {
+  try {
+    return await listen<T>(event, callback);
+  } catch (error) {
+    if (!isTauriRuntime()) {
+      return noopUnlisten;
+    }
+    throw error;
+  }
+}
 
 // Types matching Rust structs
 export interface AudioDevice {
@@ -10,16 +27,47 @@ export interface AudioDevice {
   channels: number;
 }
 
+/** Content-free production timing for one completed/superseded capture. Stage
+ * offsets are milliseconds from the stop request, not from async task start. */
+export interface PipelineTrace {
+  generation: number;
+  mode: "dictation" | "command";
+  model: string | null;
+  backend: "cpu" | "gpu" | null;
+  audio_duration_ms: number;
+  /** Backend capture claim to successful mic start; pre-claim OS hotkey
+   * dispatch is outside this measurement. */
+  claim_to_mic_live_ms: number | null;
+  stop_received: number | null;
+  audio_stopped: number | null;
+  preview_drained: number | null;
+  preprocess_done: number | null;
+  asr_started: number | null;
+  asr_done: number | null;
+  llm_started: number | null;
+  llm_done: number | null;
+  output_started: number | null;
+  output_done: number | null;
+  stop_to_visible_delivery_ms: number | null;
+  visible_delivery_kind: string | null;
+  completed: number | null;
+  outcome: string;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
   size_bytes: number;
   quantization: string;
+  language_support: "english" | "multilingual";
+  capability_tier: "entry" | "balanced" | "high";
+  estimated_memory_mb: number;
   description: string;
   is_downloaded: boolean;
   path: string | null;
   bundled: boolean;
   recommended: boolean;
+  family: "whisper" | "parakeet";
 }
 
 export interface DownloadProgress {
@@ -36,6 +84,8 @@ export interface HardwareInfo {
   ram_total_mb: number;
   gpu_name: string | null;
   gpu_vram_mb: number | null;
+  compute_backend: "cpu" | "vulkan" | "cuda" | "metal" | "unknown";
+  measured_asr_tier: "entry" | "balanced" | "high" | null;
   recommended_model: string;
 }
 
@@ -124,6 +174,14 @@ export interface AppSettings {
    */
   structured_voice_command: boolean;
   /**
+   * Send dictation transcripts through the local S1-mini model to remove
+   * fillers, resolve spoken self-corrections, fix punctuation/casing, and
+   * format numbers/dates/emails. English only.
+   */
+  cleanup_mode: boolean;
+  /** Active LLM catalog ID for AI Transcript Cleanup. */
+  active_cleanup_model_id: string | null;
+  /**
    * Read visible text from the foreground app and use it to bias Whisper
    * toward verbatim file paths, identifiers, and commands.  Local only —
    * captured text never leaves the device.
@@ -136,6 +194,21 @@ export interface AppSettings {
    * path covers most cases on its own.
    */
   structured_use_screen_context: boolean;
+  /** Persist completed dictations in the local SQLite history database. */
+  history_enabled: boolean;
+  /** Delete history older than this many days; 0 keeps it until manually deleted. */
+  history_retention_days: number;
+}
+
+/** Field-level settings update. Use `patchSettings`, never merge and submit a
+ * stale whole `AppSettings` object from a WebView. */
+export type SettingsPatch = Partial<AppSettings>;
+
+export interface SettingsSnapshot {
+  revision: number;
+  settings: AppSettings;
+  /** The backend applied this patch to a newer snapshot than the caller had. */
+  rebased: boolean;
 }
 
 export interface AppBinding {
@@ -161,8 +234,11 @@ export const startRecording = () => invoke<void>("start_recording");
 export const stopRecording = () => invoke<string>("stop_recording");
 export const cancelRecording = () => invoke<void>("cancel_recording");
 export const getAudioDevices = () => invoke<AudioDevice[]>("get_audio_devices");
+export const getSelectedAudioDevice = () => invoke<string | null>("get_selected_audio_device");
 export const setAudioDevice = (deviceId: string) =>
   invoke<void>("set_audio_device", { deviceId });
+/** Main-window diagnostic query; returns the bounded, content-free trace ring. */
+export const getPipelineTraces = () => invoke<PipelineTrace[]>("get_pipeline_traces");
 
 // Model commands
 export const listModels = () => invoke<ModelInfo[]>("list_models");
@@ -298,6 +374,14 @@ export const listNotes = () => invoke<Note[]>("list_notes");
 
 // Settings commands
 export const getSettings = () => invoke<AppSettings>("get_settings");
+export const getSettingsSnapshot = () =>
+  invoke<SettingsSnapshot>("get_settings_snapshot");
+export const patchSettings = (
+  patch: SettingsPatch,
+  expectedRevision?: number
+) => invoke<SettingsSnapshot>("patch_settings", { patch, expectedRevision });
+/** Compatibility wrapper for older extensions/clients. New UI code uses
+ * `patchSettings` to prevent stale whole-object writes. */
 export const updateSettings = (settings: AppSettings) =>
   invoke<void>("update_settings", { settings });
 
@@ -311,10 +395,12 @@ export const updateHotkey = (config: HotkeyConfig) =>
 
 // ── Command Mode ─────────────────────────────────────────────────────────
 export interface CommandResult {
+  generation: number;
   status: "done" | "error";
   summary: string;
 }
 export interface CommandConfirm {
+  generation: number;
   /** Backend-issued id for this confirm, echoed back to confirm_command /
    *  cancel_command so a stale pill can't consume a newer command's confirm. */
   id: number;
@@ -346,19 +432,21 @@ export const testCommand = (utterance: string) =>
   invoke<CommandTestResult>("test_command", { utterance });
 
 export const onCommandStateChange = (
-  callback: (state: string) => void
+  callback: (state: string, generation: number) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("command-state-change", (e) => callback(e.payload));
+  listenGenerated<CommandStateChangePayload>("command-state-change", (payload) =>
+    callback(payload.state, payload.generation)
+  );
 
 export const onCommandConfirm = (
   callback: (payload: CommandConfirm) => void
 ): Promise<UnlistenFn> =>
-  listen<CommandConfirm>("command-confirm", (e) => callback(e.payload));
+  listenGenerated<CommandConfirm>("command-confirm", callback);
 
 export const onCommandResult = (
   callback: (payload: CommandResult) => void
 ): Promise<UnlistenFn> =>
-  listen<CommandResult>("command-result", (e) => callback(e.payload));
+  listenGenerated<CommandResult>("command-result", callback);
 
 // Context mode types and commands
 export interface ContextMode {
@@ -456,12 +544,407 @@ export const resizeOverlay = (width: number, height: number) =>
   invoke<void>("resize_overlay", { width, height });
 export const showMainWindow = () => invoke<void>("show_main_window");
 
+// Meeting Mode
+export type MeetingStatus =
+  | "recording"
+  | "paused"
+  | "transcribing"
+  | "awaiting_summary"
+  | "summarizing"
+  | "ready"
+  | "interrupted"
+  | "failed"
+  | "error";
+
+export interface Meeting {
+  id: string;
+  title: string;
+  status: MeetingStatus;
+  source_app: string | null;
+  started_at: string;
+  ended_at: string | null;
+  user_notes: string;
+  summary_markdown: string;
+  summary_json: string | null;
+  summary_provider: string | null;
+  summary_model: string | null;
+  summary_cost: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  is_favorite: boolean;
+  tags: string[];
+  completed_actions: string[];
+  summary_stale: boolean;
+  error: string | null;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  ai_model_override: string | null;
+  summary_preset_override: MeetingProviderSettings["summary_preset"] | null;
+  summary_instructions: string;
+  agenda: string;
+  participants: string[];
+  previous_meeting_id: string | null;
+  actions_materialized: boolean;
+}
+
+export interface MeetingSegment {
+  id: string;
+  meeting_id: string;
+  source: "mic" | "system";
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  speaker_label: string | null;
+  created_at: string;
+}
+
+export interface MeetingMarker {
+  id: string;
+  meeting_id: string;
+  at_ms: number;
+  label: string;
+  created_at: string;
+}
+
+export interface MeetingActionItem {
+  id: string;
+  meeting_id: string;
+  task: string;
+  owner: string | null;
+  due: string | null;
+  segment_refs: string[];
+  origin: "ai" | "manual" | string;
+  completed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MeetingQuestionAnswer {
+  id: string;
+  meeting_id: string;
+  question: string;
+  answer: string;
+  segment_refs: string[];
+  provider: string;
+  model: string;
+  cost: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  context_segments: number;
+  total_segments: number;
+  created_at: string;
+}
+
+export interface MeetingSummaryVersion {
+  id: string;
+  meeting_id: string;
+  markdown: string;
+  summary_json: string | null;
+  provider: string | null;
+  model: string | null;
+  cost: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  origin: "ai" | "manual" | "restored" | string;
+  created_at: string;
+}
+
+export interface MeetingRecoveryItem {
+  meeting_id: string;
+  title: string;
+  status: MeetingStatus;
+  pending_chunks: number;
+  processing_chunks: number;
+  failed_chunks: number;
+  recoverable_failed_chunks: number;
+  completed_chunks: number;
+  has_summary: boolean;
+  error: string | null;
+  updated_at: string;
+}
+
+export interface MeetingTranscriptionProgress {
+  total: number;
+  completed: number;
+  pending: number;
+  processing: number;
+  failed: number;
+}
+
+export type MeetingDetail = Meeting & {
+  segments: MeetingSegment[];
+  markers: MeetingMarker[];
+  action_items: MeetingActionItem[];
+  questions: MeetingQuestionAnswer[];
+  transcription: MeetingTranscriptionProgress;
+};
+
+export interface MeetingRuntimeState {
+  meeting_id: string | null;
+  status: "idle" | "recording" | "paused" | "transcribing";
+  elapsed_ms: number;
+  mic_level: number;
+  system_level: number;
+  mic_signal_detected: boolean;
+  system_signal_detected: boolean;
+  capture_warning: string | null;
+}
+
+export interface MeetingAudioSourceReadiness {
+  available: boolean;
+  signal_detected: boolean;
+  peak_level: number;
+  error: string | null;
+}
+
+export interface MeetingAudioReadiness {
+  microphone: MeetingAudioSourceReadiness;
+  system_audio: MeetingAudioSourceReadiness;
+}
+
+export interface MeetingProviderSettings {
+  provider: string;
+  model: string;
+  monthly_budget: number;
+  per_meeting_budget: number;
+  max_prompt_price: number;
+  max_completion_price: number;
+  zdr_only: boolean;
+  deny_data_collection: boolean;
+  auto_suggest: boolean;
+  auto_summarize: boolean;
+  summary_preset: "general" | "executive" | "one_on_one" | "sales" | "interview" | "standup";
+  custom_instructions: string;
+  transcription_mode: "after_meeting" | "live";
+  routing_preference: "balanced" | "price" | "throughput" | "latency";
+}
+
+export interface MeetingUsageStats {
+  month_spend: number;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+export interface MeetingAiUsageRecord {
+  id: string;
+  meeting_id: string | null;
+  meeting_title: string | null;
+  request_kind: "summary" | "question" | "legacy" | string;
+  provider: string;
+  model: string;
+  cost: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  created_at: string;
+}
+
+export interface MeetingTemplate {
+  id: string;
+  name: string;
+  title: string;
+  agenda: string;
+  participants: string[];
+  ai_model_override: string | null;
+  summary_preset_override: MeetingProviderSettings["summary_preset"] | null;
+  summary_instructions: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MeetingSummaryEstimate {
+  model: string;
+  model_name: string;
+  estimated_cost: number;
+  estimated_prompt_tokens: number;
+  max_completion_tokens: number;
+  required_context_tokens: number;
+  context_length: number;
+  prompt_price_million: number;
+  completion_price_million: number;
+  request_price: number;
+  month_spend: number;
+  meeting_spend: number;
+  monthly_budget: number;
+  per_meeting_budget: number;
+  allowed: boolean;
+  blocking_reason: string | null;
+}
+
+export interface MeetingExportResult {
+  path: string;
+  file_name: string;
+}
+
+export interface ProviderStatus {
+  key_present: boolean;
+  connected: boolean;
+  label: string | null;
+  limit: number | null;
+  limit_remaining: number | null;
+  limit_reset: string | null;
+  usage: number | null;
+  usage_daily: number | null;
+  usage_weekly: number | null;
+  usage_monthly: number | null;
+  is_free_tier: boolean | null;
+  is_management_key: boolean | null;
+  expires_at: string | null;
+  error: string | null;
+}
+
+export interface OpenRouterModel {
+  id: string;
+  name: string;
+  description: string;
+  context_length: number;
+  prompt_price_million: number;
+  completion_price_million: number;
+  request_price: number;
+  supports_structured_output: boolean;
+  expiration_date: string | null;
+  /** OpenRouter's Artificial Analysis intelligence index when available. */
+  intelligence_index: number | null;
+}
+
+export const meetingStart = (title: string, sourceApp?: string, previousMeetingId?: string) =>
+  invoke<Meeting>("meeting_start", {
+    title,
+    sourceApp: sourceApp ?? null,
+    previousMeetingId: previousMeetingId ?? null,
+  });
+export const meetingPause = () => invoke<void>("meeting_pause");
+export const meetingResume = () => invoke<void>("meeting_resume");
+export const meetingStop = () => invoke<string>("meeting_stop");
+export const getMeetingState = () => invoke<MeetingRuntimeState>("meeting_state");
+export const testMeetingAudio = () => invoke<MeetingAudioReadiness>("test_meeting_audio");
+export const listMeetings = () => isTauriRuntime() ? invoke<Meeting[]>("list_meetings") : Promise.resolve([]);
+export const listMeetingRecoveryItems = () => invoke<MeetingRecoveryItem[]>("list_meeting_recovery_items");
+export const listMeetingTemplates = () => invoke<MeetingTemplate[]>("list_meeting_templates");
+export const saveMeetingAsTemplate = (meetingId: string, name: string) =>
+  invoke<MeetingTemplate>("save_meeting_as_template", { meetingId, name });
+export const deleteMeetingTemplate = (id: string) =>
+  invoke<void>("delete_meeting_template", { id });
+export const listDeletedMeetings = () => isTauriRuntime() ? invoke<Meeting[]>("list_deleted_meetings") : Promise.resolve([]);
+export const searchMeetings = (query: string) => isTauriRuntime() ? invoke<Meeting[]>("search_meetings", { query }) : Promise.resolve([]);
+export const searchDeletedMeetings = (query: string) => isTauriRuntime() ? invoke<Meeting[]>("search_deleted_meetings", { query }) : Promise.resolve([]);
+export const getMeeting = (id: string) => invoke<MeetingDetail | null>("get_meeting", { id });
+export const updateMeetingNotes = (id: string, notes: string) =>
+  invoke<void>("update_meeting_notes", { id, notes });
+export const updateMeetingAiOptions = (
+  id: string,
+  model: string | null,
+  preset: MeetingProviderSettings["summary_preset"] | null,
+  instructions: string,
+) => invoke<void>("update_meeting_ai_options", { id, model, preset, instructions });
+export const updateMeetingMetadata = (
+  id: string,
+  agenda: string | null,
+  participants: string[] | null,
+) => invoke<string[]>("update_meeting_metadata", { id, agenda, participants });
+export const updateMeetingTitle = (id: string, title: string) =>
+  invoke<void>("update_meeting_title", { id, title });
+export const setMeetingFavorite = (id: string, favorite: boolean) =>
+  invoke<void>("set_meeting_favorite", { id, favorite });
+export const setMeetingTags = (id: string, tags: string[]) =>
+  invoke<string[]>("set_meeting_tags", { id, tags });
+export const updateMeetingSegment = (id: string, meetingId: string, text: string) =>
+  invoke<void>("update_meeting_segment", { id, meetingId, text });
+export const updateMeetingSegmentSpeaker = (id: string, meetingId: string, label: string, applyToSource = false) =>
+  invoke<void>("update_meeting_segment_speaker", { id, meetingId, label, applyToSource });
+export const setMeetingActionCompleted = (id: string, task: string, completed: boolean) =>
+  invoke<string[]>("set_meeting_action_completed", { id, task, completed });
+export const listMeetingActionItems = (meetingId?: string) =>
+  invoke<MeetingActionItem[]>("list_meeting_action_items", { meetingId: meetingId ?? null });
+export const addMeetingActionItem = (meetingId: string, task: string, owner?: string, due?: string) =>
+  invoke<MeetingActionItem>("add_meeting_action_item", { meetingId, task, owner: owner ?? null, due: due ?? null });
+export const updateMeetingActionItem = (id: string, meetingId: string, task: string, owner?: string, due?: string) =>
+  invoke<MeetingActionItem>("update_meeting_action_item", { id, meetingId, task, owner: owner ?? null, due: due ?? null });
+export const setMeetingActionItemCompleted = (id: string, meetingId: string, completed: boolean) =>
+  invoke<MeetingActionItem>("set_meeting_action_item_completed", { id, meetingId, completed });
+export const deleteMeetingActionItem = (id: string, meetingId: string) =>
+  invoke<void>("delete_meeting_action_item", { id, meetingId });
+export const addMeetingMarker = (id: string, atMs?: number, label?: string) =>
+  invoke<MeetingMarker>("add_meeting_marker", { id, atMs: atMs ?? null, label: label ?? null });
+export const updateMeetingMarker = (id: string, meetingId: string, label: string) =>
+  invoke<void>("update_meeting_marker", { id, meetingId, label });
+export const deleteMeetingMarker = (id: string, meetingId: string) =>
+  invoke<void>("delete_meeting_marker", { id, meetingId });
+export const updateMeetingSummary = (id: string, markdown: string) =>
+  invoke<void>("update_meeting_summary", { id, markdown });
+export const listMeetingSummaryVersions = (meetingId: string) =>
+  invoke<MeetingSummaryVersion[]>("list_meeting_summary_versions", { meetingId });
+export const restoreMeetingSummaryVersion = (id: string, meetingId: string) =>
+  invoke<MeetingSummaryVersion>("restore_meeting_summary_version", { id, meetingId });
+export const deleteMeeting = (id: string) => invoke<void>("delete_meeting", { id });
+export const restoreMeeting = (id: string) => invoke<void>("restore_meeting", { id });
+export const permanentlyDeleteMeeting = (id: string) =>
+  invoke<void>("permanently_delete_meeting", { id });
+export const estimateMeetingSummary = (id: string, model?: string) =>
+  invoke<MeetingSummaryEstimate>("estimate_meeting_summary", { id, model: model ?? null });
+export const askMeetingQuestion = (id: string, question: string, model?: string) =>
+  invoke<MeetingQuestionAnswer>("ask_meeting_question", { id, question, model: model ?? null });
+export const deleteMeetingQuestion = (id: string, meetingId: string) =>
+  invoke<void>("delete_meeting_question", { id, meetingId });
+export const summarizeMeeting = (id: string, model?: string) =>
+  invoke<void>("summarize_meeting", { id, model: model ?? null });
+export const retryMeetingTranscription = (id: string) =>
+  invoke<number>("retry_meeting_transcription", { id });
+export const getMeetingProviderSettings = () =>
+  invoke<MeetingProviderSettings>("get_meeting_provider_settings");
+export const getMeetingUsageStats = () => invoke<MeetingUsageStats>("get_meeting_usage_stats");
+export const listMeetingAiUsage = (limit = 200) =>
+  invoke<MeetingAiUsageRecord[]>("list_meeting_ai_usage", { limit });
+export const saveMeetingProviderSettings = (settings: MeetingProviderSettings) =>
+  invoke<void>("save_meeting_provider_settings", { settings });
+export const saveOpenRouterKey = (key: string) =>
+  invoke<ProviderStatus>("save_openrouter_key", { key });
+export const removeOpenRouterKey = () => invoke<void>("remove_openrouter_key");
+export const getOpenRouterStatus = () => invoke<ProviderStatus>("get_openrouter_status");
+export const listOpenRouterModels = () => invoke<OpenRouterModel[]>("list_openrouter_models");
+export const openOpenRouterCredits = () => invoke<void>("open_openrouter_credits");
+export const openOpenRouterKeys = () => invoke<void>("open_openrouter_keys");
+export type MeetingExportFormat = "notes" | "markdown" | "json" | "webvtt" | "srt";
+export const exportMeeting = (id: string, format: MeetingExportFormat) =>
+  invoke<MeetingExportResult>("export_meeting", { id, format });
+export const revealMeetingExport = (path: string) =>
+  invoke<void>("reveal_meeting_export", { path });
+export const openMeetingDrawer = (meetingId?: string) =>
+  invoke<void>("open_meeting_drawer", { meetingId: meetingId ?? null });
+export const closeMeetingDrawer = () => invoke<void>("close_meeting_drawer");
+export const dismissMeetingWidget = () => invoke<void>("dismiss_meeting_widget");
+export const dismissMeetingSuggestion = () => invoke<void>("dismiss_meeting_suggestion");
+
+export const onMeetingState = (callback: (payload: MeetingRuntimeState) => void) =>
+  listenSafe<MeetingRuntimeState>("meeting-state", (event) => callback(event.payload));
+export const onMeetingUpdated = (callback: (meetingId: string) => void) =>
+  listenSafe<string>("meeting-updated", (event) => callback(event.payload));
+export const onMeetingSummaryReady = (callback: (meetingId: string) => void) =>
+  listenSafe<string>("meeting-summary-ready", (event) => callback(event.payload));
+export const onMeetingError = (callback: (reason: string) => void) =>
+  listenSafe<string>("meeting-error", (event) => callback(event.payload));
+export const onMeetingSelect = (callback: (meetingId: string) => void) =>
+  listenSafe<string>("meeting-select", (event) => callback(event.payload));
+export interface MeetingSuggestionPayload {
+  app: string;
+  suggested_title: string;
+}
+
+export const onMeetingSuggestion = (callback: (payload: MeetingSuggestionPayload) => void) =>
+  listenSafe<MeetingSuggestionPayload>("meeting-suggestion", (event) => callback(event.payload));
+
 // ── Structured Mode / LLM ────────────────────────────────────────────────
 export interface LlmModelInfo {
   id: string;
   name: string;
   size_bytes: number;
   quantization: string;
+  family: string;
+  parameter_count_millions: number;
+  language_support: "multilingual";
+  capability_tier: "fast" | "quality";
+  estimated_memory_mb: number;
   context_length: number;
   description: string;
   huggingface_repo: string;
@@ -469,6 +952,8 @@ export interface LlmModelInfo {
   is_downloaded: boolean;
   path: string | null;
   is_default: boolean;
+  /** "structured" powers Structured Mode / Command Mode; "cleanup" powers AI Transcript Cleanup. */
+  purpose: "structured" | "cleanup";
 }
 
 export interface LlmDownloadProgress {
@@ -512,7 +997,9 @@ export interface SlotExtraction {
   options: string[];
 }
 
-export interface StructuredOutputPayload {
+export interface StructuredOutputPayload extends GenerationTaggedPayload {
+  /** One-time backend capability bound to this capture's HWND/PID target. */
+  binding_id?: string | null;
   markdown: string;
   /**
    * Profile-specific slot object.  `SlotExtraction`-shaped for the default
@@ -540,8 +1027,22 @@ export const setActiveLlmModel = (modelId: string) =>
   invoke<void>("set_active_llm_model", { modelId });
 export const llmTestExtract = (text?: string) =>
   invoke<string>("llm_test_extract", { text: text ?? null });
-export const pasteStructuredOutput = (markdown: string) =>
-  invoke<void>("paste_structured_output", { markdown });
+
+export interface LlmCleanupResult {
+  output: string;
+  duration_ms: number;
+}
+export const llmTestCleanup = (text: string) =>
+  invoke<LlmCleanupResult>("llm_test_cleanup", { text });
+export const pasteStructuredOutput = (
+  markdown: string,
+  bindingId: string,
+  generation: number
+) => invoke<void>("paste_structured_output", { markdown, bindingId, generation });
+export const discardStructuredOutput = (bindingId: string, generation: number) =>
+  invoke<void>("discard_structured_output", { bindingId, generation });
+export const setStructuredPanelActive = (active: boolean) =>
+  invoke<void>("set_structured_panel_active", { active });
 
 /** Mirrors Rust `llm::diaglog::ExtractionRecord`. */
 export interface LlmExtractionRecord {
@@ -565,14 +1066,14 @@ export const getLlmDiagnostics = () =>
 export const onLlmDownloadProgress = (
   callback: (progress: LlmDownloadProgress) => void
 ): Promise<UnlistenFn> =>
-  listen<LlmDownloadProgress>("llm-download-progress", (e) =>
+  listenSafe<LlmDownloadProgress>("llm-download-progress", (e) =>
     callback(e.payload)
   );
 
 export const onLlmModelLoaded = (
   callback: (modelId: string) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("llm-model-loaded", (e) => callback(e.payload));
+  listenSafe<string>("llm-model-loaded", (e) => callback(e.payload));
 
 /**
  * Structured-Mode LLM lifecycle: "loading" while the GGUF loads,
@@ -583,19 +1084,17 @@ export const onLlmModelLoaded = (
 export const onLlmStatus = (
   callback: (status: string) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("llm-status", (e) => callback(e.payload));
+  listenSafe<string>("llm-status", (e) => callback(e.payload));
 
 export const onStructuredOutputReady = (
   callback: (payload: StructuredOutputPayload) => void
 ): Promise<UnlistenFn> =>
-  listen<StructuredOutputPayload>("structured-output-ready", (e) =>
-    callback(e.payload)
-  );
+  listenGenerated<StructuredOutputPayload>("structured-output-ready", callback);
 
 export const onStructuredModeDegraded = (
   callback: (reason: string) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("structured-mode-degraded", (e) => callback(e.payload));
+  listenSafe<string>("structured-mode-degraded", (e) => callback(e.payload));
 
 // Fired when a model was loaded on CPU because the GPU load failed (even
 // after a retry). Without this the fallback is invisible: the UI shows the
@@ -603,7 +1102,20 @@ export const onStructuredModeDegraded = (
 export const onWhisperGpuFallback = (
   callback: (message: string) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("whisper-gpu-fallback", (e) => callback(e.payload));
+  listenSafe<string>("whisper-gpu-fallback", (e) => callback(e.payload));
+
+export interface LlmBackendFallback {
+  model_id: string;
+  backend: { kind: "gpu_partial"; layers: number } | { kind: "cpu_fallback" };
+  duration_ms: number;
+}
+
+// Structured and Command Mode share this runner. Surface a partial/CPU
+// fallback explicitly so an unexpectedly slow model never looks healthy.
+export const onLlmGpuFallback = (
+  callback: (outcome: LlmBackendFallback) => void
+): Promise<UnlistenFn> =>
+  listenSafe<LlmBackendFallback>("llm-gpu-fallback", (e) => callback(e.payload));
 
 // ── Scratchpad ──────────────────────────────────────────────────────────────
 export interface ScratchpadEntry {
@@ -649,25 +1161,170 @@ export const setScratchpadCapture = (on: boolean) =>
 export const scratchpadGetCapture = () => invoke<boolean>("scratchpad_get_capture");
 
 // Event listeners
+
+/**
+ * Every capture-owned event is tagged with the capture generation allocated by
+ * the backend. Events for a lower generation arrived late from an older
+ * capture and must not be allowed to roll a WebView back to stale UI.
+ *
+ * A single gate is intentionally shared by dictation and Command Mode events:
+ * they are mutually exclusive views of the same backend capture lifecycle.
+ * Equality is accepted because one generation emits several related events.
+ */
+export interface GenerationTaggedPayload {
+  generation: number;
+}
+
+export function createGenerationGate(initialGeneration = -1) {
+  let latestGeneration = initialGeneration;
+  return {
+    accept(generation: number): boolean {
+      if (!Number.isSafeInteger(generation) || generation < 0) return false;
+      if (generation < latestGeneration) return false;
+      latestGeneration = generation;
+      return true;
+    },
+    latest: () => latestGeneration,
+  };
+}
+
+const captureGenerationGate = createGenerationGate();
+
+/**
+ * Completion deliveries are not lifecycle state. An older dictation may
+ * legitimately finish after a newer capture starts, so comparing it with the
+ * latest lifecycle generation would discard user text. This gate validates
+ * generations and delivers each completion exactly once, while the monotonic
+ * `captureGenerationGate` above continues to reject stale state/meter events.
+ */
+export function createCompletionGenerationGate() {
+  const delivered = new Set<number>();
+  return {
+    accept(generation: number): boolean {
+      if (!Number.isSafeInteger(generation) || generation < 0) return false;
+      if (delivered.has(generation)) return false;
+      delivered.add(generation);
+      return true;
+    },
+    hasDelivered: (generation: number) => delivered.has(generation),
+  };
+}
+
+const RECORDING_PHASE_RANK: Record<string, number> = {
+  recording: 0,
+  processing: 1,
+  structuring: 2,
+  idle: 3,
+  error: 3,
+};
+
+/**
+ * Some consumers own work for more than one overlapping capture and therefore
+ * need each generation's terminal event even after a newer capture starts.
+ * Track progression independently per generation; the ordinary UI listener
+ * below remains monotonic so late events still cannot roll global state back.
+ */
+export function createPerGenerationLifecycleGate() {
+  const phases = new Map<number, number>();
+  return {
+    accept(generation: number, state: string): boolean {
+      if (!Number.isSafeInteger(generation) || generation < 0) return false;
+      const next = RECORDING_PHASE_RANK[state];
+      if (next === undefined) return false;
+      const previous = phases.get(generation);
+      if (previous !== undefined && next <= previous) return false;
+      phases.set(generation, next);
+      return true;
+    },
+  };
+}
+
+function listenGenerated<T extends GenerationTaggedPayload>(
+  event: string,
+  callback: (payload: T) => void
+): Promise<UnlistenFn> {
+  return listenSafe<T>(event, (e) => {
+    if (captureGenerationGate.accept(e.payload.generation)) {
+      callback(e.payload);
+    }
+  });
+}
+
+export interface RecordingStateChangePayload extends GenerationTaggedPayload {
+  state: string;
+}
+
+export interface AudioLevelPayload extends GenerationTaggedPayload {
+  level: number;
+}
+
+export interface TranscriptionTextPayload extends GenerationTaggedPayload {
+  text: string;
+}
+
+export interface CommandStateChangePayload extends GenerationTaggedPayload {
+  state: string;
+}
+
 export const onRecordingStateChange = (
-  callback: (status: string) => void
-): Promise<UnlistenFn> => listen<string>("recording-state-change", (e) => callback(e.payload));
+  callback: (status: string, generation: number) => void
+): Promise<UnlistenFn> =>
+  listenGenerated<RecordingStateChangePayload>("recording-state-change", (payload) =>
+    callback(payload.state, payload.generation)
+  );
+
+/** Per-generation lifecycle delivery for owners of overlapping capture work. */
+export const onRecordingLifecycle = (
+  callback: (status: string, generation: number) => void
+): Promise<UnlistenFn> => {
+  const gate = createPerGenerationLifecycleGate();
+  return listenSafe<RecordingStateChangePayload>("recording-state-change", (event) => {
+    if (gate.accept(event.payload.generation, event.payload.state)) {
+      callback(event.payload.state, event.payload.generation);
+    }
+  });
+};
 
 export const onAudioLevel = (
-  callback: (level: number) => void
-): Promise<UnlistenFn> => listen<number>("audio-level", (e) => callback(e.payload));
+  callback: (level: number, generation: number) => void
+): Promise<UnlistenFn> =>
+  listenGenerated<AudioLevelPayload>("audio-level", (payload) =>
+    callback(payload.level, payload.generation)
+  );
 
 export const onDownloadProgress = (
   callback: (progress: DownloadProgress) => void
 ): Promise<UnlistenFn> =>
-  listen<DownloadProgress>("download-progress", (e) => callback(e.payload));
+  listenSafe<DownloadProgress>("download-progress", (e) => callback(e.payload));
 
 export const onTranscriptionResult = (
-  callback: (text: string) => void
+  callback: (text: string, generation: number) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("transcription-result", (e) => callback(e.payload));
+  listenGenerated<TranscriptionTextPayload>("transcription-result", (payload) =>
+    callback(payload.text, payload.generation)
+  );
 
-export interface DictationInsertPayload {
+/** Durable completion delivery for capture-owned editors. */
+export const onTranscriptionCompletion = (
+  callback: (text: string, generation: number) => void
+): Promise<UnlistenFn> => {
+  const completionGate = createCompletionGenerationGate();
+  return listenSafe<TranscriptionTextPayload>("transcription-result", (event) => {
+    if (completionGate.accept(event.payload.generation)) {
+      callback(event.payload.text, event.payload.generation);
+    }
+  });
+};
+
+/** Fired after retention or privacy policy removes saved transcripts. */
+export const onHistoryChanged = (callback: (deleted: number) => void): Promise<UnlistenFn> =>
+  listenSafe<number>("history-changed", (event) => callback(event.payload));
+
+/** Fired when a background retention/privacy purge could not complete. */
+export const onHistoryCleanupError = (callback: (reason: string) => void): Promise<UnlistenFn> =>
+  listenSafe<string>("history-cleanup-error", (event) => callback(event.payload));
+
+export interface DictationInsertPayload extends GenerationTaggedPayload {
   text: string;
   /** OmniVox window label the dictation was aimed at, decided by the backend
    *  from the HWND snapshotted at record start: "main" | "scratchpad". */
@@ -682,19 +1339,27 @@ export interface DictationInsertPayload {
  */
 export const onDictationInsert = (
   callback: (payload: DictationInsertPayload) => void
-): Promise<UnlistenFn> =>
-  listen<DictationInsertPayload>("dictation-insert", (e) => callback(e.payload));
+): Promise<UnlistenFn> => {
+  // Per-listener deduplication preserves normal event fan-out when more than
+  // one consumer is mounted in a WebView.
+  const completionGate = createCompletionGenerationGate();
+  return listenSafe<DictationInsertPayload>("dictation-insert", (event) => {
+    if (completionGate.accept(event.payload.generation)) {
+      callback(event.payload);
+    }
+  });
+};
 
 /** Fired when a voice command changed the scratchpad's stored content (e.g.
  *  "clear the scratchpad") so an open pad reloads from the DB. */
 export const onScratchpadRefresh = (callback: () => void): Promise<UnlistenFn> =>
-  listen<void>("scratchpad-refresh", () => callback());
+  listenSafe<void>("scratchpad-refresh", () => callback());
 
 export const onModelLoaded = (
   callback: (modelId: string) => void
-): Promise<UnlistenFn> => listen<string>("model-loaded", (e) => callback(e.payload));
+): Promise<UnlistenFn> => listenSafe<string>("model-loaded", (e) => callback(e.payload));
 
-export interface RecordingError {
+export interface RecordingError extends GenerationTaggedPayload {
   state: string;
   code: string;
   message: string;
@@ -703,19 +1368,21 @@ export interface RecordingError {
 export const onRecordingError = (
   callback: (error: RecordingError) => void
 ): Promise<UnlistenFn> =>
-  listen<RecordingError>("recording-error", (e) => callback(e.payload));
+  listenGenerated<RecordingError>("recording-error", callback);
 
 export const onContextModeChanged = (
   callback: (mode: { id: string; name: string; icon: string; color: string }) => void
 ): Promise<UnlistenFn> =>
-  listen("context-mode-changed", (e) => callback(e.payload as { id: string; name: string; icon: string; color: string }));
+  listenSafe("context-mode-changed", (e) => callback(e.payload as { id: string; name: string; icon: string; color: string }));
 
 export const onTranscriptionPreview = (
-  callback: (text: string) => void
+  callback: (text: string, generation: number) => void
 ): Promise<UnlistenFn> =>
-  listen<string>("transcription-preview", (e) => callback(e.payload));
+  listenGenerated<TranscriptionTextPayload>("transcription-preview", (payload) =>
+    callback(payload.text, payload.generation)
+  );
 
 export const onSettingsChanged = (
   callback: (settings: AppSettings) => void
 ): Promise<UnlistenFn> =>
-  listen<AppSettings>("settings-changed", (e) => callback(e.payload));
+  listenSafe<AppSettings>("settings-changed", (e) => callback(e.payload));

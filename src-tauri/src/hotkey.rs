@@ -23,7 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Persisted hotkey configuration — keys + display labels.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotkeyConfig {
     /// Platform key codes for the 1–2 keys in the combo.
     /// On Windows these are VK codes; on macOS they map to rdev key identifiers.
@@ -110,6 +110,8 @@ mod state_machine {
         recording: AtomicBool,
         toggle_locked: AtomicBool,
         last_activate_ms: AtomicU64,
+        pending_packed: AtomicU32,
+        has_pending_packed: AtomicBool,
     }
 
     impl Hk {
@@ -121,6 +123,8 @@ mod state_machine {
                 recording: AtomicBool::new(false),
                 toggle_locked: AtomicBool::new(false),
                 last_activate_ms: AtomicU64::new(0),
+                pending_packed: AtomicU32::new(0),
+                has_pending_packed: AtomicBool::new(false),
             }
         }
     }
@@ -171,6 +175,10 @@ mod state_machine {
         epoch.elapsed().as_millis() as u64
     }
 
+    fn is_double_tap(now: u64, last: u64) -> bool {
+        last != 0 && now.saturating_sub(last) <= DOUBLE_TAP_MS
+    }
+
     pub fn init_epoch() {
         let _ = EPOCH.get_or_init(Instant::now);
     }
@@ -182,33 +190,51 @@ mod state_machine {
         }
     }
 
-    fn fire_start(action: Action) {
+    fn fire_start(action: Action) -> bool {
         let Some(handle) = APP_HANDLE.get() else {
-            return;
+            return false;
         };
         let h = handle.clone();
         // Claim ownership SYNCHRONOUSLY on this serialized hook thread, before
         // spawning the worker — so the matching release (fire_stop, later on the
         // same thread) can never be processed before the claim happens.
-        let claimed = crate::pipeline::try_claim_capture(&h, action_mode(action));
+        let Some(generation) = crate::pipeline::try_claim_capture(&h, action_mode(action)) else {
+            crate::llm::diaglog::log(&format!(
+                "hotkey: fire_start action={:?} claim rejected",
+                action_mode(action)
+            ));
+            return false;
+        };
         crate::llm::diaglog::log(&format!(
-            "hotkey: fire_start action={:?} claimed={claimed}",
-            action_mode(action)
+            "hotkey: fire_start action={:?} generation={generation}",
+            action_mode(action),
         ));
-        if !claimed {
-            return;
-        }
         tauri::async_runtime::spawn(async move {
             match action {
                 Action::Dictation => {
-                    let st = h.state::<crate::state::AppState>();
-                    crate::pipeline::start_recording_inner(&h, &st);
+                    // `start_recording_inner` is fully synchronous — a SQLite
+                    // settings read, auto-switch queries, cross-process COM
+                    // ducking, and opening the mic device. Run it on the blocking
+                    // pool so it never stalls a tokio worker, matching
+                    // `commands::audio::start_recording`.
+                    let app = h.clone();
+                    if let Err(e) = tauri::async_runtime::spawn_blocking(move || {
+                        let st = app.state::<crate::state::AppState>();
+                        crate::pipeline::start_recording_inner(&app, &st, generation);
+                    })
+                    .await
+                    {
+                        crate::llm::diaglog::log(&format!(
+                            "hotkey: start_recording task failed: {e}"
+                        ));
+                    }
                 }
                 Action::Command => {
-                    crate::pipeline::start_command_inner(&h).await;
+                    crate::pipeline::start_command_inner(&h, generation).await;
                 }
             }
         });
+        true
     }
 
     fn fire_stop(action: Action) {
@@ -218,14 +244,16 @@ mod state_machine {
         let h = handle.clone();
         // Decide the stop SYNCHRONOUSLY (records a deferred stop if the capture
         // is still starting); only spawn the worker for an immediate stop.
-        if !crate::pipeline::should_stop_now(&h, action_mode(action)) {
+        let Some(generation) = crate::pipeline::should_stop_now(&h, action_mode(action)) else {
             return;
-        }
+        };
         tauri::async_runtime::spawn(async move {
             let st = h.state::<crate::state::AppState>();
             match action {
-                Action::Dictation => crate::pipeline::stop_and_transcribe(&h, &st).await,
-                Action::Command => crate::pipeline::stop_and_run_command(&h, &st).await,
+                Action::Dictation => {
+                    crate::pipeline::stop_and_transcribe_generation(&h, &st, generation).await
+                }
+                Action::Command => crate::pipeline::stop_and_run_command(&h, &st, generation).await,
             }
         });
     }
@@ -237,6 +265,36 @@ mod state_machine {
         hk.toggle_locked.store(false, Ordering::Release);
     }
 
+    fn update_packed(hk: &Hk, packed: u32) {
+        if hk.packed.load(Ordering::Acquire) == packed
+            && !hk.has_pending_packed.load(Ordering::Acquire)
+        {
+            return;
+        }
+        if hk.recording.load(Ordering::Acquire) || hk.keys_down.load(Ordering::Acquire) != 0 {
+            hk.pending_packed.store(packed, Ordering::Release);
+            hk.has_pending_packed.store(true, Ordering::Release);
+            return;
+        }
+        reset(hk);
+        hk.packed.store(packed, Ordering::Release);
+    }
+
+    fn apply_pending_if_idle(hk: &Hk) {
+        if hk.recording.load(Ordering::Acquire) || hk.keys_down.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        if hk
+            .has_pending_packed
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let packed = hk.pending_packed.load(Ordering::Acquire);
+            reset(hk);
+            hk.packed.store(packed, Ordering::Release);
+        }
+    }
+
     /// Update the dictation hotkey keys at runtime.
     ///
     /// Release ordering on `packed` synchronizes with the Acquire load in
@@ -244,15 +302,13 @@ mod state_machine {
     /// also sees the reset latches that accompany the change.
     pub fn update_hotkey_keys(key1: u16, key2: u16) {
         let packed = (key2 as u32) << 16 | (key1 as u32);
-        reset(&DICTATION);
-        DICTATION.packed.store(packed, Ordering::Release);
+        update_packed(&DICTATION, packed);
     }
 
     /// Update (or disable, with key1=0) the Command-Mode hotkey at runtime.
     pub fn update_command_hotkey_keys(key1: u16, key2: u16) {
         let packed = (key2 as u32) << 16 | (key1 as u32);
-        reset(&COMMAND);
-        COMMAND.packed.store(packed, Ordering::Release);
+        update_packed(&COMMAND, packed);
     }
 
     pub fn dictation_packed() -> u32 {
@@ -323,7 +379,7 @@ mod state_machine {
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let st = h.state::<crate::state::AppState>();
-                    crate::pipeline::cancel_recording(&h, &st);
+                    crate::pipeline::cancel_capture(&h, &st, crate::state::CaptureMode::Command);
                 });
             }
             return true; // swallow — this Esc was aimed at OmniVox
@@ -446,14 +502,23 @@ mod state_machine {
             if !recording {
                 let now = now_ms();
                 let last = hk.last_activate_ms.swap(now, Ordering::Relaxed);
-                let is_double_tap = (now - last) <= DOUBLE_TAP_MS;
+                let is_double_tap = is_double_tap(now, last);
 
                 hk.recording.store(true, Ordering::Relaxed);
                 hk.toggle_locked.store(is_double_tap, Ordering::Relaxed);
                 // Remember we swallowed this key's press so we also swallow its
                 // release — otherwise the lone modifier-up leaks to the app.
                 hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
-                fire_start(action);
+                if !fire_start(action) {
+                    // The other hotkey (or the mic button) owns capture. Roll
+                    // back every optimistic latch so this combo cannot become a
+                    // phantom recording/toggle session.
+                    hk.recording.store(false, Ordering::Release);
+                    hk.toggle_locked.store(false, Ordering::Release);
+                    hk.last_activate_ms.store(0, Ordering::Release);
+                    hk.swallowed_down.fetch_and(!bit, Ordering::AcqRel);
+                    return false;
+                }
 
                 return true; // swallow
             } else if locked {
@@ -478,10 +543,11 @@ mod state_machine {
         //    down we passed through (the first modifier of a combo, e.g. LCtrl in
         //    LCtrl+LAlt) is NOT in `swallowed_down`, so its repeats still pass —
         //    keeping real Ctrl+C / Alt+Tab intact.
-        if is_down && (matches_key1 || matches_key2) {
-            if hk.swallowed_down.load(Ordering::Relaxed) & bit != 0 {
-                return true; // swallow the repeat
-            }
+        if is_down
+            && (matches_key1 || matches_key2)
+            && hk.swallowed_down.load(Ordering::Relaxed) & bit != 0
+        {
+            return true; // swallow the repeat
         }
 
         // ── Key released while hold-recording (non-locked) ──
@@ -490,14 +556,16 @@ mod state_machine {
         // bridge command, and the release watchdog all feed process_key_event),
         // and a plain load-then-store would let two of them observe `true` and
         // both spawn a stop pipeline.  Exactly one caller may fire the stop.
-        if recording && !locked && is_up && (matches_key1 || matches_key2) {
-            if hk
+        if recording
+            && !locked
+            && is_up
+            && (matches_key1 || matches_key2)
+            && hk
                 .recording
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
-            {
-                fire_stop(action);
-            }
+        {
+            fire_stop(action);
         }
 
         // ── Swallow the release of any combo key whose activating press we
@@ -508,13 +576,33 @@ mod state_machine {
         //    Balanced per-key: a modifier whose down we passed through (the
         //    first key of the combo, or a real Ctrl+C / Alt+Tab) is NOT in
         //    `swallowed_down`, so its up still passes — keeping those intact.
-        if is_up && (matches_key1 || matches_key2) {
-            if hk.swallowed_down.fetch_and(!bit, Ordering::Relaxed) & bit != 0 {
-                return true; // swallow the balancing release
-            }
+        if is_up
+            && (matches_key1 || matches_key2)
+            && hk.swallowed_down.fetch_and(!bit, Ordering::Relaxed) & bit != 0
+        {
+            apply_pending_if_idle(hk);
+            return true; // swallow the balancing release
         }
 
+        apply_pending_if_idle(hk);
         false
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn first_activation_is_never_a_double_tap() {
+            assert!(!is_double_tap(100, 0));
+        }
+
+        #[test]
+        fn double_tap_uses_saturating_elapsed_time() {
+            assert!(is_double_tap(500, 150));
+            assert!(!is_double_tap(700, 150));
+            assert!(is_double_tap(10, 20));
+        }
     }
 }
 
@@ -593,7 +681,8 @@ mod win {
         thread::Builder::new()
             .name("omnivox-hotkey-watchdog".into())
             .spawn(|| {
-                let key_up = |vk: u16| unsafe { (GetAsyncKeyState(vk as i32) as u16) & 0x8000 == 0 };
+                let key_up =
+                    |vk: u16| unsafe { (GetAsyncKeyState(vk as i32) as u16) & 0x8000 == 0 };
                 // Phantom bits seen last poll — a key must read stuck on two
                 // consecutive polls before its release is synthesized.
                 let mut prev_phantom = 0u8;
@@ -643,10 +732,7 @@ mod win {
                     let mut phantom = 0u8;
                     for group in [0b0011u8, 0b1100u8] {
                         let bits = believed & group;
-                        if bits != 0
-                            && bits & physically_down == 0
-                            && bits & seen_down == bits
-                        {
+                        if bits != 0 && bits & physically_down == 0 && bits & seen_down == bits {
                             phantom |= bits;
                         }
                     }

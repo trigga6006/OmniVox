@@ -36,13 +36,16 @@ type PillState = RecordingStatus | "success";
 
 // Map mode color names → CSS color values for waveform bars.
 // Graphite-system roles (keys kept for backward-compat with saved modes).
+// Every value here was already an exact copy of a token; they now read the
+// token, so retuning a role colour retunes the waveform with it. The keys are
+// the persisted mode-colour names and cannot change.
 const MODE_COLORS: Record<string, string> = {
-  amber: "rgb(245,158,11)",   // amber — primary / dictation
-  blue: "rgb(96,165,250)",    // blue — command
-  green: "rgb(74,222,128)",   // green — success
-  purple: "rgb(167,139,250)", // violet — structured
-  red: "rgb(239,68,68)",      // red — recording / error
-  cyan: "rgb(45,212,191)",    // teal — spare
+  amber: "var(--color-amber-500)",  // primary / dictation
+  blue: "var(--color-indigo-400)",  // command
+  green: "var(--color-sage)",       // success
+  purple: "var(--color-plum)",      // structured
+  red: "var(--color-recording-500)",// recording / error
+  cyan: "var(--color-teal)",        // spare
 };
 
 // Window sizes — button always fills the window 100%
@@ -109,7 +112,7 @@ export function FloatingPill() {
     activeColor,
     setActiveColor,
     structuredPayload,
-    setStructuredPayload,
+    dismissStructuredPayload,
     structuredDegraded,
     setStructuredDegraded,
     llmStatus,
@@ -121,6 +124,11 @@ export function FloatingPill() {
     setShowShipPopup,
     setShowLeyLinePopup,
   });
+  const handleStructuredClose = useCallback(() => {
+    if (structuredPayload) {
+      dismissStructuredPayload(structuredPayload);
+    }
+  }, [dismissStructuredPayload, structuredPayload]);
 
   const commandEditableConfirm = useCommandStore((s) => s.editableText !== null);
   // The scratchpad bud shows only when the idle pill is hovered (cursor near it)
@@ -226,8 +234,8 @@ export function FloatingPill() {
   // callback wired through useSettingsSync instead of duplicated fetch +
   // listener bodies.
   const applySettings = useCallback(
-    (s: AppSettings) => {
-      replaceSettings(s);
+    (s: AppSettings, revision?: number) => {
+      replaceSettings(s, revision);
       setLivePreviewEnabled(s.live_preview);
       setNoiseReduction(s.noise_reduction);
       setAutoSwitchModes(s.auto_switch_modes);
@@ -407,11 +415,29 @@ export function FloatingPill() {
 
   const modeColor = MODE_COLORS[activeColor] ?? MODE_COLORS.amber;
 
+  // Keep the current panel mounted while Command UI, Ghost Mode, or a sizing
+  // transition temporarily hides it. This preserves edits, in-flight panel
+  // dictation, and the one-time output capability; `active` independently
+  // tells the backend whether the visible panel should own new captures.
+  const structuredPanelVisible =
+    commandState === "idle" && showContent && !ghostMode;
+  const structuredPanelNode = structuredPayload ? (
+    <div className="shrink-0" hidden={!structuredPanelVisible}>
+      <StructuredPanel
+        payload={structuredPayload}
+        onClose={handleStructuredClose}
+        active={structuredPanelVisible}
+        onDictatingChange={handleDictatingChange}
+      />
+    </div>
+  ) : null;
+
   // Command Mode takes over the overlay while active — it's mutually exclusive
   // with dictation (the backend's capture-mode guard guarantees only one runs).
   if (commandState !== "idle") {
     return (
       <div className="w-screen h-screen flex flex-col justify-end items-center">
+        {structuredPanelNode}
         <CommandPill showContent={showContent} />
       </div>
     );
@@ -431,19 +457,10 @@ export function FloatingPill() {
           "reverse Dynamic Island" expansion effect): the panel's flat
           bottom merges visually into the pill's rounded top so they read
           as one connected shape instead of two floating bubbles.
-          Gated on showContent so WebView2 finishes re-laying-out after
-          the window resize before the panel mounts — otherwise a
-          one-frame paint of the old layout in the new window bounds
-          flashes the panel at the top-left of the expanded region. */}
-      {showContent && structuredPayload && !ghostMode && (
-        <div className="shrink-0">
-          <StructuredPanel
-            payload={structuredPayload}
-            onClose={() => setStructuredPayload(null)}
-            onDictatingChange={handleDictatingChange}
-          />
-        </div>
-      )}
+          Hidden until showContent so WebView2 finishes re-laying-out after
+          the window resize before the panel paints; it remains mounted so a
+          temporary surface takeover cannot discard its state/capability. */}
+      {structuredPanelNode}
 
       {/* Transient degraded banner — LLM timed out / not loaded.
           Gated on showContent for the same anti-flicker reason. */}
@@ -454,8 +471,8 @@ export function FloatingPill() {
           title="Click to dismiss"
           style={{
             background:
-              "linear-gradient(180deg, rgba(26,26,30,0.96) 0%, rgba(16,15,18,0.96) 100%)",
-            border: "1px solid rgba(245,158,11,0.30)",
+              "linear-gradient(180deg, color-mix(in srgb, var(--color-surface-2) 96%, transparent) 0%, color-mix(in srgb, var(--color-surface-0) 96%, transparent) 100%)",
+            border: "1px solid color-mix(in srgb, var(--color-amber-500) 30%, transparent)",
             boxShadow: "0 10px 28px -14px rgba(0,0,0,0.8)",
             // Dedicated banner keyframe — `sp-in` is the StructuredPanel's
             // clip-path grow tuned for a 420×480 surface; on a short wide banner
@@ -467,14 +484,14 @@ export function FloatingPill() {
             aria-hidden="true"
             className="h-1.5 w-1.5 rounded-full shrink-0"
             style={{
-              backgroundColor: "rgba(245,158,11,0.95)",
+              backgroundColor: "color-mix(in srgb, var(--color-amber-500) 95%, transparent)",
             }}
           />
           <span
             className="text-[9px] font-semibold uppercase tracking-[0.18em] shrink-0"
             style={{
               fontFamily: "var(--font-display)",
-              color: "rgba(252,195,77,0.92)",
+              color: "color-mix(in srgb, var(--color-amber-300) 92%, transparent)",
             }}
           >
             Structured
@@ -482,7 +499,7 @@ export function FloatingPill() {
           <span
             className="text-[10px] leading-snug truncate"
             style={{
-              color: "rgba(244,244,245,0.9)",
+              color: "color-mix(in srgb, var(--color-text-primary) 90%, transparent)",
               letterSpacing: "-0.005em",
             }}
           >
@@ -562,8 +579,8 @@ export function FloatingPill() {
         boxShadow:
           isIdle && !showModeSelector
             ? pillHovered
-              ? "0 0 4px rgba(251,191,36,0.5), 0 0 12px 1px rgba(251,191,36,0.30)"
-              : "0 0 3px rgba(251,191,36,0.34), 0 0 9px 1px rgba(251,191,36,0.20)"
+              ? "0 0 4px color-mix(in srgb, var(--color-ochre) 50%, transparent), 0 0 12px 1px color-mix(in srgb, var(--color-ochre) 30%, transparent)"
+              : "0 0 3px color-mix(in srgb, var(--color-ochre) 34%, transparent), 0 0 9px 1px color-mix(in srgb, var(--color-ochre) 20%, transparent)"
             : undefined,
         // Full property list — an inline `transition` shorthand overrides the
         // Tailwind transition-* utility entirely, so width/height/border/

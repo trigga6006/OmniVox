@@ -366,29 +366,34 @@ export function Scratchpad() {
 
   return (
     <div className="flex h-screen w-screen select-none flex-col">
+      {/* rounded-2xl is window chrome, not a card radius: it is the physical
+          corner of the transparent OS window, so it stays outside the 6/8/12
+          control scale. The ground is the surface ramp at the window's own
+          opacity — the pad used to carry its own private rgba pair here. */}
       <div
-        className="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 text-text-primary"
+        className="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-border text-text-primary"
         style={{
-          background:
-            "linear-gradient(180deg, rgba(26,26,30,0.98) 0%, rgba(15,15,18,0.99) 100%)",
+          background: `linear-gradient(180deg,
+            color-mix(in srgb, var(--color-surface-2) 98%, transparent) 0%,
+            color-mix(in srgb, var(--color-surface-0) 99%, transparent) 100%)`,
         }}
       >
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-px"
           style={{
             background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.10) 50%, transparent)",
+              "linear-gradient(90deg, transparent, var(--color-border-hover) 50%, transparent)",
           }}
         />
 
         {/* ── Header (drag region) ── */}
         <div
           data-tauri-drag-region
-          className="flex h-10 shrink-0 items-center gap-2 border-b border-white/8 px-3"
+          className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3"
         >
           <span
             data-tauri-drag-region
-            className="font-display text-[13px] font-semibold tracking-[-0.01em] text-text-primary"
+            className="font-display text-sm font-semibold text-text-primary"
           >
             Scratchpad
           </span>
@@ -406,24 +411,26 @@ export function Scratchpad() {
                   : "Paused — click to capture your dictation here"
               }
               className={cn(
-                "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+                "flex h-6 w-6 items-center justify-center rounded-[var(--radius-s)]",
+                "transition-colors duration-[var(--dur-2)] ease-out",
                 capturing
                   ? "bg-amber-500/20 text-amber-300"
-                  : "text-text-muted hover:bg-white/10 hover:text-text-secondary"
+                  : "text-text-muted hover:bg-surface-3 hover:text-text-secondary"
               )}
             >
               <Crosshair size={13} strokeWidth={2} />
             </button>
             <div
               onMouseDown={noDrag}
-              className="flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5"
+              className="flex items-center gap-0.5 rounded-[var(--radius-m)] bg-surface-3/50 p-0.5"
             >
               {VARIANTS.map((v) => (
                 <button
                   key={v.id}
                   onClick={() => switchVariant(v.id)}
                   className={cn(
-                    "rounded-md px-2 py-1 text-[10px] font-medium transition-colors",
+                    "rounded-[var(--radius-s)] px-2 py-0.5 text-xs font-medium",
+                    "transition-colors duration-[var(--dur-2)] ease-out",
                     variant === v.id
                       ? "bg-amber-500/20 text-amber-200"
                       : "text-text-muted hover:text-text-secondary"
@@ -440,12 +447,13 @@ export function Scratchpad() {
                 aria-label="More actions"
                 aria-expanded={menuOpen}
                 className={cn(
-                  "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+                  "flex h-6 w-6 items-center justify-center rounded-[var(--radius-s)]",
+                  "transition-colors duration-[var(--dur-2)] ease-out",
                   sentFlash
                     ? "text-amber-300"
                     : menuOpen
-                      ? "bg-white/10 text-text-primary"
-                      : "text-text-muted hover:bg-white/10 hover:text-text-secondary"
+                      ? "bg-surface-3 text-text-primary"
+                      : "text-text-muted hover:bg-surface-3 hover:text-text-secondary"
                 )}
               >
                 {sentFlash ? (
@@ -454,16 +462,19 @@ export function Scratchpad() {
                   <MoreHorizontal size={13} strokeWidth={2.2} />
                 )}
               </button>
+              {/* A command menu, not a value picker — it keeps its own structure
+                  but wears the kit's popover chrome: radius-l shell, radius-s
+                  rows, surface-2 ground, 45% disabled with no hover. */}
               {menuOpen && (
-                <div className="absolute right-0 top-7 z-20 w-48 rounded-lg border border-white/10 bg-[#232329] p-1 shadow-lg">
+                <div className="absolute right-0 top-7 z-20 w-48 rounded-[var(--radius-l)] border border-border-hover bg-surface-2 p-1 shadow-[var(--shadow-lg)]">
                   <button
                     onClick={handleSendToNotes}
                     disabled={!hasCopyable}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11.5px] font-medium transition-colors",
-                      hasCopyable
-                        ? "text-text-secondary hover:bg-white/8 hover:text-text-primary"
-                        : "cursor-default text-text-muted/50"
+                      "flex w-full items-center gap-2 rounded-[var(--radius-s)] px-2.5 py-1.5 text-left text-xs font-medium",
+                      "transition-colors duration-[var(--dur-1)] ease-out",
+                      "text-text-secondary hover:bg-surface-3 hover:text-text-primary",
+                      "disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-text-secondary"
                     )}
                   >
                     <FileText size={12} strokeWidth={2} />
@@ -472,7 +483,8 @@ export function Scratchpad() {
                   <button
                     onClick={handleWipe}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11.5px] font-medium transition-colors",
+                      "flex w-full items-center gap-2 rounded-[var(--radius-s)] px-2.5 py-1.5 text-left text-xs font-medium",
+                      "transition-colors duration-[var(--dur-1)] ease-out",
                       confirmClear
                         ? "bg-recording-500/15 text-recording-300"
                         : "text-text-secondary hover:bg-recording-500/10 hover:text-recording-400"
@@ -488,7 +500,7 @@ export function Scratchpad() {
               onMouseDown={noDrag}
               onClick={() => closeScratchpad().catch(() => {})}
               aria-label="Close"
-              className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-white/10 hover:text-text-primary"
+              className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-s)] text-text-muted transition-colors duration-[var(--dur-2)] ease-out hover:bg-surface-3 hover:text-text-primary"
             >
               <X size={13} strokeWidth={2.2} />
             </button>
@@ -504,7 +516,7 @@ export function Scratchpad() {
                   <span>Couldn't load the scratchpad.</span>
                   <button
                     onClick={() => refresh()}
-                    className="rounded-md bg-white/10 px-2.5 py-1 text-text-secondary transition-colors hover:bg-white/15"
+                    className="rounded-[var(--radius-s)] bg-surface-3 px-2.5 py-1 text-text-secondary transition-colors duration-[var(--dur-2)] ease-out hover:bg-surface-4"
                   >
                     Retry
                   </button>
@@ -540,7 +552,7 @@ export function Scratchpad() {
               .startResizeDragging("SouthEast")
               .catch((err) => console.error(err));
           }}
-          className="absolute bottom-0 right-0 z-10 flex h-3.5 w-3.5 cursor-se-resize items-end justify-end pb-[3px] pr-[3px] text-white/25 transition-colors hover:text-white/60"
+          className="absolute bottom-0 right-0 z-10 flex h-3.5 w-3.5 cursor-se-resize items-end justify-end pb-[3px] pr-[3px] text-text-muted/50 transition-colors duration-[var(--dur-2)] ease-out hover:text-text-secondary"
         >
           <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
             <path
@@ -598,7 +610,7 @@ function MicOrb({
   }, [recording]);
 
   return (
-    <div className="relative flex h-9 shrink-0 items-center gap-2 border-t border-white/8 px-3">
+    <div className="relative flex h-9 shrink-0 items-center gap-2 border-t border-border px-3">
       {/* Tiny fallback control — your dictation hotkey is the primary way in. */}
       <button
         onClick={onToggle}
@@ -609,22 +621,27 @@ function MicOrb({
           disabled && "pointer-events-none opacity-40"
         )}
       >
-        {/* voice-reactive halo — grows + brightens with your audio level */}
+        {/* voice-reactive halo — grows + brightens with your audio level.
+            90ms is deliberately below --dur-1: it tracks live audio, so it is
+            a follow, not a transition. */}
         {recording && (
           <span
             aria-hidden
             className="pointer-events-none absolute rounded-full"
             style={{
               inset: `-${4 + level * 10}px`,
-              background: `radial-gradient(circle, rgba(239,68,68,${0.14 + level * 0.28}) 0%, transparent 68%)`,
+              background: `radial-gradient(circle, color-mix(in srgb, var(--color-recording-500) ${((0.14 + level * 0.28) * 100).toFixed(1)}%, transparent) 0%, transparent 68%)`,
               transition: "inset 90ms ease-out, background 90ms ease-out",
             }}
           />
         )}
         <span
           className={cn(
-            "relative flex h-5 w-5 items-center justify-center rounded-full transition-colors duration-200",
-            recording ? "bg-recording-500 text-white" : "bg-amber-500 text-black group-hover:bg-amber-400"
+            "relative flex h-5 w-5 items-center justify-center rounded-full",
+            "transition-colors duration-[var(--dur-3)] ease-out",
+            recording
+              ? "bg-recording-500 text-text-primary"
+              : "bg-amber-500 text-[var(--primary-foreground)] group-hover:bg-amber-400"
           )}
           style={
             recording
@@ -642,7 +659,7 @@ function MicOrb({
 
       <span
         className={cn(
-          "text-[10px] font-medium tracking-wide transition-colors",
+          "text-xs font-medium transition-colors duration-[var(--dur-2)] ease-out",
           recording ? "text-recording-300/90" : "text-text-muted"
         )}
       >
@@ -655,10 +672,11 @@ function MicOrb({
           aria-label="Copy all text"
           title="Copy everything in the pad"
           className={cn(
-            "ml-auto flex h-6 w-6 items-center justify-center rounded-full transition-colors",
+            "ml-auto flex h-6 w-6 items-center justify-center rounded-full",
+            "transition-colors duration-[var(--dur-2)] ease-out",
             copied
               ? "text-amber-300"
-              : "text-text-muted hover:bg-white/10 hover:text-text-secondary"
+              : "text-text-muted hover:bg-surface-3 hover:text-text-secondary"
           )}
         >
           {copied ? <Check size={12} strokeWidth={2.5} /> : <Copy size={12} strokeWidth={2} />}

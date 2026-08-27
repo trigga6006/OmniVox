@@ -1,20 +1,35 @@
 {
   "name": "omnivoice",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
+  "packageManager": "npm@11.16.0",
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "dev": "vite",
     "dev:release": "powershell -ExecutionPolicy Bypass -File ./scripts/start-release-dev.ps1",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
+    "check:quick": "npm run typecheck && npm test && npm run format:rust:check",
+    "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets && cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
+    "check:vulkan": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features vulkan",
+    "check": "npm run build && npm test && npm run format:rust:check && npm run check:rust",
+    "bench:asr": "cargo run --release --manifest-path src-tauri/Cargo.toml --example asr_bench --",
+    "bench:asr-optimization": "cargo run --release --manifest-path src-tauri/Cargo.toml --example asr_optimization_ab --",
+    "bench:command": "cargo run --release --manifest-path src-tauri/Cargo.toml --example command_ab --",
+    "bench:command-routing": "cargo run --release --manifest-path src-tauri/Cargo.toml --example command_routing_ab --",
+    "bench:structured": "cargo run --release --manifest-path src-tauri/Cargo.toml --example extraction_ab --",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "2.10.1",
     "class-variance-authority": "^0.7",
     "clsx": "^2",
     "lucide-react": "^0.468",
@@ -26,7 +41,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "2.10.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",

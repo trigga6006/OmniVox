@@ -2,6 +2,8 @@ use crate::state::AppState;
 use crate::storage::types::{DictionaryEntry, Snippet, VocabularyEntry};
 use tauri::State;
 
+use super::auth::{require_caller, WindowPolicy};
+
 /// Reload both global and active-mode entries into the in-memory
 /// ProcessorChain so replacements/snippets take effect immediately.
 pub(crate) fn sync_processor(state: &AppState) {
@@ -72,10 +74,12 @@ pub(crate) fn sync_whisper_prompt(state: &AppState) {
 
 #[tauri::command]
 pub async fn add_dictionary_entry(
+    caller: tauri::WebviewWindow,
     phrase: String,
     replacement: String,
     state: State<'_, AppState>,
 ) -> Result<DictionaryEntry, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     let entry = crate::storage::dictionary::add_entry(&state.db, &phrase, &replacement, None)
         .map_err(|e| e.to_string())?;
     sync_processor(&state);
@@ -85,11 +89,13 @@ pub async fn add_dictionary_entry(
 
 #[tauri::command]
 pub async fn update_dictionary_entry(
+    caller: tauri::WebviewWindow,
     id: String,
     phrase: String,
     replacement: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::dictionary::update_entry(&state.db, &id, &phrase, &replacement)
         .map_err(|e| e.to_string())?;
     sync_processor(&state);
@@ -98,7 +104,12 @@ pub async fn update_dictionary_entry(
 }
 
 #[tauri::command]
-pub async fn delete_dictionary_entry(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_dictionary_entry(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::dictionary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);
@@ -107,18 +118,22 @@ pub async fn delete_dictionary_entry(id: String, state: State<'_, AppState>) -> 
 
 #[tauri::command]
 pub async fn list_dictionary_entries(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<DictionaryEntry>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::dictionary::list_entries(&state.db).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn add_snippet(
+    caller: tauri::WebviewWindow,
     trigger: String,
     content: String,
     description: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Snippet, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     let snippet = crate::storage::snippets::add_snippet(
         &state.db,
         &trigger,
@@ -133,12 +148,14 @@ pub async fn add_snippet(
 
 #[tauri::command]
 pub async fn update_snippet(
+    caller: tauri::WebviewWindow,
     id: String,
     trigger: String,
     content: String,
     description: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::snippets::update_snippet(
         &state.db,
         &id,
@@ -152,14 +169,23 @@ pub async fn update_snippet(
 }
 
 #[tauri::command]
-pub async fn delete_snippet(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_snippet(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::snippets::delete_snippet(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>, String> {
+pub async fn list_snippets(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<Snippet>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::snippets::list_snippets(&state.db).map_err(|e| e.to_string())
 }
 
@@ -167,20 +193,24 @@ pub async fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>, S
 
 #[tauri::command]
 pub async fn list_mode_dictionary_entries(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<DictionaryEntry>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::dictionary::list_entries_for_mode(&state.db, &mode_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn add_mode_dictionary_entry(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     phrase: String,
     replacement: String,
     state: State<'_, AppState>,
 ) -> Result<DictionaryEntry, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     let entry =
         crate::storage::dictionary::add_entry(&state.db, &phrase, &replacement, Some(&mode_id))
             .map_err(|e| e.to_string())?;
@@ -191,9 +221,11 @@ pub async fn add_mode_dictionary_entry(
 
 #[tauri::command]
 pub async fn delete_mode_dictionary_entry(
+    caller: tauri::WebviewWindow,
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::dictionary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);
@@ -202,20 +234,24 @@ pub async fn delete_mode_dictionary_entry(
 
 #[tauri::command]
 pub async fn list_mode_snippets(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<Snippet>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::snippets::list_snippets_for_mode(&state.db, &mode_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn add_mode_snippet(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     trigger: String,
     content: String,
     description: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Snippet, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     let snippet = crate::storage::snippets::add_snippet(
         &state.db,
         &trigger,
@@ -229,7 +265,12 @@ pub async fn add_mode_snippet(
 }
 
 #[tauri::command]
-pub async fn delete_mode_snippet(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_mode_snippet(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::snippets::delete_snippet(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     Ok(())
@@ -239,9 +280,11 @@ pub async fn delete_mode_snippet(id: String, state: State<'_, AppState>) -> Resu
 
 #[tauri::command]
 pub async fn add_vocabulary_entry(
+    caller: tauri::WebviewWindow,
     word: String,
     state: State<'_, AppState>,
 ) -> Result<VocabularyEntry, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     let entry =
         crate::storage::vocabulary::add_entry(&state.db, &word, None).map_err(|e| e.to_string())?;
     sync_processor(&state);
@@ -251,10 +294,12 @@ pub async fn add_vocabulary_entry(
 
 #[tauri::command]
 pub async fn update_vocabulary_entry(
+    caller: tauri::WebviewWindow,
     id: String,
     word: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::vocabulary::update_entry(&state.db, &id, &word).map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);
@@ -262,7 +307,12 @@ pub async fn update_vocabulary_entry(
 }
 
 #[tauri::command]
-pub async fn delete_vocabulary_entry(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_vocabulary_entry(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::vocabulary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);
@@ -271,8 +321,10 @@ pub async fn delete_vocabulary_entry(id: String, state: State<'_, AppState>) -> 
 
 #[tauri::command]
 pub async fn list_vocabulary_entries(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<VocabularyEntry>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::vocabulary::list_entries(&state.db).map_err(|e| e.to_string())
 }
 
@@ -280,19 +332,23 @@ pub async fn list_vocabulary_entries(
 
 #[tauri::command]
 pub async fn list_mode_vocabulary_entries(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<VocabularyEntry>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::vocabulary::list_entries_for_mode(&state.db, &mode_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn add_mode_vocabulary_entry(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     word: String,
     state: State<'_, AppState>,
 ) -> Result<VocabularyEntry, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     let entry = crate::storage::vocabulary::add_entry(&state.db, &word, Some(&mode_id))
         .map_err(|e| e.to_string())?;
     sync_processor(&state);
@@ -302,9 +358,11 @@ pub async fn add_mode_vocabulary_entry(
 
 #[tauri::command]
 pub async fn delete_mode_vocabulary_entry(
+    caller: tauri::WebviewWindow,
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::vocabulary::delete_entry(&state.db, &id).map_err(|e| e.to_string())?;
     sync_processor(&state);
     sync_whisper_prompt(&state);

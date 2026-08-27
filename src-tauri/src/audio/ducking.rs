@@ -15,6 +15,7 @@ const DEFAULT_DUCK_FACTOR: f32 = 0.30;
 
 #[cfg(target_os = "windows")]
 mod win {
+    use std::cell::RefCell;
     use std::sync::Mutex;
 
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
@@ -27,16 +28,61 @@ mod win {
 
     static ORIGINAL_VOLUME: Mutex<Option<f32>> = Mutex::new(None);
 
-    fn get_endpoint_volume() -> windows::core::Result<IAudioEndpointVolume> {
+    thread_local! {
+        /// Per-thread `IMMDeviceEnumerator`, so repeat calls on the same worker
+        /// skip the `CoCreateInstance` class-factory lookup that dominates the
+        /// cost of resolving the endpoint.
+        ///
+        /// This amortizes over a session, NOT within one dictation: duck and
+        /// unduck are separate blocking tasks and routinely land on different
+        /// pool threads, so the unduck usually pays a cold `CoCreateInstance` of
+        /// its own. The saving shows up from the second dictation a given worker
+        /// handles onward.
+        ///
+        /// Thread-local rather than a shared `Mutex<Option<…>>`: those threads'
+        /// COM apartments are not guaranteed to agree (the call below asks for
+        /// MTA, but a thread already inside an STA silently stays there and the
+        /// error is discarded). Passing a raw interface pointer between
+        /// apartments without marshaling is a COM violation, so each thread only
+        /// ever touches the enumerator it created itself.
+        ///
+        /// Only the enumerator is cached. The default endpoint is deliberately
+        /// re-resolved on every call because it changes when the user switches
+        /// output device — a cached `IAudioEndpointVolume` would keep returning
+        /// success while ducking a device nobody is listening to.
+        static DEVICE_ENUMERATOR: RefCell<Option<IMMDeviceEnumerator>> =
+            const { RefCell::new(None) };
+    }
+
+    fn endpoint_volume_from(
+        enumerator: &IMMDeviceEnumerator,
+    ) -> windows::core::Result<IAudioEndpointVolume> {
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
-            let enumerator: IMMDeviceEnumerator =
-                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-
             let device = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia)?;
             device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
         }
+    }
+
+    fn get_endpoint_volume() -> windows::core::Result<IAudioEndpointVolume> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        DEVICE_ENUMERATOR.with(|slot| -> windows::core::Result<IAudioEndpointVolume> {
+            let cached = slot.borrow().clone();
+            if let Some(enumerator) = cached {
+                if let Ok(volume) = endpoint_volume_from(&enumerator) {
+                    return Ok(volume);
+                }
+                // A cached enumerator can go stale (audio service restart,
+                // device teardown). Drop it and rebuild once before giving up.
+                *slot.borrow_mut() = None;
+            }
+            let enumerator: IMMDeviceEnumerator =
+                unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+            let volume = endpoint_volume_from(&enumerator)?;
+            *slot.borrow_mut() = Some(enumerator);
+            Ok(volume)
+        })
     }
 
     pub fn duck(factor: f32) {
@@ -69,12 +115,13 @@ mod win {
     }
 
     pub fn unduck() {
-        let original = match ORIGINAL_VOLUME.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(_) => None,
+        // PEEK, don't take: consuming the snapshot before the endpoint lookup
+        // and the restore both succeed strands the user's system volume at 30%
+        // with nothing left to restore it from. It is dropped only once the
+        // volume is actually back.
+        let Some(level) = ORIGINAL_VOLUME.lock().ok().and_then(|guard| *guard) else {
+            return;
         };
-
-        let Some(level) = original else { return };
 
         let vol = match get_endpoint_volume() {
             Ok(v) => v,
@@ -87,7 +134,12 @@ mod win {
         unsafe {
             if let Err(e) = vol.SetMasterVolumeLevelScalar(level, std::ptr::null()) {
                 eprintln!("Volume unduck: failed to restore level: {e}");
+                return;
             }
+        }
+
+        if let Ok(mut guard) = ORIGINAL_VOLUME.lock() {
+            *guard = None;
         }
     }
 }
@@ -243,12 +295,11 @@ mod mac {
     }
 
     pub fn unduck() {
-        let original = match ORIGINAL_VOLUME.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(_) => None,
+        // Peek, don't take — see the Windows implementation: dropping the
+        // snapshot before the restore lands strands the system volume at 30%.
+        let Some(level) = ORIGINAL_VOLUME.lock().ok().and_then(|guard| *guard) else {
+            return;
         };
-
-        let Some(level) = original else { return };
 
         let device_id = match get_default_output_device() {
             Some(id) => id,
@@ -260,6 +311,11 @@ mod mac {
 
         if !set_volume(device_id, level) {
             eprintln!("Volume unduck: failed to restore volume");
+            return;
+        }
+
+        if let Ok(mut guard) = ORIGINAL_VOLUME.lock() {
+            *guard = None;
         }
     }
 }

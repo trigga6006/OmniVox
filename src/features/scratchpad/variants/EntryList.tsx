@@ -20,8 +20,8 @@ export function EntryList({
   if (entries.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-        <div className="text-[13px] font-medium text-text-secondary">Nothing here yet</div>
-        <div className="text-[11px] leading-relaxed text-text-muted">
+        <div className="text-sm font-medium text-text-secondary">Nothing here yet</div>
+        <div className="text-xs leading-relaxed text-text-muted">
           Hit <span className="text-amber-300">Dictate</span> — or your global hotkey while
           this window is focused — to drop a note in.
         </div>
@@ -33,27 +33,27 @@ export function EntryList({
       {entries.map((e) => (
         <div
           key={e.id}
-          className="group rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-colors hover:border-white/[0.14]"
+          className="group rounded-[var(--radius-l)] border border-border bg-surface-2/50 px-3 py-2.5 transition-colors duration-[var(--dur-2)] ease-out hover:border-border-hover"
         >
-          <p className="select-text whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-text-primary/90">
+          <p className="select-text whitespace-pre-wrap break-words text-sm leading-relaxed text-text-primary/90">
             {e.content}
           </p>
           <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-[10px] tabular-nums text-text-muted/70">
+            <span className="tnum font-mono text-2xs text-text-muted/70">
               {formatTime(e.created_at)}
             </span>
-            <div className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="ml-auto flex items-center gap-1 opacity-0 transition-opacity duration-[var(--dur-2)] ease-out group-hover:opacity-100">
               <button
                 onClick={() => onCopy(e.content)}
                 aria-label="Copy"
-                className="rounded-md p-1 text-text-muted transition-colors hover:bg-white/10 hover:text-text-secondary"
+                className="rounded-[var(--radius-s)] p-1 text-text-muted transition-colors duration-[var(--dur-2)] ease-out hover:bg-surface-3 hover:text-text-secondary"
               >
                 <Copy size={12} />
               </button>
               <button
                 onClick={() => onDelete(e.id)}
                 aria-label="Delete"
-                className="rounded-md p-1 text-text-muted transition-colors hover:bg-recording-500/10 hover:text-recording-400"
+                className="rounded-[var(--radius-s)] p-1 text-text-muted transition-colors duration-[var(--dur-2)] ease-out hover:bg-recording-500/10 hover:text-recording-400"
               >
                 <Trash2 size={12} />
               </button>

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -15,10 +16,12 @@ import {
   onStructuredOutputReady,
   onStructuredModeDegraded,
   onWhisperGpuFallback,
+  onLlmGpuFallback,
   onLlmStatus,
   onCommandStateChange,
   onCommandConfirm,
   onCommandResult,
+  discardStructuredOutput,
   type AppSettings,
   type ContextMode,
   type StructuredOutputPayload,
@@ -35,6 +38,23 @@ interface OverlayEventsOptions {
   setShowModeSelector: Dispatch<SetStateAction<boolean>>;
   setShowShipPopup: Dispatch<SetStateAction<boolean>>;
   setShowLeyLinePopup: Dispatch<SetStateAction<boolean>>;
+}
+
+function sameStructuredPayload(
+  left: StructuredOutputPayload,
+  right: StructuredOutputPayload
+) {
+  return (
+    left.generation === right.generation && left.binding_id === right.binding_id
+  );
+}
+
+function discardPayload(payload: StructuredOutputPayload) {
+  if (payload.binding_id) {
+    discardStructuredOutput(payload.binding_id, payload.generation).catch(
+      () => {}
+    );
+  }
 }
 
 // Tauri event wiring for the overlay pill: transcription preview, structured
@@ -62,9 +82,39 @@ export function useOverlayEvents({
   const [activeColor, setActiveColor] = useState("amber");
 
   // Structured Mode panel state — populated when the pipeline emits
-  // `structured-output-ready`.  Cleared on dismiss / paste / new recording.
+  // `structured-output-ready`. Explicit dismiss/paste clears it; temporary
+  // panel unmounts (Command UI or Ghost Mode) intentionally do not.
   const [structuredPayload, setStructuredPayload] =
     useState<StructuredOutputPayload | null>(null);
+  const structuredPayloadRef = useRef<StructuredOutputPayload | null>(null);
+  const replaceStructuredPayload = useCallback(
+    (next: StructuredOutputPayload) => {
+      const previous = structuredPayloadRef.current;
+      if (previous && sameStructuredPayload(previous, next)) {
+        return;
+      }
+      if (previous) {
+        // The backend has already issued `next`, so this exact-token discard
+        // can only retire the previous capability; it cannot consume `next`.
+        discardPayload(previous);
+      }
+      structuredPayloadRef.current = next;
+      setStructuredPayload(next);
+    },
+    []
+  );
+  const dismissStructuredPayload = useCallback(
+    (expected?: StructuredOutputPayload) => {
+      const current = structuredPayloadRef.current;
+      if (!current || (expected && !sameStructuredPayload(current, expected))) {
+        return;
+      }
+      structuredPayloadRef.current = null;
+      setStructuredPayload(null);
+      discardPayload(current);
+    },
+    []
+  );
   const [structuredDegraded, setStructuredDegraded] = useState<string | null>(
     null
   );
@@ -141,9 +191,14 @@ export function useOverlayEvents({
       // don't want UI popping up.  History still records the structured
       // output; they can review it later.
       if (settingsRef.current?.ghost_mode) {
+        // A newly issued hidden result has already replaced the old backend
+        // capability. Retire both matching UI records instead of leaving a
+        // stale panel to reappear when Ghost Mode is turned off.
+        dismissStructuredPayload();
+        discardPayload(payload);
         return;
       }
-      setStructuredPayload(payload);
+      replaceStructuredPayload(payload);
     });
 
     const unlistenDegraded = onStructuredModeDegraded((reason) => {
@@ -173,6 +228,21 @@ export function useOverlayEvents({
       }, 20000);
     });
 
+    const unlistenLlmGpuFallback = onLlmGpuFallback((outcome) => {
+      const message = outcome.backend.kind === "gpu_partial"
+        ? `Local language model is using only ${outcome.backend.layers} GPU layers; Structured and Command Mode may be slower.`
+        : "Local language model could not use the GPU and is running on CPU; Structured and Command Mode will be slower.";
+      console.warn("[llm] gpu fallback:", outcome);
+      setStructuredDegraded(message);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 20000);
+    });
+
     const unlistenLlmStatus = onLlmStatus((status) => {
       setLlmStatus(status);
     });
@@ -183,9 +253,18 @@ export function useOverlayEvents({
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
+      unlistenLlmGpuFallback.then((fn) => fn());
       unlistenLlmStatus.then((fn) => fn());
     };
-  }, []);
+  }, [
+    dictatingInPanelRef,
+    dismissStructuredPayload,
+    replaceStructuredPayload,
+    setShowLeyLinePopup,
+    setShowModeSelector,
+    setShowShipPopup,
+    settingsRef,
+  ]);
 
   // Command Mode events → drive the command pill (a separate, mutually-
   // exclusive surface from dictation).  done/error are transient: they linger
@@ -261,7 +340,7 @@ export function useOverlayEvents({
     activeColor,
     setActiveColor,
     structuredPayload,
-    setStructuredPayload,
+    dismissStructuredPayload,
     structuredDegraded,
     setStructuredDegraded,
     llmStatus,

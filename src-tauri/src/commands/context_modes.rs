@@ -1,24 +1,36 @@
 use tauri::{Emitter, State};
 
+use super::auth::{require_caller, WindowPolicy};
 use crate::postprocess::types::WritingStyle;
 use crate::state::AppState;
 use crate::storage::types::ContextMode;
 
 #[tauri::command]
-pub async fn list_context_modes(state: State<'_, AppState>) -> Result<Vec<ContextMode>, String> {
+pub async fn list_context_modes(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<ContextMode>, String> {
+    require_caller(&caller, WindowPolicy::MainOverlay)?;
     crate::storage::context_modes::list_modes(&state.db).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn get_context_mode(
+    caller: tauri::WebviewWindow,
     id: String,
     state: State<'_, AppState>,
 ) -> Result<ContextMode, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::context_modes::get_mode(&state.db, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
+// Keep the IPC surface flat so existing Tauri callers retain their argument
+// names; the injected caller/state plus six editable fields cross Clippy's
+// generic function-argument threshold at this boundary only.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_context_mode(
+    caller: tauri::WebviewWindow,
     name: String,
     description: String,
     icon: String,
@@ -27,6 +39,7 @@ pub async fn create_context_mode(
     structured_profile: String,
     state: State<'_, AppState>,
 ) -> Result<ContextMode, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::context_modes::create_mode(
         &state.db,
         &name,
@@ -39,8 +52,12 @@ pub async fn create_context_mode(
     .map_err(|e| e.to_string())
 }
 
+// Keep the stable invoke payload as flat named fields; grouping these into a
+// Rust struct would change the frontend IPC shape solely to satisfy a lint.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_context_mode(
+    caller: tauri::WebviewWindow,
     id: String,
     name: String,
     description: String,
@@ -50,15 +67,18 @@ pub async fn update_context_mode(
     structured_profile: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::context_modes::update_mode(
         &state.db,
         &id,
-        &name,
-        &description,
-        &icon,
-        &color,
-        &writing_style,
-        &structured_profile,
+        crate::storage::context_modes::ModeEdits {
+            name: &name,
+            description: &description,
+            icon: &icon,
+            color: &color,
+            writing_style: &writing_style,
+            structured_profile: &structured_profile,
+        },
     )
     .map_err(|e| e.to_string())?;
 
@@ -73,7 +93,12 @@ pub async fn update_context_mode(
 }
 
 #[tauri::command]
-pub async fn delete_context_mode(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_context_mode(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     // If deleting the active mode, switch back to General
     let active_id = state.active_context_mode_id.lock().unwrap().clone();
     if active_id.as_deref() == Some(&id) {
@@ -90,8 +115,10 @@ pub async fn delete_context_mode(id: String, state: State<'_, AppState>) -> Resu
 
 #[tauri::command]
 pub async fn get_active_context_mode(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<ContextMode>, String> {
+    require_caller(&caller, WindowPolicy::MainOverlay)?;
     let active_id = state.active_context_mode_id.lock().unwrap().clone();
     match active_id {
         Some(id) => {
@@ -105,10 +132,12 @@ pub async fn get_active_context_mode(
 
 #[tauri::command]
 pub async fn set_active_context_mode(
+    caller: tauri::WebviewWindow,
     id: String,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::MainOverlay)?;
     activate_mode_internal(&state, &id)?;
 
     // Emit event so the overlay can update
@@ -131,25 +160,34 @@ pub async fn set_active_context_mode(
 
 #[tauri::command]
 pub async fn list_app_bindings(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::storage::types::AppBinding>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::app_bindings::list_bindings_for_mode(&state.db, &mode_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn add_app_binding(
+    caller: tauri::WebviewWindow,
     mode_id: String,
     process_name: String,
     state: State<'_, AppState>,
 ) -> Result<crate::storage::types::AppBinding, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::app_bindings::add_binding(&state.db, &mode_id, &process_name)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn delete_app_binding(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_app_binding(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::storage::app_bindings::delete_binding(&state.db, &id).map_err(|e| e.to_string())
 }
 
@@ -170,7 +208,7 @@ pub(crate) fn activate_mode_internal(state: &AppState, mode_id: &str) -> Result<
 
     // Sync the mode's writing style to the processor chain
     if let Ok(mut proc) = state.processor.lock() {
-        proc.set_style(WritingStyle::from_str(&mode.writing_style));
+        proc.set_style(WritingStyle::parse(&mode.writing_style));
     }
 
     // Sync the mode's Structured Mode profile — if a runner is loaded it

@@ -26,7 +26,7 @@ const CUTOFF_HZ: f64 = 7_400.0;
 /// from producing silly filters.
 fn design_lowpass(input_rate: f64) -> Vec<f32> {
     let mut n = (3.3 * input_rate / TRANSITION_HZ).ceil() as usize;
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         n += 1;
     }
     let n = n.clamp(33, 255);
@@ -42,8 +42,7 @@ fn design_lowpass(input_rate: f64) -> Vec<f32> {
         } else {
             (2.0 * std::f64::consts::PI * fc * k).sin() / (std::f64::consts::PI * k)
         };
-        let window = 0.54
-            - 0.46 * (2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64).cos();
+        let window = 0.54 - 0.46 * (2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64).cos();
         taps.push((sinc * window) as f32);
     }
 
@@ -92,11 +91,7 @@ impl StreamDownsampler {
     #[inline]
     fn filtered(&self, i: usize) -> f32 {
         let window = &self.ext[i..i + self.taps.len()];
-        self.taps
-            .iter()
-            .zip(window)
-            .map(|(t, s)| t * s)
-            .sum()
+        self.taps.iter().zip(window).map(|(t, s)| t * s).sum()
     }
 
     /// Low-pass, decimate, and append the 16 kHz result to `out`.

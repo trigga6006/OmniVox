@@ -11,7 +11,9 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
     <div
       data-no-pulse
       className={cn(
-        "rounded-2xl border border-border bg-surface-1",
+        // --radius-l (12px) is the one card radius; rounded-2xl (16px) was the
+        // last surface still off the radius scale.
+        "rounded-[var(--radius-l)] border border-border bg-surface-1",
         className
       )}
       {...props}

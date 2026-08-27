@@ -60,7 +60,11 @@ pub struct ScratchpadData {
 fn get_setting(db: &Database, key: &str) -> AppResult<Option<String>> {
     let conn = db.conn()?;
     Ok(conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
         .optional()?)
 }
 
@@ -84,7 +88,9 @@ pub fn get_variant(db: &Database) -> AppResult<String> {
 
 pub fn set_variant(db: &Database, variant: &str) -> AppResult<()> {
     if !matches!(variant, "note" | "entries") {
-        return Err(AppError::Storage(format!("unknown scratchpad variant: {variant}")));
+        return Err(AppError::Storage(format!(
+            "unknown scratchpad variant: {variant}"
+        )));
     }
     set_setting(db, VARIANT_KEY, variant)
 }
@@ -135,13 +141,16 @@ pub fn set_size(db: &Database, w: f64, h: f64) -> AppResult<()> {
     Ok(())
 }
 
-
 // ── note variant ─────────────────────────────────────────────────────────────
 
 pub fn get_note(db: &Database) -> AppResult<String> {
     let conn = db.conn()?;
     Ok(conn
-        .query_row("SELECT content FROM scratchpad_note WHERE id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT content FROM scratchpad_note WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
         .optional()?
         .unwrap_or_default())
 }
@@ -174,8 +183,8 @@ pub fn ensure_default_pad(db: &Database) -> AppResult<()> {
 pub fn list_pads(db: &Database) -> AppResult<Vec<ScratchpadPad>> {
     let conn = db.conn()?;
 
-    let mut pad_stmt =
-        conn.prepare("SELECT id, name, position FROM scratchpad_pads ORDER BY position, created_at")?;
+    let mut pad_stmt = conn
+        .prepare("SELECT id, name, position FROM scratchpad_pads ORDER BY position, created_at")?;
     let mut pads: Vec<ScratchpadPad> = pad_stmt
         .query_map([], |row| {
             Ok(ScratchpadPad {
@@ -214,9 +223,13 @@ fn resolve_pad(db: &Database, pad_id: Option<&str>) -> AppResult<String> {
     if let Some(id) = pad_id.filter(|s| !s.is_empty()) {
         let exists = {
             let conn = db.conn()?;
-            conn.query_row("SELECT 1 FROM scratchpad_pads WHERE id = ?1", params![id], |_| Ok(()))
-                .optional()?
-                .is_some()
+            conn.query_row(
+                "SELECT 1 FROM scratchpad_pads WHERE id = ?1",
+                params![id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
         };
         if exists {
             return Ok(id.to_string());
@@ -235,7 +248,12 @@ pub fn add_entry(db: &Database, pad_id: Option<&str>, content: &str) -> AppResul
         "INSERT INTO scratchpad_entries (id, pad_id, content, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![id, pad_id, content, created_at],
     )?;
-    Ok(ScratchpadEntry { id, pad_id, content: content.to_string(), created_at })
+    Ok(ScratchpadEntry {
+        id,
+        pad_id,
+        content: content.to_string(),
+        created_at,
+    })
 }
 
 pub fn delete_entry(db: &Database, id: &str) -> AppResult<()> {
@@ -247,10 +265,31 @@ pub fn delete_entry(db: &Database, id: &str) -> AppResult<()> {
 pub fn clear_pad(db: &Database, pad_id: Option<&str>) -> AppResult<()> {
     let pad_id = resolve_pad(db, pad_id)?;
     let conn = db.conn()?;
-    conn.execute("DELETE FROM scratchpad_entries WHERE pad_id = ?1", params![pad_id])?;
+    conn.execute(
+        "DELETE FROM scratchpad_entries WHERE pad_id = ?1",
+        params![pad_id],
+    )?;
     Ok(())
 }
 
+/// One-shot fetch of everything the window renders.
+pub fn get_data(db: &Database) -> AppResult<ScratchpadData> {
+    ensure_default_pad(db)?;
+    let pads = list_pads(db)?;
+    let mut active = get_active_pad_id(db)?;
+    // Repair a dangling active pad (e.g. it was deleted while the setting still
+    // pointed at it) so the client never holds an id that would FK-fail.
+    if !pads.iter().any(|p| p.id == active) {
+        active = DEFAULT_PAD_ID.to_string();
+        set_setting(db, ACTIVE_PAD_KEY, &active)?;
+    }
+    Ok(ScratchpadData {
+        note: get_note(db)?,
+        pads,
+        active_pad_id: active,
+        variant: get_variant(db)?,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -336,23 +375,4 @@ mod tests {
         let def = data.pads.iter().find(|p| p.id == DEFAULT_PAD_ID).unwrap();
         assert!(def.entries.is_empty());
     }
-}
-
-/// One-shot fetch of everything the window renders.
-pub fn get_data(db: &Database) -> AppResult<ScratchpadData> {
-    ensure_default_pad(db)?;
-    let pads = list_pads(db)?;
-    let mut active = get_active_pad_id(db)?;
-    // Repair a dangling active pad (e.g. it was deleted while the setting still
-    // pointed at it) so the client never holds an id that would FK-fail.
-    if !pads.iter().any(|p| p.id == active) {
-        active = DEFAULT_PAD_ID.to_string();
-        set_setting(db, ACTIVE_PAD_KEY, &active)?;
-    }
-    Ok(ScratchpadData {
-        note: get_note(db)?,
-        pads,
-        active_pad_id: active,
-        variant: get_variant(db)?,
-    })
 }

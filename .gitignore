@@ -3,9 +3,22 @@ dist/
 target/
 # Cargo build artifact from Windows target-dir config interpreted on Linux
 src-tauri/C*/
+# The broad Windows-target workaround above also matches `capabilities` on
+# case-insensitive filesystems; capability manifests are source files.
+!src-tauri/capabilities/
+!src-tauri/capabilities/*.json
 .env
 *.log
+benchmarks/results/
 
 # Sidecar build artifacts copied into resources by CI
 src-tauri/resources/*.exe
 src-tauri/resources/*.dll
+
+# Runtime DLLs staged by build.rs for bundling (FIX F1)
+src-tauri/runtime-dlls/
+
+# Machine-local cargo config at the repo root (target-dir, SDK paths).
+# src-tauri/.cargo/config.toml stays tracked — it carries build flags the
+# app needs; this root-level one is purely per-machine.
+/.cargo/

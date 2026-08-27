@@ -88,10 +88,7 @@ pub static PROFILES: &[Profile] = &[
 /// `agent-prompt` profile — a mode with no explicit choice keeps the original
 /// behavior, and a stale id from an old install degrades safely.
 pub fn get(id: &str) -> &'static Profile {
-    PROFILES
-        .iter()
-        .find(|p| p.id == id)
-        .unwrap_or(&PROFILES[0])
+    PROFILES.iter().find(|p| p.id == id).unwrap_or(&PROFILES[0])
 }
 
 fn slots_value<T: serde::Serialize>(slots: &T) -> AppResult<serde_json::Value> {

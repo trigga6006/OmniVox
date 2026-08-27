@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { buildRamp, type RampEntry } from "@/lib/colorRamp";
 
 /**
  * ClickPulse — the interactive "artist's touch" that makes the paper feel alive.
@@ -38,11 +39,40 @@ const BAYER4 = [
   [15, 7, 13, 5],
 ];
 
-// Graphite-system palette, split by "temperature".
-const HOT = ["#f4f4f5", "#fde9c2"]; // white / pale-gold — hottest sparks
-const WARM = ["#f59e0b", "#fbbf24"]; // amber / gold — body
-const EMBER = ["#d97f08", "#b45309"]; // amber-600 / deep — cooling
-const COLD = ["#60a5fa", "#93c5fd"]; // blue / light-blue — rare electric fleck
+// Graphite-system palette, split by "temperature". Each entry is
+// [token, the literal it currently resolves to] — every one of these eight was
+// already an exact copy of a token, so reading them back through
+// `tokens.css` is a 1:1 swap that also makes the canvas follow a retuned accent
+// (and the light theme, where amber deepens for paper).
+const PALETTE_TOKENS = {
+  hot: [
+    ["--color-text-primary", "#f4f4f5"], // white — hottest sparks
+    ["--color-amber-100", "#fde9c2"], // pale gold
+  ],
+  warm: [
+    ["--color-amber-500", "#f59e0b"], // amber — body
+    ["--color-ochre", "#fbbf24"], // gold
+  ],
+  ember: [
+    ["--color-amber-600", "#d97f08"], // cooling
+    ["--color-amber-700", "#b45309"], // deep
+  ],
+  cold: [
+    ["--color-indigo-400", "#60a5fa"], // rare electric fleck
+    ["--color-indigo-300", "#93c5fd"],
+  ],
+} as const satisfies Record<string, readonly RampEntry[]>;
+
+type Palette = Record<keyof typeof PALETTE_TOKENS, string[]>;
+
+function buildPalette(): Palette {
+  return {
+    hot: buildRamp(PALETTE_TOKENS.hot),
+    warm: buildRamp(PALETTE_TOKENS.warm),
+    ember: buildRamp(PALETTE_TOKENS.ember),
+    cold: buildRamp(PALETTE_TOKENS.cold),
+  };
+}
 
 // Authentic Memselon AsciiMatrix glyph ramp — light→dark, sparse→dense. Mapping
 // brightness to character DENSITY this way is the signature of the real ANSI
@@ -104,7 +134,13 @@ function vnoise(x: number, y: number) {
 
 type Rnd = () => number;
 
-function renderDither(ctx: CanvasRenderingContext2D, p: Pulse, ageMs: number, rnd: Rnd) {
+function renderDither(
+  ctx: CanvasRenderingContext2D,
+  p: Pulse,
+  ageMs: number,
+  rnd: Rnd,
+  palette: Palette,
+) {
   const a = ageMs / DUR;
   if (a >= 1) return;
   const ignite = clamp01(1 - ageMs / 110);
@@ -127,27 +163,27 @@ function renderDither(ctx: CanvasRenderingContext2D, p: Pulse, ageMs: number, rn
       const th = (BAYER4[(y / DOT) & 3][(x / DOT) & 3] + 0.5) / 16;
 
       let alpha = 0;
-      let pal = WARM;
+      let pal = palette.warm;
 
       // RESIDUE — ordered dither, structured but per-frame flickering so the spot
       // reads as live static running through it (not a fixed halftone decal).
       const resI = falloff * residue * (0.6 + n * 0.7);
       if (resI > th && rnd() < 0.45 + resI * 0.4) {
         alpha = (0.14 + resI * 0.4) * (0.65 + rnd() * 0.35);
-        pal = falloff > 0.62 ? WARM : EMBER;
+        pal = falloff > 0.62 ? palette.warm : palette.ember;
       }
       // CRACKLE — random sparks, densest at the core.
       const crkI = falloff * falloff * crackle;
       if (rnd() < crkI * 0.46) {
         alpha = Math.max(alpha, 0.34 + rnd() * 0.4);
         const roll = rnd();
-        pal = roll < 0.2 ? HOT : roll < 0.28 ? EMBER : WARM;
-        if (rnd() < 0.07) pal = COLD;
+        pal = roll < 0.2 ? palette.hot : roll < 0.28 ? palette.ember : palette.warm;
+        if (rnd() < 0.07) pal = palette.cold;
       }
       // IGNITE — contact flash at the very core.
       if (ignite > 0 && distW < r * 0.5 && rnd() < ignite * (0.2 + falloff * 0.55)) {
         alpha = Math.max(alpha, 0.5 + ignite * 0.38);
-        pal = HOT;
+        pal = palette.hot;
       }
       if (alpha <= 0.01) continue;
       ctx.fillStyle = pal[(rnd() * pal.length) | 0];
@@ -169,7 +205,7 @@ function renderDither(ctx: CanvasRenderingContext2D, p: Pulse, ageMs: number, rn
       ax += Math.cos(ang) * len;
       ay += Math.sin(ang) * len;
       if ((ax - p.x) ** 2 + (ay - p.y) ** 2 > r * r) break;
-      ctx.fillStyle = rnd() < 0.5 ? HOT[0] : HOT[1];
+      ctx.fillStyle = rnd() < 0.5 ? palette.hot[0] : palette.hot[1];
       ctx.globalAlpha = Math.min(1, (0.4 + rnd() * 0.45) * crackle);
       ctx.fillRect(ax, ay, DOT, DOT);
     }
@@ -177,7 +213,13 @@ function renderDither(ctx: CanvasRenderingContext2D, p: Pulse, ageMs: number, rn
   ctx.globalAlpha = 1;
 }
 
-function renderAscii(ctx: CanvasRenderingContext2D, p: Pulse, ageMs: number, rnd: Rnd) {
+function renderAscii(
+  ctx: CanvasRenderingContext2D,
+  p: Pulse,
+  ageMs: number,
+  rnd: Rnd,
+  palette: Palette,
+) {
   const a = ageMs / DUR;
   if (a >= 1) return;
   const ignite = clamp01(1 - ageMs / 110);
@@ -202,19 +244,19 @@ function renderAscii(ctx: CanvasRenderingContext2D, p: Pulse, ageMs: number, rnd
       const falloff = 1 - distW / r;
 
       let inten = falloff * residue * (0.7 + n * 0.6);
-      let pal = falloff > 0.6 ? WARM : EMBER;
+      let pal = falloff > 0.6 ? palette.warm : palette.ember;
       let scramble = false; // crackling cells churn through random ramp glyphs
       const crkI = falloff * falloff * crackle;
       if (rnd() < crkI * 0.5) {
         inten = Math.max(inten, 0.6 + rnd() * 0.4);
         const roll = rnd();
-        pal = roll < 0.25 ? HOT : roll < 0.32 ? EMBER : WARM;
-        if (rnd() < 0.08) pal = COLD;
+        pal = roll < 0.25 ? palette.hot : roll < 0.32 ? palette.ember : palette.warm;
+        if (rnd() < 0.08) pal = palette.cold;
         scramble = true;
       }
       if (ignite > 0 && distW < r * 0.5 && rnd() < ignite * (0.3 + falloff * 0.5)) {
         inten = Math.max(inten, 0.9);
-        pal = HOT;
+        pal = palette.hot;
       }
       if (inten <= 0.06) continue;
       if (rnd() > 0.5 + inten * 0.45) continue; // per-frame visibility flicker
@@ -269,6 +311,11 @@ export function ClickPulse() {
     let raf = 0;
     let running = false;
     let mode = loadMode();
+    // Read the accent out of tokens.css once per mount. A pulse lives 600ms,
+    // so a ramp that is static for the mount is static for far longer than any
+    // single pulse; `buildRamp` caches per theme, so a light/dark flip is
+    // already correct the next time this effect runs.
+    const palette = buildPalette();
 
     const resize = () => {
       W = window.innerWidth;
@@ -287,7 +334,7 @@ export function ClickPulse() {
         const age = now - p.t0;
         if (age >= DUR) continue;
         alive = true;
-        if (render) render(ctx, p, age, Math.random);
+        if (render) render(ctx, p, age, Math.random, palette);
       }
       pulses = pulses.filter((p) => now - p.t0 < DUR);
       if (alive) {

@@ -648,11 +648,7 @@ fn profiles_registry_integrity() {
     let mut seen_ids: Vec<&str> = Vec::new();
     for p in profiles::PROFILES {
         assert!(!p.id.is_empty(), "profile id must be non-empty");
-        assert!(
-            !seen_ids.contains(&p.id),
-            "duplicate profile id {:?}",
-            p.id
-        );
+        assert!(!seen_ids.contains(&p.id), "duplicate profile id {:?}", p.id);
         seen_ids.push(p.id);
         assert!(!p.display_name.is_empty());
         assert!(!p.description.is_empty());
@@ -690,12 +686,8 @@ fn agent_profile_prompt_is_byte_identical_to_system_prompt() {
     // And the profile-aware prompt builder must produce the exact legacy
     // prompt for the agent profile.
     let legacy = crate::llm::prompt::format_prompt("hello world");
-    let via_profile = crate::llm::prompt::format_profile_prompt(
-        agent.system_prompt,
-        "hello world",
-        &[],
-        None,
-    );
+    let via_profile =
+        crate::llm::prompt::format_profile_prompt(agent.system_prompt, "hello world", &[], None);
     assert_eq!(legacy, via_profile);
 }
 
@@ -724,7 +716,11 @@ fn profile_postprocess_roundtrips_minimal_json() {
     // Each profile's postprocess must accept the minimal valid JSON its
     // grammar can emit and produce non-empty markdown.
     let cases: &[(&str, &str, &str)] = &[
-        ("agent-prompt", r#"{"goal":"fix the panel"}"#, "fix the panel"),
+        (
+            "agent-prompt",
+            r#"{"goal":"fix the panel"}"#,
+            "fix the panel",
+        ),
         (
             "email",
             r#"{"subject":"faucet is leaking","body_points":["the faucet is leaking"]}"#,
@@ -744,7 +740,10 @@ fn profile_postprocess_roundtrips_minimal_json() {
             !out.markdown.trim().is_empty(),
             "profile {id} rendered empty markdown"
         );
-        assert!(out.slots.is_object(), "profile {id} slots must be an object");
+        assert!(
+            out.slots.is_object(),
+            "profile {id} slots must be an object"
+        );
     }
 }
 
@@ -873,16 +872,16 @@ fn notes_normalize_clears_ungrounded_title_and_heading_but_keeps_points() {
         title: "Quarterly OKR review".into(), // invented
         sections: vec![NotesSection {
             heading: "Sprint retrospective".into(), // invented
-            points: vec![
-                "water the plants".into(),
-                "take out the recycling".into(),
-            ],
+            points: vec!["water the plants".into(), "take out the recycling".into()],
         }],
     }
     .normalize_with_raw(raw);
     assert!(n.title.is_empty(), "invented title must drop");
     assert_eq!(n.sections.len(), 1);
-    assert!(n.sections[0].heading.is_empty(), "invented heading must drop");
+    assert!(
+        n.sections[0].heading.is_empty(),
+        "invented heading must drop"
+    );
     assert_eq!(n.sections[0].points.len(), 2, "grounded points survive");
 }
 

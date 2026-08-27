@@ -1,12 +1,53 @@
+use std::ffi::c_void;
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use crate::asr::types::{AsrConfig, TranscriptionResult, TranscriptionSegment};
+use crate::asr::types::{
+    AsrConfig, DecodePolicy, TranscriptionOptions, TranscriptionResult, TranscriptionSegment,
+    TranscriptionTimings,
+};
 use crate::error::{AppError, AppResult};
+
+/// Raw whisper.cpp abort callbacks used instead of
+/// `FullParams::set_abort_callback_safe` from whisper-rs 0.16.0. That wrapper
+/// stores a boxed trait object but casts it back to the concrete closure type in
+/// its C trampoline, which can make an uncancelled inference abort with native
+/// error -6. The `Arc<AtomicBool>` that owns each pointer remains in the calling
+/// function's scope until the synchronous `WhisperState::full` call returns.
+unsafe extern "C" fn abort_when_cancelled(user_data: *mut c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    // SAFETY: callers pass `Arc::as_ptr` for a live `Arc<AtomicBool>` and keep
+    // that Arc alive until whisper.cpp has returned from its synchronous call.
+    unsafe { (&*user_data.cast::<AtomicBool>()).load(Ordering::Acquire) }
+}
+
+unsafe extern "C" fn abort_when_recording_stops(user_data: *mut c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    // SAFETY: same pointer/lifetime contract as `abort_when_cancelled`.
+    !unsafe { (&*user_data.cast::<AtomicBool>()).load(Ordering::Acquire) }
+}
+
+fn install_abort_callback(
+    params: &mut FullParams<'_, '_>,
+    flag: &Arc<AtomicBool>,
+    callback: unsafe extern "C" fn(*mut c_void) -> bool,
+) {
+    // SAFETY: `flag` stays owned by the caller through `WhisperState::full`,
+    // and both callbacks only perform an atomic load through this pointer.
+    unsafe {
+        params.set_abort_callback(Some(callback));
+        params.set_abort_callback_user_data(Arc::as_ptr(flag).cast_mut().cast());
+    }
+}
 
 /// Speech-to-text engine trait.
 ///
@@ -30,9 +71,22 @@ pub struct WhisperEngine {
     prompt_override: RwLock<Option<String>>,
 }
 
+/// Reusable decode state for a dedicated or otherwise serialized ASR worker.
+///
+/// A session is intentionally separate from [`WhisperEngine`]: callers choose
+/// their own admission policy (one worker, a small bounded pool, priorities)
+/// without putting a global inference mutex inside the model context. It must
+/// never be used concurrently; the mutable borrow on `transcribe_with_session`
+/// enforces that at the Rust boundary.
+pub struct WhisperSession {
+    state: WhisperState,
+}
+
 // SAFETY: WhisperContext holds read-only model weights after construction.
-// Each transcription call creates its own WhisperState used locally and dropped
-// within the same call. No mutable shared state is accessed across threads.
+// Concurrent compatibility calls create independent WhisperState values;
+// reusable states live in caller-owned WhisperSession values and require a
+// mutable borrow for inference, so they cannot be used concurrently in safe
+// Rust. No mutable decode state is shared through WhisperEngine itself.
 unsafe impl Send for WhisperEngine {}
 unsafe impl Sync for WhisperEngine {}
 
@@ -105,14 +159,24 @@ impl WhisperEngine {
         }
     }
 
-    /// Snapshot the currently-set initial prompt override.
+    /// Snapshot the effective persistent vocabulary prompt.
     ///
-    /// Used by the screen-context capture path to save the user's vocabulary
-    /// prompt before temporarily merging in dynamic screen tokens, then
-    /// restore it after transcription so subsequent calls aren't biased by
-    /// stale screen content.
+    /// The runtime override wins when the dictionary has changed since model
+    /// load; otherwise this returns the prompt stored in the model config.
+    /// Screen-context callers merge against this value before applying their
+    /// immutable, request-local override.
     pub fn get_initial_prompt(&self) -> Option<String> {
-        self.prompt_override.read().ok().and_then(|g| g.clone())
+        self.prompt_override
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .or_else(|| self.config.initial_prompt.clone())
+    }
+
+    /// Backend preference used to build this context. A CPU fallback returns
+    /// false because the fallback constructs a new engine with GPU disabled.
+    pub fn uses_gpu(&self) -> bool {
+        self.config.use_gpu
     }
 
     /// Allocate a fresh `WhisperState` suitable for live preview transcription.
@@ -131,6 +195,14 @@ impl WhisperEngine {
         self.ctx
             .create_state()
             .map_err(|e| AppError::Asr(format!("Failed to create preview state: {e}")))
+    }
+
+    /// Allocate a reusable final-transcription session.
+    pub fn create_session(&self) -> AppResult<WhisperSession> {
+        self.ctx
+            .create_state()
+            .map(|state| WhisperSession { state })
+            .map_err(|e| AppError::Asr(format!("Failed to create ASR session: {e}")))
     }
 
     /// Run greedy transcription using a caller-supplied, reused `WhisperState`.
@@ -162,14 +234,11 @@ impl WhisperEngine {
             Some(lang) => params.set_language(Some(lang)),
         }
 
-        if let Some(flag) = is_recording {
+        if let Some(flag) = is_recording.as_ref() {
             // whisper.cpp polls this between encoder/decoder steps; returning
-            // true aborts the pass.  (whisper-rs leaks the boxed closure —
-            // ~32 bytes per preview tick — which is negligible at one tick
-            // every 3 seconds.)
-            params.set_abort_callback_safe(move || {
-                !flag.load(std::sync::atomic::Ordering::Relaxed)
-            });
+            // true aborts the pass. Keep the Arc alive through `state.full` so
+            // the raw callback's user-data pointer remains valid.
+            install_abort_callback(&mut params, flag, abort_when_recording_stops);
         }
 
         params.set_translate(false);
@@ -205,109 +274,176 @@ impl WhisperEngine {
 
 impl AsrEngine for WhisperEngine {
     fn transcribe(&self, audio: &[f32]) -> AppResult<TranscriptionResult> {
+        self.transcribe_with_options(audio, &TranscriptionOptions::configured())
+    }
+}
+
+impl WhisperEngine {
+    /// Transcribe with immutable request-local decode and prompt options.
+    ///
+    /// This compatibility path creates a temporary state. A dedicated worker
+    /// should retain a [`WhisperSession`] and use [`Self::transcribe_with_session`]
+    /// to avoid decode-buffer allocation churn.
+    pub fn transcribe_with_options(
+        &self,
+        audio: &[f32],
+        options: &TranscriptionOptions,
+    ) -> AppResult<TranscriptionResult> {
         if audio.is_empty() {
-            return Ok(TranscriptionResult {
-                text: String::new(),
-                segments: vec![],
-                duration_ms: 0,
-                model_name: self.config.model_path.clone(),
-            });
+            return Ok(self.empty_result());
         }
 
-        // Each call gets its own decode state — cheap to create, owns the decode
-        // buffers, and dropped at the end of the call so it never overlaps the
-        // live-preview worker's state on smaller GPUs.
-        let mut state = self
-            .ctx
-            .create_state()
-            .map_err(|e| AppError::Asr(format!("Failed to create state: {e}")))?;
+        let state_started = std::time::Instant::now();
+        let mut session = self.create_session()?;
+        let state_setup_us = elapsed_us(state_started);
+        self.transcribe_session_inner(&mut session, audio, options, state_setup_us, None)
+    }
 
-        // Select decoding strategy: beam search (default, better accuracy)
-        // or greedy (faster, lower quality). beam_size=1 falls back to greedy.
-        let beam_size = self.config.beam_size.unwrap_or(5);
-        let strategy = if beam_size <= 1 {
-            SamplingStrategy::Greedy { best_of: 1 }
-        } else {
-            SamplingStrategy::BeamSearch {
-                beam_size: beam_size as std::ffi::c_int,
-                patience: -1.0, // -1.0 = whisper.cpp default (1.0)
+    /// Transcribe with a caller-owned reusable decode state.
+    pub fn transcribe_with_session(
+        &self,
+        session: &mut WhisperSession,
+        audio: &[f32],
+        options: &TranscriptionOptions,
+    ) -> AppResult<TranscriptionResult> {
+        self.transcribe_with_session_cancellable(session, audio, options, None)
+    }
+
+    /// Transcribe with a caller-owned decode state and cooperative cancellation.
+    /// The native callback is polled between encoder/decoder steps, allowing a
+    /// latest-generation worker to abandon stale inference promptly.
+    pub fn transcribe_with_session_cancellable(
+        &self,
+        session: &mut WhisperSession,
+        audio: &[f32],
+        options: &TranscriptionOptions,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> AppResult<TranscriptionResult> {
+        if audio.is_empty() {
+            return Ok(self.empty_result());
+        }
+        self.transcribe_session_inner(session, audio, options, 0, cancelled)
+    }
+
+    fn empty_result(&self) -> TranscriptionResult {
+        TranscriptionResult {
+            text: String::new(),
+            segments: vec![],
+            duration_ms: 0,
+            model_name: self.config.model_path.clone(),
+            timings: TranscriptionTimings::default(),
+        }
+    }
+
+    fn transcribe_session_inner(
+        &self,
+        session: &mut WhisperSession,
+        audio: &[f32],
+        options: &TranscriptionOptions,
+        state_setup_us: u64,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> AppResult<TranscriptionResult> {
+        let (strategy, temperature, temperature_increment) = match options.decode_policy() {
+            DecodePolicy::Configured => {
+                let beam_size = self.config.beam_size.unwrap_or(5);
+                let strategy = if beam_size <= 1 {
+                    SamplingStrategy::Greedy { best_of: 1 }
+                } else {
+                    SamplingStrategy::BeamSearch {
+                        beam_size: beam_size as std::ffi::c_int,
+                        patience: -1.0,
+                    }
+                };
+                (
+                    strategy,
+                    self.config.temperature.unwrap_or(0.0),
+                    self.config.temperature_inc.unwrap_or(0.2),
+                )
             }
+            DecodePolicy::Greedy {
+                best_of,
+                temperature,
+                temperature_increment,
+            } => (
+                SamplingStrategy::Greedy {
+                    best_of: best_of.clamp(1, std::ffi::c_int::MAX as u32) as std::ffi::c_int,
+                },
+                temperature,
+                temperature_increment,
+            ),
         };
         let mut params = FullParams::new(strategy);
 
-        // Language: Some("en") forces English, None or Some("auto") auto-detects.
         match self.config.language.as_deref() {
-            Some("auto") | None => {} // whisper defaults to auto-detect
+            Some("auto") | None => {}
             Some(lang) => params.set_language(Some(lang)),
         }
-
         params.set_translate(self.config.translate);
         params.set_n_threads(self.config.n_threads as i32);
-
-        // Silence whisper.cpp's own stdout output
         params.set_print_progress(false);
         params.set_print_special(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-
-        // Reduce hallucinations on silence / low-energy audio
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
-
-        // Temperature fallback: start deterministic, increment on low-confidence
-        // segments. This is Whisper's reference behavior — the decoder retries at
-        // increasing temperatures when a segment has high entropy or low log prob.
-        let temp = self.config.temperature.unwrap_or(0.0);
-        let temp_inc = self.config.temperature_inc.unwrap_or(0.2);
-        params.set_temperature(temp);
-        params.set_temperature_inc(temp_inc);
+        params.set_single_segment(options.single_segment());
+        params.set_temperature(temperature);
+        params.set_temperature_inc(temperature_increment);
         params.set_entropy_thold(2.4);
         params.set_logprob_thold(-1.0);
         params.set_no_speech_thold(0.6);
 
-        // Bias Whisper toward domain-specific vocabulary (e.g. programming
-        // terms) so it recognizes them on the first pass rather than relying
-        // on dictionary post-processing.
-        // Check the hot-swappable override first (updated when vocab/dictionary
-        // entries change), falling back to the config set at model load time.
-        let override_prompt = self.prompt_override.read().ok().and_then(|g| g.clone());
-        let effective_prompt = override_prompt.or_else(|| self.config.initial_prompt.clone());
+        if let Some(cancelled) = cancelled.as_ref() {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(AppError::Asr("Inference cancelled before start".into()));
+            }
+            install_abort_callback(&mut params, cancelled, abort_when_cancelled);
+        }
+
+        // Request-local dynamic context takes precedence over the engine's
+        // persistent vocabulary prompt and cannot leak across concurrent calls.
+        let effective_prompt = match options.initial_prompt_override() {
+            Some(prompt) => prompt.map(ToOwned::to_owned),
+            None => self
+                .prompt_override
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .or_else(|| self.config.initial_prompt.clone()),
+        };
         if let Some(ref prompt) = effective_prompt {
             params.set_initial_prompt(prompt);
         }
 
-        // Run inference — this is CPU-bound and blocks
-        state
+        let inference_started = std::time::Instant::now();
+        session
+            .state
             .full(params, audio)
             .map_err(|e| AppError::Asr(format!("Inference failed: {e}")))?;
+        let inference_us = elapsed_us(inference_started);
 
-        // Extract segments
-        let n_segments = state.full_n_segments();
-
+        let extraction_started = std::time::Instant::now();
+        let n_segments = session.state.full_n_segments();
         let mut segments = Vec::with_capacity(n_segments as usize);
         let mut full_text = String::new();
-
         for i in 0..n_segments {
-            let seg = match state.get_segment(i) {
-                Some(s) => s,
+            let seg = match session.state.get_segment(i) {
+                Some(segment) => segment,
                 None => continue,
             };
-
             let text = seg
                 .to_str_lossy()
-                .unwrap_or_else(|_| std::borrow::Cow::Borrowed(""))
+                .unwrap_or(std::borrow::Cow::Borrowed(""))
                 .into_owned();
-
             full_text.push_str(&text);
-
             segments.push(TranscriptionSegment {
-                start_ms: (seg.start_timestamp() as u64) * 10, // whisper timestamps are centiseconds
+                start_ms: (seg.start_timestamp() as u64) * 10,
                 end_ms: (seg.end_timestamp() as u64) * 10,
                 text,
-                confidence: 0.0, // whisper.cpp doesn't expose per-segment confidence
+                confidence: 0.0,
             });
         }
-
+        let result_extraction_us = elapsed_us(extraction_started);
         let duration_ms = (audio.len() as f64 / 16_000.0 * 1000.0) as u64;
 
         Ok(TranscriptionResult {
@@ -315,6 +451,53 @@ impl AsrEngine for WhisperEngine {
             segments,
             duration_ms,
             model_name: self.config.model_path.clone(),
+            timings: TranscriptionTimings {
+                state_setup_us,
+                inference_us,
+                result_extraction_us,
+            },
         })
+    }
+}
+
+fn elapsed_us(started: std::time::Instant) -> u64 {
+    started.elapsed().as_micros().min(u64::MAX as u128) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{abort_when_cancelled, abort_when_recording_stops, WhisperSession};
+
+    #[test]
+    fn raw_final_abort_callback_tracks_cancellation_flag() {
+        let flag = AtomicBool::new(false);
+        let user_data = (&flag as *const AtomicBool).cast_mut().cast::<c_void>();
+
+        // SAFETY: `user_data` points to `flag`, which lives for this entire test.
+        assert!(!unsafe { abort_when_cancelled(user_data) });
+        flag.store(true, Ordering::Release);
+        // SAFETY: same live pointer as above.
+        assert!(unsafe { abort_when_cancelled(user_data) });
+    }
+
+    #[test]
+    fn raw_preview_abort_callback_tracks_recording_flag() {
+        let flag = AtomicBool::new(true);
+        let user_data = (&flag as *const AtomicBool).cast_mut().cast::<c_void>();
+
+        // SAFETY: `user_data` points to `flag`, which lives for this entire test.
+        assert!(!unsafe { abort_when_recording_stops(user_data) });
+        flag.store(false, Ordering::Release);
+        // SAFETY: same live pointer as above.
+        assert!(unsafe { abort_when_recording_stops(user_data) });
+    }
+
+    #[test]
+    fn reusable_session_can_be_owned_by_a_worker_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<WhisperSession>();
     }
 }

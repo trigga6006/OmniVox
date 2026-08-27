@@ -62,7 +62,7 @@ fn phonetic_key(word: &str) -> String {
             other => other,
         };
         first = false;
-        if key.chars().next_back() != Some(mapped) {
+        if !key.ends_with(mapped) {
             key.push(mapped);
         }
     }
@@ -263,10 +263,7 @@ pub fn apply_phonetic_vocab(text: &str, vocabulary: &[String]) -> String {
     }
 
     // Longest entries first — multi-word entries take precedence.
-    let mut entries: Vec<&String> = vocabulary
-        .iter()
-        .filter(|v| !v.trim().is_empty())
-        .collect();
+    let mut entries: Vec<&String> = vocabulary.iter().filter(|v| !v.trim().is_empty()).collect();
     entries.sort_by_key(|v| std::cmp::Reverse(v.chars().count()));
 
     let mut result = text.to_string();
@@ -325,9 +322,7 @@ pub fn apply_phonetic_vocab(text: &str, vocabulary: &[String]) -> String {
                         let all_match = window
                             .iter()
                             .zip(parts.iter())
-                            .all(|(span, part)| {
-                                sounds_like(&result[span.start..span.end], part)
-                            });
+                            .all(|(span, part)| sounds_like(&result[span.start..span.end], part));
                         let already_exact =
                             result[window[0].start..window[window.len() - 1].end] == **entry;
                         if all_match && !already_exact {
@@ -357,8 +352,7 @@ pub fn apply_phonetic_vocab(text: &str, vocabulary: &[String]) -> String {
                         if first_letter_matches(&fused, parts[0])
                             && edit_distance(&fused, parts[0]) <= 1
                         {
-                            result =
-                                format!("{}{}{}", &result[..a.start], entry, &result[b.end..]);
+                            result = format!("{}{}{}", &result[..a.start], entry, &result[b.end..]);
                             replaced = true;
                             break;
                         }
@@ -397,8 +391,14 @@ mod tests {
     #[test]
     fn corrects_clod_and_clawed() {
         let v = vocab(&["Claude"]);
-        assert_eq!(apply_phonetic_vocab("tell clod about it", &v), "tell Claude about it");
-        assert_eq!(apply_phonetic_vocab("I asked clawed twice", &v), "I asked Claude twice");
+        assert_eq!(
+            apply_phonetic_vocab("tell clod about it", &v),
+            "tell Claude about it"
+        );
+        assert_eq!(
+            apply_phonetic_vocab("I asked clawed twice", &v),
+            "I asked Claude twice"
+        );
     }
 
     #[test]
@@ -529,8 +529,14 @@ mod tests {
     #[test]
     fn corrects_spaced_and_lone_acronym_letter_runs() {
         let v = vocab(&["Vercel"]);
-        assert_eq!(apply_phonetic_vocab("deploy it on v s l now", &v), "deploy it on Vercel now");
-        assert_eq!(apply_phonetic_vocab("pushed to VSL today", &v), "pushed to Vercel today");
+        assert_eq!(
+            apply_phonetic_vocab("deploy it on v s l now", &v),
+            "deploy it on Vercel now"
+        );
+        assert_eq!(
+            apply_phonetic_vocab("pushed to VSL today", &v),
+            "pushed to Vercel today"
+        );
     }
 
     #[test]

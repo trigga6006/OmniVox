@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { getSettings, onSettingsChanged, type AppSettings } from "@/lib/tauri";
+import { getSettingsSnapshot, onSettingsChanged, type AppSettings } from "@/lib/tauri";
 
 /**
  * One wiring point for "load settings now and stay in sync".
@@ -9,12 +9,12 @@ import { getSettings, onSettingsChanged, type AppSettings } from "@/lib/tauri";
  * JS runtimes, so this event is how they stay coherent).  Pass a stable
  * callback (useCallback) — the subscription re-arms when it changes.
  */
-export function useSettingsSync(apply: (s: AppSettings) => void) {
+export function useSettingsSync(apply: (s: AppSettings, revision?: number) => void) {
   useEffect(() => {
     let disposed = false;
-    getSettings()
-      .then((s) => {
-        if (!disposed) apply(s);
+    getSettingsSnapshot()
+      .then((snapshot) => {
+        if (!disposed) apply(snapshot.settings, snapshot.revision);
       })
       .catch(() => {});
 

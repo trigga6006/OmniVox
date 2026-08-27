@@ -1,4 +1,75 @@
-/* ── Quick-toggle circles (matte: neutral off, salmon on, no glow) ── */
+/* ══════════════════════════════════════════════════════════════
+   Overlay palette — the pill's private rgba set, re-expressed
+   through the design tokens.
+
+   This file used to hand-type ~50 rgba() literals. Every one of
+   them is now a named var below, and every var that has a token
+   equivalent reads it from `tokens.css`, so retuning the accent
+   or the surface ramp retunes the overlay with it.
+
+   The overlay windows pin `data-theme="dark"` on <html>, so these
+   resolve against the dark ramp and never see the light block.
+
+   NOTHING about the choreography changed: every keyframe,
+   duration, easing curve, delay, and transform in this file is
+   byte-for-byte what it was. This is a palette port.
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Popup surface — the recipe .ship-popup and .ley-line-popup
+        each carried a hand-typed copy of. One pair now. ── */
+  --fp-popup-top: color-mix(in srgb, var(--color-surface-1) 97%, transparent);
+  --fp-popup-bottom: color-mix(in srgb, var(--color-surface-0) 97%, transparent);
+  --fp-popup-edge: var(--color-border);
+  --fp-popup-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 16px -8px rgba(0, 0, 0, 0.5);
+
+  /* Hairline highlight across the top of a popup / the pill. */
+  --fp-glint: color-mix(in srgb, var(--color-cream) 10%, transparent);
+  --fp-glint-strong: color-mix(in srgb, var(--color-cream) 12%, transparent);
+  --fp-glint-soft: color-mix(in srgb, var(--color-cream) 6%, transparent);
+
+  /* ── Raised control (quick toggles) — a white wash over the pill. ── */
+  --fp-control-top: color-mix(in srgb, var(--color-cream) 6%, transparent);
+  --fp-control-bottom: color-mix(in srgb, var(--color-cream) 3%, transparent);
+  --fp-control-top-hover: color-mix(in srgb, var(--color-cream) 10%, transparent);
+  --fp-control-bottom-hover: color-mix(in srgb, var(--color-cream) 5%, transparent);
+  --fp-control-edge: color-mix(in srgb, var(--color-cream) 4%, transparent);
+
+  /* ── Accent (amber) ── */
+  --fp-accent: var(--color-amber-500);
+  --fp-accent-deep: var(--color-amber-600);
+  --fp-accent-bright: var(--color-amber-400);
+  --fp-on-accent: var(--primary-foreground);
+
+  /* ── Structured mode (violet) — replaces the off-brand dusty
+        mauve family (rgb(161,118,142) and friends). Structured
+        mode has exactly one violet. ── */
+  --fp-violet: var(--color-violet-400);
+  --fp-violet-deep: var(--color-violet-500);
+  --fp-violet-light: var(--color-violet-300);
+  --fp-violet-lightest: var(--color-violet-200);
+
+  /* ── Neutral fills (ghost toggles, the scratchpad bud) ── */
+  --fp-neutral-top: color-mix(in srgb, var(--color-surface-3) 92%, transparent);
+  --fp-neutral-bottom: color-mix(in srgb, var(--color-surface-2) 92%, transparent);
+  --fp-neutral-top-hover: color-mix(in srgb, var(--color-surface-4) 95%, transparent);
+  --fp-neutral-bottom-hover: color-mix(in srgb, var(--color-surface-3) 95%, transparent);
+
+  /* ── Text ──
+        Two of these carry an alpha the token port dropped. The pill floats over
+        the user's desktop, not over an app surface, so its labels were tuned
+        translucent on purpose — restoring the token hue at full opacity made
+        them read heavier than the glass they sit on. */
+  --fp-text: color-mix(in srgb, var(--color-text-primary) 90%, transparent);
+  --fp-text-bright: color-mix(in srgb, var(--color-cream) 92%, transparent);
+  --fp-text-secondary: var(--color-text-secondary);
+  /* Deliberately NOT `--color-text-muted` (#71717a): that token is tuned to
+     recede on an opaque graphite surface, and at the pill's scale over a live
+     desktop it disappeared. White at half alpha is the original luminance. */
+  --fp-text-muted: rgba(255, 255, 255, 0.5);
+}
+
+/* ── Quick-toggle circles (matte: neutral off, amber on, no glow) ── */
         .quick-toggle {
           position: relative;
           width: 26px;
@@ -9,8 +80,8 @@
           justify-content: center;
           backdrop-filter: blur(10px);
           background: linear-gradient(180deg,
-            rgba(255,255,255,0.06) 0%,
-            rgba(255,255,255,0.03) 100%);
+            var(--fp-control-top) 0%,
+            var(--fp-control-bottom) 100%);
           border: 1px solid transparent;
           cursor: pointer;
           opacity: 0.55;
@@ -24,8 +95,8 @@
         .quick-toggle:hover {
           opacity: 0.88;
           background: linear-gradient(180deg,
-            rgba(255,255,255,0.10) 0%,
-            rgba(255,255,255,0.05) 100%);
+            var(--fp-control-top-hover) 0%,
+            var(--fp-control-bottom-hover) 100%);
         }
         .quick-toggle:active { transform: scale(0.92); }
 
@@ -43,16 +114,14 @@
           font-size: 10px;
           font-weight: 500;
           letter-spacing: -0.005em;
-          color: rgba(228,228,231,0.92);
+          color: var(--fp-text-bright);
           background: linear-gradient(180deg,
-            rgba(23,23,27,0.98) 0%,
-            rgba(16,15,18,0.98) 100%);
-          border: 1px solid rgba(255,255,255,0.08);
+            var(--fp-popup-top) 0%,
+            var(--fp-popup-bottom) 100%);
+          border: 1px solid var(--fp-popup-edge);
           border-radius: 7px;
           padding: 5px 8px;
-          box-shadow:
-            0 1px 2px rgba(0,0,0,0.4),
-            0 6px 16px -8px rgba(0,0,0,0.5);
+          box-shadow: var(--fp-popup-shadow);
           opacity: 0;
           pointer-events: none;
           z-index: 60;
@@ -66,222 +135,102 @@
         .quick-toggle--on {
           opacity: 1;
           background: linear-gradient(180deg,
-            rgba(245,158,11,0.92) 0%,
-            rgba(217,119,6,0.85) 100%);
-          border-color: rgba(245,158,11,0.40);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+            color-mix(in srgb, var(--fp-accent) 92%, transparent) 0%,
+            color-mix(in srgb, var(--fp-accent-deep) 85%, transparent) 100%);
+          border-color: color-mix(in srgb, var(--fp-accent) 40%, transparent);
+          box-shadow: inset 0 1px 0 var(--fp-glint-strong);
         }
         .quick-toggle--on:hover {
           background: linear-gradient(180deg,
-            rgba(250,173,40,0.96) 0%,
-            rgba(234,140,30,0.90) 100%);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+            color-mix(in srgb, var(--fp-accent-bright) 96%, transparent) 0%,
+            color-mix(in srgb, var(--fp-accent) 90%, transparent) 100%);
+          box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-cream) 14%, transparent);
         }
         .quick-toggle-icon {
-          color: rgba(255,255,255,0.9);
-          filter: drop-shadow(0 0 2px rgba(0,0,0,0.35));
+          color: var(--fp-text);
+          filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.35));
         }
         .quick-toggle--ghost {
           background: linear-gradient(180deg,
-            rgba(40,38,36,0.92) 0%,
-            rgba(28,26,24,0.92) 100%);
-          border: 1px solid rgba(255,255,255,0.04);
+            var(--fp-neutral-top) 0%,
+            var(--fp-neutral-bottom) 100%);
+          border: 1px solid var(--fp-control-edge);
         }
         .quick-toggle--ghost:hover {
           background: linear-gradient(180deg,
-            rgba(54,50,46,0.95) 0%,
-            rgba(38,34,32,0.95) 100%);
-          border-color: rgba(255,255,255,0.08);
+            var(--fp-neutral-top-hover) 0%,
+            var(--fp-neutral-bottom-hover) 100%);
+          border-color: var(--fp-popup-edge);
         }
         .quick-toggle--ghost-on {
           opacity: 1;
-          border-color: rgba(255,255,255,0.14);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+          border-color: var(--color-border-hover);
+          box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-cream) 5%, transparent);
         }
         .quick-toggle--ghost .quick-toggle-icon {
-          color: rgba(255,255,255,0.5);
+          color: var(--fp-text-muted);
         }
 
-        /* ── Ship popup (matte; salmon switch) ── */
-        .ship-popup {
-          position: absolute;
-          z-index: 50;
-          border-radius: 10px;
-          padding: 0;
-          background: linear-gradient(180deg,
-            rgba(23,23,27,0.97) 0%,
-            rgba(16,15,18,0.97) 100%);
-          border: 1px solid rgba(255,255,255,0.08);
-          box-shadow:
-            0 1px 2px rgba(0,0,0,0.4),
-            0 6px 16px -8px rgba(0,0,0,0.5);
-          backdrop-filter: blur(14px);
-          overflow: hidden;
-          transform-origin: left center;
-          transition:
-            opacity 160ms ease-out,
-            transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .ship-popup-bloom { display: none; }
-        .ship-popup-ring {
-          position: absolute;
-          top: 0; left: 0; right: 0;
-          height: 1px;
-          background: linear-gradient(90deg,
-            transparent 0%,
-            rgba(255,255,255,0.10) 50%,
-            transparent 100%);
-          pointer-events: none;
-          z-index: 2;
-        }
-        .ship-popup-content {
-          position: relative;
-          z-index: 3;
-          padding: 9px 11px 10px;
-        }
-        .ship-popup-header {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          margin-bottom: 6px;
-        }
-        .ship-popup-icon {
-          color: rgba(245,158,11,0.9);
-          filter: drop-shadow(0 0 2px rgba(0,0,0,0.4));
-        }
-        .ship-popup-kicker {
-          font-family: var(--font-display);
-          font-size: 9px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.2em;
-          color: rgba(228,228,231,0.92);
-        }
-        .ship-popup-desc {
-          margin: 0 0 9px;
-          font-family: var(--font-sans);
-          font-size: 9.5px;
-          line-height: 1.4;
-          color: rgba(255,255,255,0.42);
-          letter-spacing: -0.005em;
-        }
-        .ship-popup-row {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .ship-popup-switch {
-          position: relative;
-          display: inline-flex;
-          align-items: center;
-          width: 26px;
-          height: 14px;
-          border-radius: 999px;
-          background: rgba(255,255,255,0.12);
-          border: 1px solid rgba(255,255,255,0.04);
-          cursor: pointer;
-          transition: background 160ms ease, border-color 160ms ease;
-          padding: 0;
-        }
-        .ship-popup-switch--on {
-          background: linear-gradient(180deg,
-            rgba(245,158,11,0.95) 0%,
-            rgba(217,119,6,0.90) 100%);
-          border-color: rgba(245,158,11,0.40);
-        }
-        .ship-popup-knob {
-          display: inline-block;
-          position: absolute;
-          top: 50%;
-          left: 2px;
-          width: 10px;
-          height: 10px;
-          border-radius: 50%;
-          background: rgba(255,255,255,0.92);
-          box-shadow:
-            0 1px 2px rgba(0,0,0,0.3);
-          transform: translateY(-50%) translateX(0);
-          transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .ship-popup-switch--on .ship-popup-knob {
-          transform: translateY(-50%) translateX(12px);
-        }
-        .ship-popup-state {
-          font-family: var(--font-sans);
-          font-size: 10px;
-          font-weight: 500;
-          color: rgba(255,255,255,0.62);
-          letter-spacing: -0.005em;
-        }
-
-        /* ── Ley Line popup (Structured Mode gate) — plum, matte ── */
+        /* ── Popup surface, shared by the Ship and Ley Line gates ──
+              Both used to hand-type the same gradient, border, shadow and
+              blur; the only real difference is where they grow from. ── */
+        .ship-popup,
         .ley-line-popup {
           position: absolute;
           z-index: 50;
           border-radius: 10px;
           padding: 0;
           background: linear-gradient(180deg,
-            rgba(23,23,27,0.97) 0%,
-            rgba(16,15,18,0.97) 100%);
-          border: 1px solid rgba(255,255,255,0.08);
-          box-shadow:
-            0 1px 2px rgba(0,0,0,0.4),
-            0 6px 16px -8px rgba(0,0,0,0.5);
+            var(--fp-popup-top) 0%,
+            var(--fp-popup-bottom) 100%);
+          border: 1px solid var(--fp-popup-edge);
+          box-shadow: var(--fp-popup-shadow);
           backdrop-filter: blur(14px);
           overflow: hidden;
-          transform-origin: left top;
           transition:
             opacity 160ms ease-out,
             transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
         }
-        .ley-line-popup-bloom { display: none; }
-        .ley-line-popup-ring {
-          position: absolute;
-          top: 0; left: 0; right: 0;
-          height: 1px;
-          background: linear-gradient(90deg,
-            transparent 0%,
-            rgba(205,179,196,0.22) 50%,
-            transparent 100%);
-          pointer-events: none;
-          z-index: 2;
-        }
+        .ship-popup { transform-origin: left center; }
+        .ley-line-popup { transform-origin: left top; }
+
+        .ship-popup-content,
         .ley-line-popup-content {
           position: relative;
           z-index: 3;
           padding: 9px 11px 10px;
         }
+        .ship-popup-header,
         .ley-line-popup-header {
           display: flex;
           align-items: center;
           gap: 6px;
           margin-bottom: 6px;
         }
-        .ley-line-popup-icon {
-          color: rgba(205,179,196,0.9);
-          filter: drop-shadow(0 0 2px rgba(0,0,0,0.4));
-        }
+        .ship-popup-kicker,
         .ley-line-popup-kicker {
           font-family: var(--font-display);
           font-size: 9px;
           font-weight: 700;
           text-transform: uppercase;
           letter-spacing: 0.2em;
-          color: rgba(220,200,214,0.95);
         }
+        .ship-popup-desc,
         .ley-line-popup-desc {
           margin: 0 0 9px;
           font-family: var(--font-sans);
           font-size: 9.5px;
           line-height: 1.4;
-          color: rgba(255,255,255,0.5);
+          color: var(--fp-text-muted);
           letter-spacing: -0.005em;
         }
+        .ship-popup-row,
         .ley-line-popup-row {
           display: flex;
           align-items: center;
           gap: 8px;
         }
+        .ship-popup-switch,
         .ley-line-popup-switch {
           position: relative;
           display: inline-flex;
@@ -289,18 +238,13 @@
           width: 26px;
           height: 14px;
           border-radius: 999px;
-          background: rgba(255,255,255,0.12);
-          border: 1px solid rgba(255,255,255,0.04);
+          background: var(--fp-glint-strong);
+          border: 1px solid var(--fp-control-edge);
           cursor: pointer;
           transition: background 160ms ease, border-color 160ms ease;
           padding: 0;
         }
-        .ley-line-popup-switch--on {
-          background: linear-gradient(180deg,
-            rgba(161,118,142,0.95) 0%,
-            rgba(138,97,120,0.90) 100%);
-          border-color: rgba(205,179,196,0.30);
-        }
+        .ship-popup-knob,
         .ley-line-popup-knob {
           display: inline-block;
           position: absolute;
@@ -309,20 +253,78 @@
           width: 10px;
           height: 10px;
           border-radius: 50%;
-          background: rgba(255,255,255,0.92);
-          box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+          /* Off the token, not off `--fp-text`: that var now carries its own
+             0.9 alpha, and stacking 92% on top of it would fade the knob. */
+          background: color-mix(in srgb, var(--color-text-primary) 92%, transparent);
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
           transform: translateY(-50%) translateX(0);
           transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
         }
+        .ship-popup-switch--on .ship-popup-knob,
         .ley-line-popup-switch--on .ley-line-popup-knob {
           transform: translateY(-50%) translateX(12px);
         }
+        .ship-popup-state,
         .ley-line-popup-state {
           font-family: var(--font-sans);
           font-size: 10px;
           font-weight: 500;
-          color: rgba(255,255,255,0.62);
+          color: var(--fp-text-secondary);
           letter-spacing: -0.005em;
+        }
+
+        /* ── Ship popup (matte; amber switch) ── */
+        .ship-popup-bloom { display: none; }
+        .ship-popup-ring {
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent 0%,
+            var(--fp-glint) 50%,
+            transparent 100%);
+          pointer-events: none;
+          z-index: 2;
+        }
+        .ship-popup-icon {
+          color: color-mix(in srgb, var(--fp-accent) 90%, transparent);
+          filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.4));
+        }
+        .ship-popup-kicker {
+          color: var(--fp-text-bright);
+        }
+        .ship-popup-switch--on {
+          background: linear-gradient(180deg,
+            color-mix(in srgb, var(--fp-accent) 95%, transparent) 0%,
+            color-mix(in srgb, var(--fp-accent-deep) 90%, transparent) 100%);
+          border-color: color-mix(in srgb, var(--fp-accent) 40%, transparent);
+        }
+
+        /* ── Ley Line popup (Structured Mode gate) — violet, matte ── */
+        .ley-line-popup-bloom { display: none; }
+        .ley-line-popup-ring {
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent 0%,
+            color-mix(in srgb, var(--fp-violet-light) 22%, transparent) 50%,
+            transparent 100%);
+          pointer-events: none;
+          z-index: 2;
+        }
+        .ley-line-popup-icon {
+          color: color-mix(in srgb, var(--fp-violet-light) 90%, transparent);
+          filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.4));
+        }
+        .ley-line-popup-kicker {
+          color: color-mix(in srgb, var(--fp-violet-lightest) 95%, transparent);
+        }
+        .ley-line-popup-switch--on {
+          background: linear-gradient(180deg,
+            color-mix(in srgb, var(--fp-violet) 95%, transparent) 0%,
+            color-mix(in srgb, var(--fp-violet-deep) 90%, transparent) 100%);
+          border-color: color-mix(in srgb, var(--fp-violet-light) 30%, transparent);
         }
 
         @keyframes shimmer {
@@ -365,11 +367,13 @@
           display: flex;
           align-items: center;
           justify-content: center;
-          background: linear-gradient(180deg, rgba(44,42,40,0.96) 0%, rgba(28,26,24,0.96) 100%);
+          background: linear-gradient(180deg,
+            color-mix(in srgb, var(--color-surface-3) 96%, transparent) 0%,
+            color-mix(in srgb, var(--color-surface-2) 96%, transparent) 100%);
           box-shadow:
-            0 2px 8px -3px rgba(0,0,0,0.7),
-            inset 0 0 0 1px rgba(255,255,255,0.12),
-            inset 0 1px 0 rgba(255,255,255,0.06);
+            0 2px 8px -3px rgba(0, 0, 0, 0.7),
+            inset 0 0 0 1px var(--fp-glint-strong),
+            inset 0 1px 0 var(--fp-glint-soft);
           cursor: pointer;
           transform: translateY(-50%);
           transform-origin: left center;
@@ -378,20 +382,22 @@
           transition: background 180ms ease, box-shadow 220ms ease;
         }
         .scratchpad-bud:hover {
-          background: linear-gradient(180deg, rgba(250,173,40,0.98) 0%, rgba(217,119,6,0.94) 100%);
+          background: linear-gradient(180deg,
+            color-mix(in srgb, var(--fp-accent-bright) 98%, transparent) 0%,
+            color-mix(in srgb, var(--fp-accent-deep) 94%, transparent) 100%);
           box-shadow:
-            0 3px 12px -2px rgba(245,158,11,0.45),
-            inset 0 0 0 1px rgba(245,158,11,0.5),
-            inset 0 1px 0 rgba(255,255,255,0.18);
+            0 3px 12px -2px color-mix(in srgb, var(--fp-accent) 45%, transparent),
+            inset 0 0 0 1px color-mix(in srgb, var(--fp-accent) 50%, transparent),
+            inset 0 1px 0 color-mix(in srgb, var(--color-cream) 18%, transparent);
         }
         .scratchpad-bud:active { transform: translateY(-50%) scale(0.9); }
         .scratchpad-bud-icon {
-          color: rgba(255,255,255,0);
+          color: transparent;
           transform: scale(0.7);
           transition: color 160ms ease, transform 200ms ease;
         }
         .scratchpad-bud:hover .scratchpad-bud-icon {
-          color: #1c1305;
+          color: var(--fp-on-accent);
           transform: scale(1);
         }
 

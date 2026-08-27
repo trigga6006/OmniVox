@@ -74,8 +74,8 @@ fn strip_line_marker(line: &str) -> &str {
 
     // Bullet markers: "- ", "* ", "• ", "· "
     for marker in &["- ", "* ", "• ", "· "] {
-        if s.starts_with(marker) {
-            return s[marker.len()..].trim_start();
+        if let Some(rest) = s.strip_prefix(marker) {
+            return rest.trim_start();
         }
     }
 
@@ -85,8 +85,8 @@ fn strip_line_marker(line: &str) -> &str {
         "\u{00C3}\u{00A2}\u{00E2}\u{201A}\u{00AC}\u{00C2}\u{00A2} ",
         "\u{00C3}\u{201A}\u{00C2}\u{00B7} ",
     ] {
-        if s.starts_with(marker) {
-            return s[marker.len()..].trim_start();
+        if let Some(rest) = s.strip_prefix(marker) {
+            return rest.trim_start();
         }
     }
     if let Some((marker, rest)) = s.split_once(' ') {
@@ -154,9 +154,7 @@ fn strip_numbered_prefix(s: &str) -> Option<&str> {
     }
 
     let rest = s[i + 2..].trim_start();
-    let Some(first) = rest.as_bytes().first() else {
-        return None;
-    };
+    let first = rest.as_bytes().first()?;
 
     // Do not strip decimal/number continuations such as "1. 5 million" or
     // "2. 2026 goals". Whisper occasionally inserts a space after a decimal

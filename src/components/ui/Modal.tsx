@@ -44,25 +44,25 @@ export function Modal({ open, onClose, title, description, children, footer, cla
       />
       <div
         className={cn(
-          "relative z-10 w-full max-w-md animate-scale-in rounded-2xl border border-border-hover",
-          "bg-surface-1 p-5 opacity-0 shadow-lg",
+          "relative z-10 w-full max-w-md animate-scale-in rounded-[var(--radius-l)] border border-border-hover",
+          "bg-surface-1 p-5 opacity-0 shadow-[var(--shadow-lg)]",
           className
         )}
       >
         {title && (
           <div className="mb-1 flex items-start justify-between gap-4">
-            <h3 className="text-[15px] font-semibold text-text-primary">{title}</h3>
+            <h3 className="text-base font-semibold text-text-primary">{title}</h3>
             <button
               onClick={onClose}
               aria-label="Close"
-              className="-mr-1 -mt-1 rounded-md p-1 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
+              className="pressable -mr-1 -mt-1 rounded-[var(--radius-s)] p-1 text-text-muted transition-colors duration-[var(--dur-2)] ease-out hover:bg-surface-2 hover:text-text-primary"
             >
               <X size={16} />
             </button>
           </div>
         )}
         {description && (
-          <p className="mb-4 text-[13px] leading-relaxed text-text-secondary">{description}</p>
+          <p className="mb-4 text-sm leading-relaxed text-text-secondary">{description}</p>
         )}
         {children}
         {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}

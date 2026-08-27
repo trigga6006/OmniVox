@@ -1,8 +1,15 @@
 import { useEffect, useRef } from "react";
+import { buildRamp, type RampEntry } from "@/lib/colorRamp";
 
 // Command accent palette — muted → bright amber (aligned with the app accent,
 // kept low-key so the field reads as background texture, not a light show).
-const AMBER = ["#b45309", "#d97f08", "#f59e0b"];
+// Read from tokens.css rather than retyped: all three were already exact copies
+// of amber-700 / -600 / -500, so this is a 1:1 swap that now tracks the token.
+const AMBER_TOKENS: readonly RampEntry[] = [
+  ["--color-amber-700", "#b45309"],
+  ["--color-amber-600", "#d97f08"],
+  ["--color-amber-500", "#f59e0b"],
+];
 
 // Authentic Memselon AsciiMatrix glyph ramp (mirrors ClickPulse) — brightness →
 // character density. Rendering the field off this ramp is what makes it read as
@@ -51,6 +58,9 @@ export function CommandDither({ active }: { active: boolean }) {
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Built once per mount; `buildRamp` caches per theme, and this overlay
+    // window pins dark, so the ramp never goes stale under it.
+    const amber = buildRamp(AMBER_TOKENS);
     let raf = 0;
     let t = 0;
     let last = 0;
@@ -97,7 +107,7 @@ export function CommandDither({ active }: { active: boolean }) {
           }
           const glyph = rampGlyph(di);
           if (glyph === " ") continue;
-          ctx.fillStyle = AMBER[di > 0.6 ? 2 : di > 0.28 ? 1 : 0];
+          ctx.fillStyle = amber[di > 0.6 ? 2 : di > 0.28 ? 1 : 0];
           ctx.globalAlpha = 0.06 + di * 0.4; // faint base, gentle peak
           ctx.fillText(glyph, ix * A_CW + A_CW / 2, iy * A_CH + A_CH / 2);
         }

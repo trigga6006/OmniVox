@@ -60,10 +60,9 @@ export function RecordButton() {
         {/* Processing: spinning amber ring */}
         {isProcessing && (
           <svg
-            className="absolute left-1/2 top-1/2 h-[112px] w-[112px] -translate-x-1/2 -translate-y-1/2"
+            className="absolute left-1/2 top-1/2 h-[112px] w-[112px] -translate-x-1/2 -translate-y-1/2 animate-spin-slow"
             viewBox="0 0 112 112"
             aria-hidden="true"
-            style={{ animation: "spin-slow 2s linear infinite" }}
           >
             <circle
               cx="56"
@@ -147,8 +146,8 @@ export function RecordButton() {
             <button
               onClick={handleCancel}
               className={cn(
-                "text-[11px] font-medium tracking-[0.14em] uppercase text-text-muted",
-                "transition-colors duration-150",
+                "font-mono text-2xs font-medium uppercase tracking-[0.14em] text-text-muted",
+                "pressable transition-colors duration-[var(--dur-2)] ease-out",
                 "hover:text-text-secondary"
               )}
             >

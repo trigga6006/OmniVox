@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap, Power } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Mic, Keyboard, Info, Volume2, VolumeX, Type, Clipboard, Sun, Moon, Eye, ShieldCheck, Layers, Rocket, PenLine, ExternalLink, Send, ScanText, Zap, Power, History } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getAudioDevices,
+  getSelectedAudioDevice,
   setAudioDevice,
   getPlatformInfo,
   openMicSettings,
@@ -12,8 +13,17 @@ import {
   type HotkeyConfig,
   type PlatformInfo,
 } from "@/lib/tauri";
-import { cn } from "@/lib/utils";
-import { Button, Card, Toggle, Segmented, Badge, PageHeader } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  Modal,
+  PageHeader,
+  Segmented,
+  Select,
+  Slider,
+  Toggle,
+} from "@/components/ui";
 import { useAppStore } from "@/stores/appStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useSettingsPatch } from "@/hooks/useSettingsPatch";
@@ -97,7 +107,7 @@ function Row({
         <div className="flex min-w-0 items-start gap-2.5">
           {Icon && <Icon size={15} strokeWidth={1.75} className="mt-px shrink-0 text-text-muted" />}
           <div className="min-w-0">
-            <div className="text-[13.5px] font-medium text-text-primary">{title}</div>
+            <div className="text-sm font-medium text-text-primary">{title}</div>
             {description && (
               <p className="mt-1 text-xs leading-relaxed text-text-muted">{description}</p>
             )}
@@ -118,28 +128,8 @@ export function SettingsPage() {
   const [activeStyle, setActiveStyle] = useState<WritingStyleId>("formal");
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
-  const deviceMenuRef = useRef<HTMLDivElement>(null);
-  // Close the custom input-device dropdown on click-outside / Escape, matching
-  // the kit Modal's dismissal affordances (the bare <div> menu had neither).
-  useEffect(() => {
-    if (!deviceMenuOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDeviceMenuOpen(false);
-    };
-    const onDown = (e: PointerEvent) => {
-      if (deviceMenuRef.current && !deviceMenuRef.current.contains(e.target as Node)) {
-        setDeviceMenuOpen(false);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onDown);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onDown);
-    };
-  }, [deviceMenuOpen]);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const [confirmHistoryDisable, setConfirmHistoryDisable] = useState(false);
   const setPage = useAppStore((s) => s.setPage);
   const { replaceSettings, patchSettings } = useSettingsPatch(setSettings);
   // Version is sourced from tauri.conf.json via the Tauri app API
@@ -152,8 +142,8 @@ export function SettingsPage() {
   // Load settings and stay in sync with changes from the overlay pill (or
   // any window) — one apply callback wired through useSettingsSync.
   const applySettings = useCallback(
-    (s: AppSettings) => {
-      replaceSettings(s);
+    (s: AppSettings, revision?: number) => {
+      replaceSettings(s, revision);
       const mode = outputModes.find((m) => m.id === s.output_mode);
       setActiveMode(mode ? mode.id : "clipboard");
       const style = writingStyles.find((st) => st.id === s.writing_style);
@@ -164,11 +154,11 @@ export function SettingsPage() {
   useSettingsSync(applySettings);
 
   useEffect(() => {
-    getAudioDevices()
-      .then((devices) => {
+    Promise.all([getAudioDevices(), getSelectedAudioDevice()])
+      .then(([devices, selected]) => {
         setAudioDevices(devices);
         const def = devices.find((d) => d.is_default);
-        setSelectedDeviceId(def?.id ?? devices[0]?.id ?? null);
+        setSelectedDeviceId(selected ?? def?.id ?? devices[0]?.id ?? null);
       })
       .catch((e) => console.error("Failed to load audio devices:", e));
 
@@ -279,6 +269,26 @@ export function SettingsPage() {
     patchSettings((current) => ({ auto_start: !current.auto_start })).catch(console.error);
   }, [patchSettings]);
 
+  const handleHistoryToggle = useCallback(() => {
+    if (settings?.history_enabled) {
+      setConfirmHistoryDisable(true);
+      return;
+    }
+    patchSettings({ history_enabled: true }).catch(console.error);
+  }, [patchSettings, settings?.history_enabled]);
+
+  const handleDisableHistory = useCallback(() => {
+    setConfirmHistoryDisable(false);
+    patchSettings({ history_enabled: false }).catch(console.error);
+  }, [patchSettings]);
+
+  const handleHistoryRetentionChange = useCallback(
+    (days: number) => {
+      patchSettings({ history_retention_days: days }).catch(console.error);
+    },
+    [patchSettings]
+  );
+
   const currentTheme = settings?.theme ?? "dark";
   const handleThemeChange = useCallback(
     (theme: string) => {
@@ -288,8 +298,10 @@ export function SettingsPage() {
     [patchSettings]
   );
 
-  const selectedDevice =
-    audioDevices.find((d) => d.id === selectedDeviceId)?.name ?? "Default Microphone";
+  const handleDeviceChange = useCallback((id: string) => {
+    setSelectedDeviceId(id);
+    setAudioDevice(id).catch(console.error);
+  }, []);
 
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pt-6 pb-10">
@@ -355,48 +367,63 @@ export function SettingsPage() {
           />
         </GroupCard>
 
+        {/* ── Privacy ── */}
+        <GroupCard title="Privacy" delay={0.18}>
+          <Row
+            icon={History}
+            title="Transcription history"
+            description="Save completed dictations locally on this device. Turning this off permanently removes existing history and stops future saves."
+            control={
+              <Toggle
+                checked={settings?.history_enabled ?? true}
+                onChange={handleHistoryToggle}
+                aria-label="Transcription history"
+              />
+            }
+          >
+            {settings?.history_enabled && (
+              <div>
+                <label
+                  htmlFor="history-retention"
+                  className="mb-2 block text-xs font-medium text-text-secondary"
+                >
+                  Keep history for
+                </label>
+                <Select
+                  id="history-retention"
+                  value={String(settings.history_retention_days)}
+                  onChange={(value) => handleHistoryRetentionChange(Number(value))}
+                  options={[
+                    { value: "0", label: "Until I delete it" },
+                    { value: "7", label: "7 days" },
+                    { value: "30", label: "30 days" },
+                    { value: "90", label: "90 days" },
+                  ]}
+                />
+                <p className="mt-2 text-xs leading-relaxed text-text-muted">
+                  Changing this removes older entries in the background. Audio is never stored.
+                </p>
+              </div>
+            )}
+          </Row>
+        </GroupCard>
+
         {/* ── Audio ── */}
         <GroupCard title="Audio" delay={0.13}>
           <Row icon={Volume2} title="Input device" description="Sample rate: 16,000 Hz">
-            <div className="relative" ref={deviceMenuRef}>
-              <button
-                onClick={() => setDeviceMenuOpen((p) => !p)}
-                className="flex w-full items-center gap-2 rounded-[9px] border border-border-hover bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"
-              >
-                <Volume2 size={14} strokeWidth={1.75} className="shrink-0 text-text-muted" />
-                <span className="flex-1 truncate text-sm text-text-primary">{selectedDevice}</span>
-                <svg width="12" height="12" viewBox="0 0 12 12" className="shrink-0 text-text-muted">
-                  <path d="M3 4.5L6 7.5L9 4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-              {deviceMenuOpen && audioDevices.length > 0 && (
-                <div className="absolute left-0 right-0 z-10 mt-1.5 overflow-hidden rounded-[10px] border border-border-hover bg-surface-1 shadow-lg">
-                  {audioDevices.map((device) => {
-                    const isActive = device.id === selectedDeviceId;
-                    return (
-                      <button
-                        key={device.id}
-                        onClick={() => {
-                          setSelectedDeviceId(device.id);
-                          setDeviceMenuOpen(false);
-                          setAudioDevice(device.id).catch(console.error);
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
-                          isActive ? "bg-amber-500/[0.10] text-amber-300" : "text-text-primary hover:bg-surface-2"
-                        )}
-                      >
-                        <Volume2 size={13} strokeWidth={1.75} className={isActive ? "text-amber-300" : "text-text-muted"} />
-                        <span className="truncate">{device.name}</span>
-                        {device.is_default && (
-                          <span className="ml-auto shrink-0 text-[10px] text-text-muted">Default</span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            {/* Select primitive — the hand-rolled menu here carried its own
+                click-outside + Escape handling and no keyboard navigation. */}
+            <Select
+              aria-label="Input device"
+              placeholder="Default Microphone"
+              value={selectedDeviceId ?? undefined}
+              onChange={handleDeviceChange}
+              options={audioDevices.map((device) => ({
+                value: device.id,
+                label: device.name,
+                hint: device.is_default ? "Default" : undefined,
+              }))}
+            />
           </Row>
 
           <Row
@@ -420,18 +447,17 @@ export function SettingsPage() {
                     {settings.ducking_amount}%
                   </span>
                 </div>
-                <input
-                  type="range"
+                <Slider
                   min={0}
                   max={100}
                   step={5}
                   value={settings.ducking_amount}
-                  onChange={(e) => handleDuckingAmountChange(parseInt(e.target.value, 10))}
-                  className="w-full cursor-pointer"
+                  onChange={handleDuckingAmountChange}
+                  aria-label="Reduction amount"
                 />
-                <div className="mt-1 flex justify-between">
-                  <span className="text-[10px] text-text-muted">None</span>
-                  <span className="text-[10px] text-text-muted">Full mute</span>
+                <div className="mt-1 flex justify-between font-mono text-2xs text-text-muted">
+                  <span>None</span>
+                  <span>Full mute</span>
                 </div>
               </div>
             )}
@@ -469,11 +495,11 @@ export function SettingsPage() {
           <Row
             icon={ScanText}
             title="Screen context"
-            description="Read visible text in the focused app to transcribe file paths, identifiers, and commands verbatim. Local only — never leaves your device."
+            description="Opt in to read visible text in the focused app so file paths, identifiers, and commands transcribe verbatim. This text stays on your device."
             control={<Toggle checked={!!settings?.use_screen_context} onChange={handleScreenContextToggle} aria-label="Screen context" />}
           >
             {settings?.use_screen_context && settings?.structured_mode && (
-              <div className="rounded-[10px] border border-border bg-surface-2/40 p-3">
+              <div className="rounded-[var(--radius-m)] border border-border bg-surface-2/40 p-3">
                 <p className="mb-2.5 text-xs leading-relaxed text-text-muted">
                   Also pass screen-context tokens into Structured Mode so the LLM substitutes
                   phonetic guesses with verbatim screen text.
@@ -523,12 +549,10 @@ export function SettingsPage() {
                 >
                   View all commands
                 </Button>
-                <div className="rounded-[10px] border border-border bg-surface-2/40 p-3">
+                <div className="rounded-[var(--radius-m)] border border-border bg-surface-2/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5">
                     <Send size={12} strokeWidth={2} className="text-text-muted" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                      Command Send
-                    </span>
+                    <span className="eyebrow">Command Send</span>
                   </div>
                   <p className="mb-3 text-xs leading-relaxed text-text-muted">
                     Say "send" at the end of your dictation to press Enter and send the message.
@@ -618,14 +642,14 @@ export function SettingsPage() {
                   <path d="M 101.61,1.66 C 66.27,0.61 42.09,15.71 23.04,39.79 C 11.81,54.74 6.31,70.73 6.31,91.81 C 6.31,132.79 41.91,166.39 80.12,166.39 C 114.61,166.39 147.41,141.01 147.41,103.03 L 147.16,103.16 C 145.97,126.15 126.06,146.93 98.36,147.34 C 71.71,147.74 52.39,125.51 52.39,100.59 C 52.39,70.05 76.18,33.75 119.02,33.75 C 157.19,33.75 193.37,65.79 193.37,110.08 C 193.37,126.01 187.32,142.79 178.19,157.01 C 190.72,140.14 196.52,123.08 196.52,100.01 C 196.52,47.58 155.51,3.16 101.61,1.66 Z" fill="url(#oi-grad-2)" />
                   <defs>
                     <linearGradient id="oi-grad-1" x1="10.0251" y1="18.7862" x2="183.632" y2="181.489" gradientUnits="userSpaceOnUse">
-                      <stop stopColor="#6e809b" />
-                      <stop offset="0.49" stopColor="#6e809b" />
-                      <stop offset="1" stopColor="#5e948c" />
+                      <stop stopColor="var(--brand-omni-slate)" />
+                      <stop offset="0.49" stopColor="var(--brand-omni-slate)" />
+                      <stop offset="1" stopColor="var(--brand-omni-teal)" />
                     </linearGradient>
                     <linearGradient id="oi-grad-2" x1="10.0251" y1="18.7862" x2="183.632" y2="181.489" gradientUnits="userSpaceOnUse">
-                      <stop stopColor="#6e809b" />
-                      <stop offset="0.49" stopColor="#5e948c" />
-                      <stop offset="1" stopColor="#5e948c" />
+                      <stop stopColor="var(--brand-omni-slate)" />
+                      <stop offset="0.49" stopColor="var(--brand-omni-teal)" />
+                      <stop offset="1" stopColor="var(--brand-omni-teal)" />
                     </linearGradient>
                   </defs>
                 </svg>
@@ -635,6 +659,23 @@ export function SettingsPage() {
           />
         </GroupCard>
       </div>
+
+      <Modal
+        open={confirmHistoryDisable}
+        onClose={() => setConfirmHistoryDisable(false)}
+        title="Turn off transcription history?"
+        description="All saved transcripts and their local usage totals will be permanently deleted. New dictations will not be saved. This cannot be undone."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirmHistoryDisable(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={handleDisableHistory}>
+              Delete history and turn off
+            </Button>
+          </>
+        }
+      />
 
     </div>
   );
