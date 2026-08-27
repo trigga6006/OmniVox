@@ -4,7 +4,15 @@ import { RecordButton } from "./RecordButton";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useRecordingState } from "@/hooks/useRecordingState";
-import { getSettings, getDictationStats, type DictationStats, type AppSettings } from "@/lib/tauri";
+import {
+  getSettings,
+  getDictationStats,
+  getActiveModel,
+  getAudioDevices,
+  getSelectedAudioDevice,
+  type DictationStats,
+  type AppSettings,
+} from "@/lib/tauri";
 import { useAppStore } from "@/stores/appStore";
 import { Button, Card, Kbd } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -24,9 +32,9 @@ export function DictationPanel() {
     getSettings().then(setSettings).catch(() => {});
   }, []);
 
-  const hotkeyLabel = settings?.hotkey?.labels?.length
-    ? settings.hotkey.labels.join(" + ")
-    : "Ctrl + Alt";
+  const hotkeys = settings?.hotkey?.labels?.length
+    ? settings.hotkey.labels
+    : ["Ctrl", "Alt"];
 
   const isIdle = status === "idle";
   const isRecording = status === "recording";
@@ -36,21 +44,21 @@ export function DictationPanel() {
     // overflow-hidden + the min-h-0 chain below are the no-scroll guarantee:
     // this page must NEVER scroll as a whole — only the transcription card's
     // text area scrolls when a dictation is long.
-    <div className="relative flex h-full flex-col items-center overflow-hidden px-8 py-6">
-      {/* ── Top section: headline + instruction ───────────────
-          Fixed-height lines (not flex-1): everything above the record
-          button has constant height in every state, so the button sits at
-          the exact same y-position whether idle, recording, or
-          transcribing.  (The kbd chip is a few px taller than the plain
-          status text — without the fixed line heights that alone nudged
-          the button between states.) */}
+    <div className="relative flex h-full flex-col items-center overflow-hidden px-8 pt-6 pb-4">
+      {/* Top spacer. It and the results zone below are both flex-1, so they
+          always split the free space evenly: the stage sits at the optical
+          centre AND the record button holds one y-position in every state,
+          whether or not a transcription card is on screen. */}
+      <div className="min-h-0 flex-1" aria-hidden="true" />
+
+      {/* ── Stage: headline + hotkey keycaps + button + visualizer ───────
+          Every line here has a fixed height, so nothing inside the stage can
+          nudge the button between idle / recording / transcribing. */}
       <div className="flex shrink-0 flex-col items-center">
         <h1
           className={cn(
-            "flex h-10 items-center font-display text-[2rem] font-semibold tracking-[-0.022em] opacity-0 animate-fade-in",
-            isIdle && "text-text-primary",
-            isRecording && "text-amber-300",
-            isProcessing && "text-text-secondary"
+            "flex h-9 items-center font-display text-2xl font-semibold opacity-0 animate-fade-in",
+            isRecording ? "text-amber-300" : "text-text-primary"
           )}
         >
           {isIdle && "Ready to listen"}
@@ -59,56 +67,181 @@ export function DictationPanel() {
           {status === "error" && "Something went wrong"}
         </h1>
 
-        <p
-          className="mt-2 flex h-7 items-center text-sm text-text-muted opacity-0 animate-fade-in"
+        <div
+          className="mt-2 flex h-7 items-center gap-1.5 text-sm text-text-muted opacity-0 animate-fade-in"
           style={{ animationDelay: "80ms" }}
         >
           {isIdle && (
             <>
-              Press <Kbd className="mx-1.5">{hotkeyLabel}</Kbd> to begin
+              <span>Press</span>
+              {/* Real keycaps, breathing while idle — the hotkey is the whole
+                  interaction, so it gets to be the thing you see. */}
+              {hotkeys.map((key) => (
+                <Kbd key={key} className="animate-breathe px-2 py-1 text-xs">
+                  {key}
+                </Kbd>
+              ))}
+              <span>to begin</span>
             </>
           )}
           {isRecording && "Speak now — press again to stop"}
           {isProcessing && "Hang tight, processing your audio…"}
           {status === "error" && "Try recording again"}
-        </p>
-      </div>
+        </div>
 
-      {/* ── Center: Record Button (fixed position) ─────────── */}
-      <div className="my-4 shrink-0 opacity-0 animate-scale-in" style={{ animationDelay: "150ms" }}>
-        <RecordButton />
-      </div>
+        <div
+          className="my-5 shrink-0 opacity-0 animate-scale-in"
+          style={{ animationDelay: "150ms" }}
+        >
+          <RecordButton />
+        </div>
 
-      {/* ── Bottom section: visualizer + transcription ───────
-          min-h-0 lets this section absorb whatever height remains and
-          compress its content instead of pushing the button up or
-          overflowing the page. */}
-      <div className="flex min-h-0 w-full flex-1 flex-col items-center">
         {/* Audio Visualizer — occupies space but invisible when not recording */}
         <div
           className={cn(
-            "shrink-0 transition-opacity duration-300",
-            isRecording ? "opacity-100" : "opacity-0 pointer-events-none"
+            "h-11 shrink-0 transition-opacity duration-[var(--dur-3)] ease-out",
+            isRecording ? "opacity-100" : "pointer-events-none opacity-0"
           )}
-          style={{ height: 44 }}
         >
           {isRecording && <AudioVisualizer />}
         </div>
 
-        <div className="h-4 shrink-0" />
+        {/* Discovery hint — a fixed slot so the button never moves; a single
+            quiet line, only while idle. */}
+        <div className="mt-1 flex h-8 shrink-0 items-center">
+          {isIdle && <FeatureTip settings={settings} />}
+        </div>
+      </div>
 
-        {/* ── Word count & milestone ─────────────────────────── */}
-        <StatsCard />
-
-        {/* ── Feature discovery tip ────────────────────────────── */}
-        <FeatureTip settings={settings} />
-
-        {/* ── Last transcription card ──────────────────────────── */}
+      {/* ── Results zone ─────────────────────────────────────
+          The ONLY flexible region. overflow-hidden makes spill into the dock
+          impossible by construction; justify-end anchors the card to the
+          dock instead of floating it mid-void. */}
+      <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-end overflow-hidden pt-3 pb-4">
         {lastTranscription && (
           <TranscriptionCard text={lastTranscription} />
         )}
       </div>
+
+      {/* ── Bottom dock: milestone hairline + words · milestone | model ·
+          mic · style. Fixed height, always last, can never be overlapped. */}
+      <BottomDock settings={settings} />
     </div>
+  );
+}
+
+/* ── Bottom dock: stats + ambient status as one grounded bar ── */
+
+const WRITING_STYLE_LABELS: Record<string, string> = {
+  formal: "Formal",
+  casual: "Casual",
+  very_casual: "Very Casual",
+};
+
+/**
+ * The page's grounded chrome: milestone progress as a hairline across the
+ * top edge, then one 44px row — words · milestone on the left, the app's
+ * live setup (model · mic · style) in mono on the right. Fixed height and
+ * always the last child, so no window size can make anything overlap it.
+ * Everything is read from bindings the app already has; whatever hasn't
+ * resolved simply isn't shown.
+ */
+function BottomDock({ settings }: { settings: AppSettings | null }) {
+  const [stats, setStats] = useState<DictationStats | null>(null);
+  const lastTranscription = useRecordingStore((s) => s.lastTranscription);
+  const [modelName, setModelName] = useState<string | null>(null);
+  const [micName, setMicName] = useState<string | null>(null);
+
+  useEffect(() => {
+    getDictationStats().then(setStats).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (lastTranscription) {
+      getDictationStats().then(setStats).catch(() => {});
+    }
+  }, [lastTranscription]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      getActiveModel().catch(() => null),
+      getAudioDevices().catch(() => []),
+      getSelectedAudioDevice().catch(() => null),
+    ]).then(([model, devices, selectedId]) => {
+      if (cancelled) return;
+      setModelName(model?.name ?? null);
+      const device =
+        devices.find((d) => d.id === selectedId) ??
+        devices.find((d) => d.is_default) ??
+        devices[0];
+      setMicName(device?.name ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const style = settings?.writing_style;
+  const statusSegments = [
+    modelName,
+    micName,
+    style ? (WRITING_STYLE_LABELS[style] ?? style) : null,
+  ].filter(Boolean) as string[];
+
+  const words = stats?.total_words ?? 0;
+  const milestone = getCurrentMilestone(words);
+  const next = getNextMilestone(words);
+  const progress = next
+    ? ((words - milestone.words) / (next.words - milestone.words)) * 100
+    : 100;
+
+  return (
+    <footer
+      className="w-full shrink-0 opacity-0 animate-fade-in"
+      style={{ animationDelay: "250ms", animationFillMode: "forwards" }}
+    >
+      {/* Milestone progress lives in the dock's top hairline. */}
+      <div className="h-px w-full bg-border/60">
+        {words > 0 && next && (
+          <div
+            className="h-full bg-amber-400/70 transition-[width] duration-[var(--dur-4)] ease-out"
+            style={{ width: `${Math.min(progress, 100)}%` }}
+          />
+        )}
+      </div>
+      <div className="flex h-11 w-full items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-2 text-xs">
+          {words > 0 ? (
+            <>
+              <span className="font-semibold tabular-nums text-amber-300">
+                {words.toLocaleString()}
+              </span>
+              <span className="text-text-muted">words</span>
+              <span className="text-text-muted/50">·</span>
+              <span className="truncate text-text-muted">{milestone.label}</span>
+              {next && (
+                <span className="hidden whitespace-nowrap font-mono text-2xs tabular-nums text-text-muted/60 sm:inline">
+                  → {next.words.toLocaleString()}
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="text-text-muted/70">No dictations yet</span>
+          )}
+        </div>
+        {statusSegments.length > 0 && (
+          <p className="flex min-w-0 shrink items-center gap-2 font-mono text-2xs text-text-muted">
+            {statusSegments.map((segment, i) => (
+              <span key={segment} className="flex min-w-0 items-center gap-2">
+                {i > 0 && <span className="shrink-0 opacity-50">·</span>}
+                <span className="truncate">{segment}</span>
+              </span>
+            ))}
+          </p>
+        )}
+      </div>
+    </footer>
   );
 }
 
@@ -129,7 +262,7 @@ function TranscriptionCard({ text }: { text: string }) {
     // min-h-0 + internal overflow: the card grows naturally for short
     // dictations, but when space runs out it compresses and ONLY the text
     // area scrolls — the page itself never does.
-    <Card className="mt-4 flex min-h-0 w-full max-w-lg flex-col px-5 py-4 opacity-0 animate-slide-up">
+    <Card className="flex min-h-0 w-full max-w-lg flex-col px-5 py-4 opacity-0 animate-slide-up">
       <div className="mb-2.5 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2.5">
           <span className="eyebrow">
@@ -138,7 +271,7 @@ function TranscriptionCard({ text }: { text: string }) {
           <button
             onClick={() => setPage("history")}
             title="View all transcriptions"
-            className="group inline-flex items-center gap-0.5 text-[10px] font-medium text-text-muted/60 transition-colors hover:text-amber-300"
+            className="group inline-flex items-center gap-0.5 text-xs font-medium text-text-muted/60 transition-colors duration-[var(--dur-2)] ease-out hover:text-amber-300"
           >
             All transcriptions
             <ArrowRight
@@ -158,7 +291,7 @@ function TranscriptionCard({ text }: { text: string }) {
         </Button>
       </div>
       <div className="min-h-0 overflow-y-auto">
-        <p className="font-sans text-[15px] leading-[1.65] text-text-primary select-text">
+        <p className="select-text font-sans text-base leading-[1.65] text-text-primary">
           {text}
         </p>
       </div>
@@ -278,8 +411,6 @@ function dismissTip(id: string) {
 function FeatureTip({ settings }: { settings: AppSettings | null }) {
   const [tip, setTip] = useState<Tip | null>(null);
   const setPage = useAppStore((s) => s.setPage);
-  const status = useRecordingStore((s) => s.status);
-  const isRecording = status === "recording";
 
   useEffect(() => {
     if (!settings) return;
@@ -308,104 +439,32 @@ function FeatureTip({ settings }: { settings: AppSettings | null }) {
 
   if (!tip) return null;
 
+  // A single quiet line inside the stage's fixed slot — discovery, not a
+  // banner. Only rendered while idle, so no recording styling is needed.
   return (
     <div
-      className={cn(
-        "w-full max-w-lg mt-3 flex shrink-0 items-center gap-2 rounded-lg px-3 py-2",
-        "border transition-colors duration-300 opacity-0 animate-fade-in",
-        isRecording
-          ? "bg-recording-500/[0.06] border-recording-500/20"
-          : "bg-surface-1/55 border-border/45"
-      )}
+      className="flex items-center gap-1 opacity-0 animate-fade-in"
       style={{ animationDelay: "400ms", animationFillMode: "forwards" }}
     >
-      <p
-        className={cn(
-          "flex-1 text-xs transition-colors duration-300",
-          isRecording ? "text-recording-400/85" : "text-text-secondary/85"
-        )}
-      >
-        {tip.text}
-      </p>
       <button
         onClick={handleNavigate}
-        className={cn(
-          "shrink-0 p-1 rounded-md transition-colors",
-          isRecording
-            ? "text-recording-400/60 hover:text-recording-300"
-            : "text-text-muted hover:text-text-secondary hover:bg-surface-2/60"
-        )}
-        title="Go to setting"
+        className="group flex items-center gap-1.5 text-xs text-text-muted/70 transition-colors duration-[var(--dur-2)] ease-out hover:text-text-secondary"
       >
-        <ArrowRight size={13} strokeWidth={2} />
+        {tip.text}
+        <ArrowRight
+          size={11}
+          strokeWidth={2}
+          className="opacity-50 transition-transform duration-[var(--dur-2)] group-hover:translate-x-0.5"
+        />
       </button>
       <button
         onClick={handleDismiss}
-        className={cn(
-          "shrink-0 p-1 rounded-md transition-colors",
-          isRecording
-            ? "text-recording-400/40 hover:text-recording-300"
-            : "text-text-muted/60 hover:text-text-secondary hover:bg-surface-2/60"
-        )}
+        className="pressable rounded-[var(--radius-s)] p-1 text-text-muted/40 transition-colors duration-[var(--dur-2)] ease-out hover:text-text-secondary"
         title="Dismiss"
       >
-        <X size={12} strokeWidth={2} />
+        <X size={11} strokeWidth={2} />
       </button>
     </div>
   );
 }
 
-/* ── Stats card ── */
-
-function StatsCard() {
-  const [stats, setStats] = useState<DictationStats | null>(null);
-  const lastTranscription = useRecordingStore((s) => s.lastTranscription);
-
-  useEffect(() => {
-    getDictationStats().then(setStats).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (lastTranscription) {
-      getDictationStats().then(setStats).catch(() => {});
-    }
-  }, [lastTranscription]);
-
-  if (!stats || stats.total_words === 0) return null;
-
-  const milestone = getCurrentMilestone(stats.total_words);
-  const next = getNextMilestone(stats.total_words);
-  const progress = next
-    ? ((stats.total_words - milestone.words) / (next.words - milestone.words)) * 100
-    : 100;
-
-  return (
-    <div
-      className="w-full max-w-lg shrink-0 opacity-0 animate-fade-in"
-      style={{ animationDelay: "200ms", animationFillMode: "forwards" }}
-    >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold tabular-nums text-amber-300">
-            {stats.total_words.toLocaleString()} words
-          </span>
-          <span className="text-xs text-text-muted/60">·</span>
-          <span className="text-xs text-text-muted">{milestone.label}</span>
-        </div>
-        {next && (
-          <span className="text-[11px] tabular-nums text-text-muted/80">
-            {next.words.toLocaleString()} next
-          </span>
-        )}
-      </div>
-      {next && (
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-surface-2">
-          <div
-            className="h-full rounded-full bg-amber-400/55 transition-all duration-700 ease-out"
-            style={{ width: `${Math.min(progress, 100)}%` }}
-          />
-        </div>
-      )}
-    </div>
-  );
-}

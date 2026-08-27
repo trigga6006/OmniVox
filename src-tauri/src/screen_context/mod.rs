@@ -106,7 +106,7 @@ fn should_skip_app(name: &str) -> bool {
 /// exceeds that; the partial result so far is returned.
 pub fn capture(hwnd: Option<isize>) -> ScreenContext {
     let Some(hwnd) = hwnd else {
-        diaglog::log("capture: no foreground hwnd, skipping");
+        diaglog::log(diaglog::Event::NoForegroundWindow);
         return ScreenContext::default();
     };
 
@@ -114,7 +114,7 @@ pub fn capture(hwnd: Option<isize>) -> ScreenContext {
 
     if let Some(name) = source_app.as_deref() {
         if should_skip_app(name) {
-            diaglog::log(&format!("capture: skipping unsafe app ({name})"));
+            diaglog::log(diaglog::Event::SkippedExcludedApplication);
             return ScreenContext {
                 source_app,
                 ..Default::default()
@@ -127,10 +127,12 @@ pub fn capture(hwnd: Option<isize>) -> ScreenContext {
     let dur_ms = t0.elapsed().as_millis();
 
     if raw_text.is_empty() {
-        diaglog::log(&format!(
-            "capture: 0 chars from app={:?} dur={}ms",
-            source_app, dur_ms
-        ));
+        diaglog::log(diaglog::Event::Capture {
+            source_known: source_app.is_some(),
+            chars: 0,
+            tokens: 0,
+            duration_ms: dur_ms,
+        });
         return ScreenContext {
             source_app,
             ..Default::default()
@@ -139,13 +141,12 @@ pub fn capture(hwnd: Option<isize>) -> ScreenContext {
 
     let tokens = extract::rank_tokens(&raw_text, MAX_SCREEN_TOKENS);
 
-    diaglog::log(&format!(
-        "capture: app={:?} chars={} tokens={} dur={}ms",
-        source_app,
-        raw_text.len(),
-        tokens.len(),
-        dur_ms
-    ));
+    diaglog::log(diaglog::Event::Capture {
+        source_known: source_app.is_some(),
+        chars: raw_text.len(),
+        tokens: tokens.len(),
+        duration_ms: dur_ms,
+    });
 
     ScreenContext {
         raw_text,

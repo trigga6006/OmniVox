@@ -54,7 +54,7 @@ export function PillWaveform({ color }: PillWaveformProps) {
             style={{
               width: `${BAR_WIDTH}px`,
               height: idle ? `${IDLE_HEIGHT}px` : `${height}px`,
-              backgroundColor: color ?? "rgb(245,158,11)",
+              backgroundColor: color ?? "var(--color-amber-500)",
               opacity: 0.8,
               transformOrigin: "center",
               // Near-silence: a per-bar staggered shimmer (reuses the idle-wave

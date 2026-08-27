@@ -20,8 +20,7 @@ pub const EMAIL_DRAFT_ROOT: &str = "root";
 /// GBNF grammar for the `notes-outline` profile: a title plus a shallow list
 /// of sections (`heading?`, `points[]`).  Kept one level deep so a 1.7B model
 /// can track the shape under constrained decoding.
-pub const NOTES_OUTLINE_V1: &str =
-    include_str!("../../resources/grammars/notes_outline_v1.gbnf");
+pub const NOTES_OUTLINE_V1: &str = include_str!("../../resources/grammars/notes_outline_v1.gbnf");
 
 /// Root symbol for [`NOTES_OUTLINE_V1`].
 pub const NOTES_OUTLINE_ROOT: &str = "root";
@@ -30,8 +29,7 @@ pub const NOTES_OUTLINE_ROOT: &str = "root";
 /// a JSON array of `{"action":<closed enum>,"target":<string>}` objects so a
 /// natural-language command maps to an ordered sequence of allowed actions —
 /// one step ("bring up spotify") or several ("open spotify and play it").
-pub const COMMAND_INTENT_V1: &str =
-    include_str!("../../resources/grammars/command_intent_v1.gbnf");
+pub const COMMAND_INTENT_V1: &str = include_str!("../../resources/grammars/command_intent_v1.gbnf");
 
 /// Root symbol for [`COMMAND_INTENT_V1`].
 pub const COMMAND_INTENT_ROOT: &str = "root";

@@ -11,9 +11,11 @@ import {
 } from "lucide-react";
 import {
   pasteStructuredOutput,
+  setStructuredPanelActive,
   startRecording,
   stopRecording,
-  onTranscriptionResult,
+  onRecordingLifecycle,
+  onTranscriptionCompletion,
   type StructuredOutputPayload,
 } from "@/lib/tauri";
 import { useRecordingStore } from "@/stores/recordingStore";
@@ -23,6 +25,8 @@ import "./StructuredPanel.css";
 interface Props {
   payload: StructuredOutputPayload;
   onClose: () => void;
+  /** Whether the preserved panel is currently visible and owns new captures. */
+  active?: boolean;
   /**
    * Called whenever the panel enters/leaves "dictating-into-textarea" mode.
    * Parent (FloatingPill) uses this to (a) skip closing the panel when
@@ -40,13 +44,30 @@ interface Props {
  * OutputConfig.  Copy writes to the system clipboard.  Edit flips the preview
  * into a textarea so the user can tweak before pasting.
  */
-export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) {
+export function StructuredPanel({
+  payload,
+  onClose,
+  active = true,
+  onDictatingChange,
+}: Props) {
   const [markdown, setMarkdown] = useState(payload.markdown);
   const [isEditing, setIsEditing] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [justCopied, setJustCopied] = useState(false);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Tell the backend that foreground-overlay captures are intentional editor
+  // dictation. Without this exact-window signal, clicking the ordinary pill
+  // and dictating into this panel are indistinguishable at the HWND level.
+  useEffect(() => {
+    setStructuredPanelActive(active).catch(() => {});
+  }, [active]);
+  useEffect(() => {
+    return () => {
+      setStructuredPanelActive(false).catch(() => {});
+    };
+  }, []);
 
   // ── Dictate-into-textarea state ─────────────────────────────────────
   //
@@ -62,6 +83,8 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
   const recordingStatus = useRecordingStore((s) => s.status);
   // Mirror of `isDictating` readable from unmount cleanup without stale closure.
   const isDictatingRef = useRef(false);
+  const panelActiveRef = useRef(active);
+  panelActiveRef.current = active;
   // Parent uses this to both (a) keep the panel alive during dictation and
   // (b) drop the `structured-output-ready` event fired by the dictation pass.
   // Flipping to `false` is delayed via a grace period in FloatingPill because
@@ -93,63 +116,68 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Hotkey support: when a recording starts by any means (mic button OR
-  // global hotkey OR programmatic) while the panel is open, treat it as
-  // dictation into the textarea.  Auto-enters edit mode so the user can
-  // see the appended text land.
-  const prevStatusRef = useRef(recordingStatus);
+  // Track panel-owned work per capture generation. Final ASR can complete out
+  // of order after a newer capture starts, and a silent capture emits only its
+  // terminal lifecycle event. These specialized listeners preserve those old
+  // completions without allowing them to roll global recording UI backward.
+  const dictationGenerationsRef = useRef(new Set<number>());
   useEffect(() => {
-    const prev = prevStatusRef.current;
-    prevStatusRef.current = recordingStatus;
-    if (
-      recordingStatus === "recording" &&
-      prev !== "recording" &&
-      !isDictatingRef.current
-    ) {
-      setIsEditing((e) => (e ? e : true));
-      setIsDictating(true);
-    }
-  }, [recordingStatus]);
-
-  // Capture the next `transcription-result` after dictation starts and
-  // append it to the textarea.  A single-shot subscription — we tear it
-  // down once the event is consumed so a subsequent dictation pass wires
-  // up fresh.
-  useEffect(() => {
-    if (!isDictating) return;
     let active = true;
-    let unlistenFn: (() => void) | null = null;
-    const handler = (text: string) => {
-      if (!active) return;
-      const incoming = text.trim();
-      if (!incoming) {
-        setIsDictating(false);
-        return;
-      }
-      setMarkdown((prev) => {
-        const base = prev.replace(/\s+$/, "");
-        if (!base) return incoming;
-        // Land on a fresh line; structured markdown is line-oriented and
-        // this preserves any list/heading the user was editing under.
-        return `${base}\n${incoming}`;
-      });
-      setIsDictating(false);
-      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    let unlistenLifecycleFn: (() => void) | null = null;
+    let unlistenCompletionFn: (() => void) | null = null;
+
+    const syncDictatingState = () => {
+      const next = dictationGenerationsRef.current.size > 0;
+      isDictatingRef.current = next;
+      setIsDictating(next);
     };
-    const p = onTranscriptionResult(handler);
-    p.then((fn) => {
-      if (!active) {
-        fn();
-        return;
+
+    const lifecyclePromise = onRecordingLifecycle((state, generation) => {
+      if (!active) return;
+      if (state === "recording" && panelActiveRef.current) {
+        dictationGenerationsRef.current.add(generation);
+        setIsEditing(true);
+        syncDictatingState();
+      } else if (
+        (state === "idle" || state === "error") &&
+        dictationGenerationsRef.current.delete(generation)
+      ) {
+        // Silent/no-speech and failed captures have no transcription event.
+        syncDictatingState();
       }
-      unlistenFn = fn;
     });
+    lifecyclePromise.then((fn) => {
+      if (!active) fn();
+      else unlistenLifecycleFn = fn;
+    });
+
+    const completionPromise = onTranscriptionCompletion((text, generation) => {
+      if (!active || !dictationGenerationsRef.current.delete(generation)) return;
+      const incoming = text.trim();
+      if (incoming) {
+        setMarkdown((prev) => {
+          const base = prev.replace(/\s+$/, "");
+          if (!base) return incoming;
+          return `${base}\n${incoming}`;
+        });
+        window.setTimeout(() => textareaRef.current?.focus(), 0);
+      }
+      syncDictatingState();
+    });
+    completionPromise.then((fn) => {
+      if (!active) fn();
+      else unlistenCompletionFn = fn;
+    });
+
     return () => {
       active = false;
-      if (unlistenFn) unlistenFn();
-      else p.then((fn) => fn()).catch(() => {});
+      dictationGenerationsRef.current.clear();
+      if (unlistenLifecycleFn) unlistenLifecycleFn();
+      else lifecyclePromise.then((fn) => fn()).catch(() => {});
+      if (unlistenCompletionFn) unlistenCompletionFn();
+      else completionPromise.then((fn) => fn()).catch(() => {});
     };
-  }, [isDictating]);
+  }, []);
 
   // ESC dismiss and Cmd/Ctrl+Enter paste.
   useEffect(() => {
@@ -168,7 +196,9 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
 
   const handlePaste = async () => {
     try {
-      await pasteStructuredOutput(markdown);
+      if (!payload.binding_id) throw new Error("No verified paste target is available");
+      if (!markdown.trim()) throw new Error("Structured output is empty");
+      await pasteStructuredOutput(markdown, payload.binding_id, payload.generation);
       onClose();
     } catch (err) {
       setPasteError(String(err));
@@ -182,7 +212,13 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
   // just invokes OutputRouter.send() on whatever string we hand it.
   const handlePasteRaw = async () => {
     try {
-      await pasteStructuredOutput(payload.raw_transcript);
+      if (!payload.binding_id) throw new Error("No verified paste target is available");
+      if (!payload.raw_transcript.trim()) throw new Error("Raw transcript is empty");
+      await pasteStructuredOutput(
+        payload.raw_transcript,
+        payload.binding_id,
+        payload.generation
+      );
       onClose();
     } catch (err) {
       setPasteError(String(err));
@@ -334,6 +370,7 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
         <button
           className="sp-btn sp-btn--primary"
           onClick={handlePaste}
+          disabled={!payload.binding_id || !markdown.trim()}
           title="Paste structured output into active app"
         >
           <ClipboardPaste size={11} strokeWidth={2.2} />
@@ -345,6 +382,7 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
         <button
           className="sp-btn sp-btn--raw"
           onClick={handlePasteRaw}
+          disabled={!payload.binding_id || !payload.raw_transcript.trim()}
           title="Paste raw transcript (your words, unstructured)"
         >
           <FileText size={11} strokeWidth={2.2} />
@@ -398,7 +436,7 @@ export function StructuredPanel({ payload, onClose, onDictatingChange }: Props) 
           {dictationPhase === "recording" ? (
             <>
               <span className="sp-mic-wave">
-                <MiniWaveform color="rgba(245,158,11,0.95)" />
+                <MiniWaveform color="color-mix(in srgb, var(--color-amber-500) 95%, transparent)" />
               </span>
               {/* Full-bar label — only visible when the mic has
                   expanded to fill the action row (see
@@ -457,24 +495,24 @@ function MiniWaveform({ color }: { color: string }) {
 function UrgencyChip({ value }: { value: "low" | "normal" | "high" }) {
   const tone = {
     low: {
-      bg: "rgba(148,163,184,0.14)",
-      border: "rgba(148,163,184,0.18)",
-      fg: "rgba(190,200,215,0.88)",
-      dot: "rgba(148,163,184,0.85)",
+      bg: "color-mix(in srgb, var(--color-slate) 14%, transparent)",
+      border: "color-mix(in srgb, var(--color-slate) 18%, transparent)",
+      fg: "color-mix(in srgb, color-mix(in srgb, var(--color-slate) 70%, var(--color-cream)) 88%, transparent)",
+      dot: "color-mix(in srgb, var(--color-slate) 85%, transparent)",
       label: "Low",
     },
     normal: {
-      bg: "rgba(245,158,11,0.14)",
-      border: "rgba(245,158,11,0.24)",
-      fg: "rgba(252,195,77,0.95)",
-      dot: "rgba(245,158,11,0.95)",
+      bg: "color-mix(in srgb, var(--color-amber-500) 14%, transparent)",
+      border: "color-mix(in srgb, var(--color-amber-500) 24%, transparent)",
+      fg: "color-mix(in srgb, var(--color-amber-300) 95%, transparent)",
+      dot: "color-mix(in srgb, var(--color-amber-500) 95%, transparent)",
       label: "Normal",
     },
     high: {
-      bg: "rgba(239,68,68,0.16)",
-      border: "rgba(239,68,68,0.28)",
-      fg: "rgba(252,165,165,0.96)",
-      dot: "rgba(239,68,68,1)",
+      bg: "color-mix(in srgb, var(--color-recording-500) 16%, transparent)",
+      border: "color-mix(in srgb, var(--color-recording-500) 28%, transparent)",
+      fg: "color-mix(in srgb, var(--color-recording-300) 96%, transparent)",
+      dot: "var(--color-recording-500)",
       label: "Urgent",
     },
   }[value];

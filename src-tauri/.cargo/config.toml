@@ -13,7 +13,7 @@
 # Shorten target dir to avoid Windows 260-char MAX_PATH errors during
 # the Vulkan shader build (whisper-rs-sys creates deeply nested paths).
 [build]
-target-dir = "C:\\t"
+target-dir = "D:\\t\\omnivox"
 
 [env]
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.341.1"

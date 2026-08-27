@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, Check, Cpu } from "lucide-react";
+import { AlertCircle, Download, Check, Cpu } from "lucide-react";
 import {
   listModels,
   getHardwareInfo,
@@ -10,8 +10,13 @@ import {
   type ModelInfo,
   type HardwareInfo,
 } from "@/lib/tauri";
-import { formatBytes, cn } from "@/lib/utils";
-import { Button, Card, Badge } from "@/components/ui";
+import { formatBytes } from "@/lib/utils";
+import { Badge, Button, Card, ModelRow, SkeletonRows } from "@/components/ui";
+
+/** Runtime memory reads as GB once it clears 1 GB — same rule in every tab. */
+function memoryLabel(mb: number) {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
 
 /**
  * Whisper (speech-recognition) model catalog.  Extracted from ModelsPage
@@ -23,7 +28,10 @@ export function SpeechModelsSection() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -35,8 +43,14 @@ export function SpeechModelsSection() {
       setModels(m);
       setHardware(hw);
       if (active) setActiveModelId(active.id);
+      setError(null);
     } catch (err) {
+      // A failed catalog read used to log to the console and leave a blank
+      // tab — indistinguishable from "no models exist". Say what happened.
       console.error("Failed to load models:", err);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -60,99 +74,110 @@ export function SpeechModelsSection() {
     }
   };
 
+  // Loading a model is a multi-second backend swap; the button owns that wait
+  // ("Loading…" + spinner) instead of the UI looking frozen.
   const handleActivate = async (modelId: string) => {
+    setActivatingId(modelId);
     try {
       await setActiveModel(modelId);
       setActiveModelId(modelId);
     } catch (err) {
       console.error("Failed to activate model:", err);
+    } finally {
+      setActivatingId(null);
     }
   };
 
   return (
     <div className="flex flex-col">
-      {/* Whisper model list */}
-      <div className="flex flex-col gap-2">
-        {models.map((model, i) => {
-          const isDownloading = downloadingId === model.id;
-          const isActive = activeModelId === model.id;
+      {/* Whisper model list. One ModelRow recipe, shared with the LLM /
+          Command / Cleanup tabs — accent green for the active model, amber
+          for the recommended one. */}
+      {error && models.length === 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-[var(--radius-m)] border border-error/25 bg-error/[0.08] px-3 py-2.5 text-xs text-error"
+        >
+          <AlertCircle size={13} className="mt-px shrink-0" />
+          <span className="min-w-0 flex-1">
+            Couldn't load the speech-model catalog. {error}
+          </span>
+          <Button size="sm" variant="ghost" onClick={() => void refresh()}>
+            Retry
+          </Button>
+        </div>
+      )}
 
-          return (
-            <Card
-              key={model.id}
-              className={cn(
-                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-colors duration-200 hover:border-border-hover animate-slide-up",
-                isActive && "border-l-[3px] border-l-success/75",
-                model.recommended && !isActive && "border-l-[3px] border-l-amber-500/70"
-              )}
-              style={{
-                animationDelay: `${0.05 + i * 0.04}s`,
-                animationFillMode: "forwards",
-              }}
-            >
-              {/* Left: name + badges */}
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[14px] font-medium text-text-primary">
-                    {model.name}
-                  </span>
+      {loading && models.length === 0 ? (
+        <SkeletonRows count={4} />
+      ) : (
+        <div className="flex flex-col gap-2">
+          {models.map((model, i) => {
+            const isDownloading = downloadingId === model.id;
+            const isActivating = activatingId === model.id;
+            const isActive = activeModelId === model.id;
 
-                  {model.bundled && <Badge tone="neutral">Included</Badge>}
-
-                  {model.recommended && <Badge tone="amber">Recommended</Badge>}
-
-                  {isActive && <Badge tone="green">Active</Badge>}
-                </div>
-
-                <p className="mt-0.5 line-clamp-1 text-xs leading-relaxed text-text-muted">
-                  {model.description}
-                </p>
-              </div>
-
-              {/* Center: size + quant */}
-              <div className="flex shrink-0 items-center gap-3">
-                <span className="w-[70px] text-right font-mono text-xs tabular-nums text-text-muted">
-                  {formatBytes(model.size_bytes)}
-                </span>
-                <span className="w-[40px] rounded-full bg-surface-2 px-1.5 py-0.5 text-center text-[10px] text-text-muted">
-                  {model.quantization}
-                </span>
-              </div>
-
-              {/* Right: action button */}
-              <div className="flex w-[110px] shrink-0 justify-end">
-                {model.is_downloaded ? (
-                  isActive ? (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
-                      <Check size={13} strokeWidth={2} />
-                      In use
-                    </span>
+            return (
+              <ModelRow
+                key={model.id}
+                name={model.name}
+                accent={isActive ? "green" : "amber"}
+                rail={isActive || model.recommended ? "strong" : undefined}
+                className="opacity-0 animate-slide-up"
+                style={{
+                  animationDelay: `${0.05 + i * 0.04}s`,
+                  animationFillMode: "forwards",
+                }}
+                badges={
+                  <>
+                    {model.bundled && <Badge tone="neutral">Included</Badge>}
+                    {model.family === "parakeet" && <Badge tone="violet">Parakeet · CPU</Badge>}
+                    {model.recommended && <Badge tone="amber">Recommended</Badge>}
+                    {isActive && <Badge tone="green">Active</Badge>}
+                  </>
+                }
+                description={model.description}
+                meta={[
+                  formatBytes(model.size_bytes),
+                  model.quantization,
+                  model.language_support === "multilingual" ? "Multilingual" : "English",
+                  `${model.capability_tier} tier`,
+                  `~${memoryLabel(model.estimated_memory_mb)} RAM`,
+                ]}
+                action={
+                  model.is_downloaded ? (
+                    isActive ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
+                        <Check size={13} strokeWidth={2} />
+                        In use
+                      </span>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={isActivating}
+                        onClick={() => handleActivate(model.id)}
+                      >
+                        {isActivating ? "Loading…" : "Activate"}
+                      </Button>
+                    )
                   ) : (
                     <Button
                       size="sm"
-                      variant="secondary"
-                      onClick={() => handleActivate(model.id)}
+                      variant="primary"
+                      icon={<Download strokeWidth={2} />}
+                      loading={isDownloading}
+                      onClick={() => handleDownload(model.id)}
                     >
-                      Activate
+                      {isDownloading ? "Downloading" : "Download"}
                     </Button>
                   )
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    icon={<Download strokeWidth={2} />}
-                    loading={isDownloading}
-                    disabled={isDownloading}
-                    onClick={() => handleDownload(model.id)}
-                  >
-                    {isDownloading ? "Downloading" : "Download"}
-                  </Button>
-                )}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+                }
+              />
+            );
+          })}
+        </div>
+      )}
 
       {/* Hardware info — only shown in the Whisper tab since the
           "Recommended" callout references a Whisper model id. */}
@@ -175,6 +200,22 @@ export function SpeechModelsSection() {
                 {hardware.cpu_cores}
               </span>
             </div>
+            <div>
+              <span className="text-text-muted">Active backend: </span>
+              <span className="font-mono uppercase tabular-nums text-text-secondary">
+                {hardware.compute_backend === "unknown"
+                  ? "Not loaded"
+                  : hardware.compute_backend}
+              </span>
+            </div>
+            {hardware.measured_asr_tier && (
+              <div>
+                <span className="text-text-muted">Measured tier: </span>
+                <span className="font-medium capitalize text-text-secondary">
+                  {hardware.measured_asr_tier}
+                </span>
+              </div>
+            )}
             <div>
               <span className="text-text-muted">Recommended: </span>
               <span className="font-medium text-amber-300">

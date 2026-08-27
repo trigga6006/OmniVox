@@ -4,7 +4,6 @@ use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 
-use crate::asr::engine::AsrEngine;
 use crate::error::ErrorCode;
 use crate::focus::{
     capture_foreground_window, get_process_name_from_hwnd, restore_foreground_window,
@@ -12,12 +11,581 @@ use crate::focus::{
 use crate::llm::profiles::ProfileOutput;
 use crate::postprocess::processor::TextProcessor;
 use crate::screen_context::ScreenContext;
-use crate::state::AppState;
+use crate::state::{AppState, CaptureMode, CapturePhase, CaptureSession, CaptureStopIntent};
+
+type FinalAsrResponse =
+    oneshot::Sender<crate::error::AppResult<crate::asr::types::TranscriptionResult>>;
+
+struct FinalAsrRequest {
+    generation: u64,
+    engine: crate::asr::LoadedAsrEngine,
+    samples: Vec<f32>,
+    options: crate::asr::types::TranscriptionOptions,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    response: FinalAsrResponse,
+}
+
+impl FinalAsrRequest {
+    fn reject(self, reason: String) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.response.send(Err(crate::error::AppError::Asr(reason)));
+    }
+}
+
+struct PendingGeneration<T> {
+    generation: u64,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    value: T,
+}
+
+/// One executing request plus one replaceable pending request. The latest
+/// generation is monotonic, so a delayed older caller can never displace newer
+/// audio after awaiting screen context or preview teardown.
+struct LatestRequestSlot<T> {
+    latest_generation: Option<u64>,
+    current: Option<(u64, Arc<std::sync::atomic::AtomicBool>)>,
+    pending: Option<PendingGeneration<T>>,
+}
+
+impl<T> Default for LatestRequestSlot<T> {
+    fn default() -> Self {
+        Self {
+            latest_generation: None,
+            current: None,
+            pending: None,
+        }
+    }
+}
+
+impl<T> LatestRequestSlot<T> {
+    /// Queue a strictly newer generation. Returns the one displaced pending
+    /// value, or returns the supplied value when it arrived late/stale.
+    fn enqueue(
+        &mut self,
+        generation: u64,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+        value: T,
+    ) -> Result<Option<T>, T> {
+        if self
+            .latest_generation
+            .is_some_and(|latest| generation <= latest)
+        {
+            return Err(value);
+        }
+        self.latest_generation = Some(generation);
+
+        if let Some((current_generation, current_cancelled)) = &self.current {
+            if *current_generation < generation {
+                current_cancelled.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        let replaced = self.pending.replace(PendingGeneration {
+            generation,
+            cancelled,
+            value,
+        });
+        if let Some(replaced) = replaced {
+            replaced
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(Some(replaced.value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn take_pending(&mut self) -> Option<(u64, T)> {
+        let pending = self.pending.take()?;
+        self.current = Some((pending.generation, Arc::clone(&pending.cancelled)));
+        Some((pending.generation, pending.value))
+    }
+
+    /// Clear the executing generation and report whether it was cancelled
+    /// before completion was serialized against newer admission/reset.
+    fn finish_current(&mut self, generation: u64) -> bool {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|(current, _)| *current == generation)
+        {
+            return self.current.take().is_some_and(|(_, cancelled)| {
+                cancelled.load(std::sync::atomic::Ordering::Acquire)
+            });
+        }
+        true
+    }
+
+    fn abort_all(&mut self) -> Option<T> {
+        if let Some((_, cancelled)) = &self.current {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.pending.take().map(|pending| {
+            pending
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+            pending.value
+        })
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+#[derive(Default)]
+struct FinalAsrQueue {
+    requests: LatestRequestSlot<FinalAsrRequest>,
+    resetting: bool,
+    reset_waiters: Vec<FinalAsrResetWaiter>,
+}
+
+enum FinalAsrResetWaiter {
+    Async(oneshot::Sender<()>),
+    Blocking(std::sync::mpsc::SyncSender<()>),
+}
+
+impl FinalAsrResetWaiter {
+    fn complete(self) {
+        match self {
+            Self::Async(waiter) => {
+                let _ = waiter.send(());
+            }
+            Self::Blocking(waiter) => {
+                let _ = waiter.send(());
+            }
+        }
+    }
+}
+
+struct FinalAsrLane {
+    queue: std::sync::Mutex<FinalAsrQueue>,
+    ready: std::sync::Condvar,
+}
+
+impl FinalAsrLane {
+    fn enqueue(&self, request: FinalAsrRequest) {
+        let generation = request.generation;
+        let cancelled = Arc::clone(&request.cancelled);
+        let outcome = {
+            let mut queue = self
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if queue.resetting {
+                Err(request)
+            } else {
+                queue.requests.enqueue(generation, cancelled, request)
+            }
+        };
+
+        match outcome {
+            Ok(replaced) => {
+                if let Some(replaced) = replaced {
+                    let replaced_generation = replaced.generation;
+                    replaced.reject(format!(
+                        "ASR generation {} was superseded by generation {generation}",
+                        replaced_generation
+                    ));
+                }
+                self.ready.notify_one();
+            }
+            Err(rejected) => rejected.reject(format!(
+                "ASR generation {generation} arrived after a newer request or during reset"
+            )),
+        }
+    }
+
+    fn request_reset(&self, complete: FinalAsrResetWaiter) {
+        let pending = {
+            let mut queue = self
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queue.resetting = true;
+            queue.reset_waiters.push(complete);
+            queue.requests.abort_all()
+        };
+        if let Some(pending) = pending {
+            let pending_generation = pending.generation;
+            pending.reject(format!(
+                "ASR generation {} was cancelled for model reset",
+                pending_generation
+            ));
+        }
+        self.ready.notify_one();
+    }
+
+    fn finish_current(&self, generation: u64) -> bool {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .requests
+            .finish_current(generation)
+    }
+}
+
+enum FinalAsrWork {
+    Transcribe(u64, FinalAsrRequest),
+    Reset,
+    /// The worker waited out [`FINAL_ASR_IDLE_TICK`] with nothing to do — its
+    /// cue to run idle housekeeping.
+    Idle,
+}
+
+/// How long the final-ASR worker waits for a request before checking whether
+/// its retained decode state has gone stale. No separate timer: this is the
+/// condvar wait it was already parked on, just bounded.
+const FINAL_ASR_IDLE_TICK: Duration = Duration::from_secs(60);
+
+/// Release the retained (`SessionPolicy::Reused`) Whisper decode state after
+/// this much idle time. It is ~500 MB and was previously held for the whole app
+/// session; the engine-identity check below already rebuilds it lazily, so the
+/// next dictation just pays one state allocation. Mirrors the KV-cache tier in
+/// `llm/runner.rs`, which uses the same 5-minute threshold.
+const FINAL_ASR_SESSION_IDLE: Duration = Duration::from_secs(5 * 60);
+
+fn finalize_final_asr_result<T>(
+    generation: u64,
+    cancelled: bool,
+    native_result: crate::error::AppResult<T>,
+) -> crate::error::AppResult<T> {
+    if cancelled {
+        Err(crate::error::AppError::Asr(format!(
+            "ASR generation {generation} was cancelled by a newer request or model reset"
+        )))
+    } else {
+        native_result
+    }
+}
+
+/// A truly bounded, serialized final-ASR lane. At most one full sample buffer
+/// is executing and one is pending. A newer generation replaces the pending
+/// request and asks whisper.cpp to abort stale in-flight inference, while the
+/// worker retains only deterministic decode sessions for sequential throughput.
+fn final_asr_lane() -> &'static Arc<FinalAsrLane> {
+    static LANE: std::sync::OnceLock<Arc<FinalAsrLane>> = std::sync::OnceLock::new();
+    LANE.get_or_init(|| {
+        let lane = Arc::new(FinalAsrLane {
+            queue: std::sync::Mutex::new(FinalAsrQueue::default()),
+            ready: std::sync::Condvar::new(),
+        });
+        let worker_lane = Arc::clone(&lane);
+        std::thread::Builder::new()
+            .name("omnivox-final-asr".into())
+            .spawn(move || {
+                let mut cached_engine: Option<crate::asr::LoadedAsrEngine> = None;
+                let mut session: Option<crate::asr::AsrSession> = None;
+                let mut last_used = std::time::Instant::now();
+                loop {
+                    let work = {
+                        let mut queue = worker_lane
+                            .queue
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let mut timed_out = false;
+                        while !queue.resetting && !queue.requests.has_pending() && !timed_out {
+                            let (waited, outcome) = worker_lane
+                                .ready
+                                .wait_timeout(queue, FINAL_ASR_IDLE_TICK)
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            queue = waited;
+                            timed_out = outcome.timed_out();
+                        }
+                        if queue.resetting {
+                            FinalAsrWork::Reset
+                        } else if queue.requests.has_pending() {
+                            let (generation, request) = queue
+                                .requests
+                                .take_pending()
+                                .expect("pending ASR request checked above");
+                            FinalAsrWork::Transcribe(generation, request)
+                        } else {
+                            FinalAsrWork::Idle
+                        }
+                    };
+
+                    match work {
+                        FinalAsrWork::Idle => {
+                            if (session.is_some() || cached_engine.is_some())
+                                && last_used.elapsed() >= FINAL_ASR_SESSION_IDLE
+                            {
+                                session = None;
+                                cached_engine = None;
+                            }
+                        }
+                        FinalAsrWork::Reset => {
+                            session = None;
+                            cached_engine = None;
+                            let waiters = {
+                                let mut queue = worker_lane
+                                    .queue
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                queue.resetting = false;
+                                std::mem::take(&mut queue.reset_waiters)
+                            };
+                            for waiter in waiters {
+                                waiter.complete();
+                            }
+                        }
+                        FinalAsrWork::Transcribe(generation, request) => {
+                            let native_result = match request.options.session_policy() {
+                                crate::asr::types::SessionPolicy::Fresh => {
+                                    // Do not keep a second decode state resident while
+                                    // configured dictation runs on its fresh state.
+                                    session = None;
+                                    cached_engine = None;
+                                    match request.engine.create_session() {
+                                        Ok(mut fresh_session) => {
+                                            request.engine.transcribe_with_session_cancellable(
+                                                &mut fresh_session,
+                                                &request.samples,
+                                                &request.options,
+                                                Some(Arc::clone(&request.cancelled)),
+                                            )
+                                        }
+                                        Err(error) => Err(error),
+                                    }
+                                }
+                                crate::asr::types::SessionPolicy::Reused => {
+                                    let engine_changed = cached_engine
+                                        .as_ref()
+                                        .is_none_or(|current| !current.ptr_eq(&request.engine));
+                                    let prepared = if engine_changed {
+                                        session = None;
+                                        cached_engine = None;
+                                        match request.engine.create_session() {
+                                            Ok(new_session) => {
+                                                cached_engine = Some(request.engine.clone());
+                                                session = Some(new_session);
+                                                Ok(())
+                                            }
+                                            Err(error) => Err(error),
+                                        }
+                                    } else {
+                                        Ok(())
+                                    };
+                                    match prepared {
+                                        Ok(()) => {
+                                            request.engine.transcribe_with_session_cancellable(
+                                                session
+                                                    .as_mut()
+                                                    .expect("retained session created above"),
+                                                &request.samples,
+                                                &request.options,
+                                                Some(Arc::clone(&request.cancelled)),
+                                            )
+                                        }
+                                        Err(error) => Err(error),
+                                    }
+                                }
+                            };
+                            // Serialize completion against admission. If a newer
+                            // generation/reset won the queue lock first, never
+                            // surface a stale success even when native inference
+                            // finished just before it observed the abort flag.
+                            let cancelled = worker_lane.finish_current(generation);
+                            let result =
+                                finalize_final_asr_result(generation, cancelled, native_result);
+                            if result.is_err() {
+                                // Cancellation or a native inference failure can
+                                // leave decoder state unusable. Rebuild lazily.
+                                session = None;
+                                cached_engine = None;
+                            }
+                            last_used = std::time::Instant::now();
+                            let _ = request.response.send(result);
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn final ASR worker");
+        lane
+    })
+}
+
+/// Inference backend family for a loaded engine, for tagging `PipelineTrace`s.
+/// RTF-based ASR tiering is calibrated against whisper.cpp decode cost, so
+/// downstream consumers filter samples on this field before comparing them.
+fn model_family_of(engine: &crate::asr::LoadedAsrEngine) -> crate::models::types::ModelFamily {
+    match engine {
+        crate::asr::LoadedAsrEngine::Whisper(_) => crate::models::types::ModelFamily::Whisper,
+        crate::asr::LoadedAsrEngine::Parakeet(_) => crate::models::types::ModelFamily::Parakeet,
+    }
+}
+
+fn enqueue_final_transcription(
+    generation: u64,
+    engine: crate::asr::LoadedAsrEngine,
+    samples: Vec<f32>,
+    options: crate::asr::types::TranscriptionOptions,
+) -> oneshot::Receiver<crate::error::AppResult<crate::asr::types::TranscriptionResult>> {
+    let (response, receive) = oneshot::channel();
+    final_asr_lane().enqueue(FinalAsrRequest {
+        generation,
+        engine,
+        samples,
+        options,
+        cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        response,
+    });
+    receive
+}
+
+async fn await_final_transcription(
+    receive: oneshot::Receiver<crate::error::AppResult<crate::asr::types::TranscriptionResult>>,
+) -> crate::error::AppResult<crate::asr::types::TranscriptionResult> {
+    receive
+        .await
+        .map_err(|_| crate::error::AppError::Asr("ASR worker dropped its response".into()))?
+}
+
+/// Cancel queued/current inference and drop the retained decode session before
+/// replacing or unloading the ASR model.
+pub async fn reset_final_asr_worker() {
+    let (complete, done) = oneshot::channel();
+    final_asr_lane().request_reset(FinalAsrResetWaiter::Async(complete));
+    let _ = done.await;
+}
+
+/// Blocking counterpart for native model replacement, which already runs on
+/// a dedicated blocking thread and must hold the model-transition lock across
+/// worker reset and native model initialization.
+pub fn reset_final_asr_worker_blocking() {
+    let (complete, done) = std::sync::mpsc::sync_channel(0);
+    final_asr_lane().request_reset(FinalAsrResetWaiter::Blocking(complete));
+    let _ = done.recv();
+}
+
+#[cfg(test)]
+mod final_asr_slot_tests {
+    use super::*;
+
+    fn flag() -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::new(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    #[test]
+    fn configured_fallback_is_fresh_and_latency_first_is_reused() {
+        assert_eq!(
+            crate::asr::types::TranscriptionOptions::configured().session_policy(),
+            crate::asr::types::SessionPolicy::Fresh
+        );
+        assert_eq!(
+            crate::asr::types::TranscriptionOptions::latency_first(true).session_policy(),
+            crate::asr::types::SessionPolicy::Reused
+        );
+
+        let stochastic = crate::asr::types::TranscriptionOptions::configured().with_decode_policy(
+            crate::asr::types::DecodePolicy::Greedy {
+                best_of: 1,
+                temperature: 0.1,
+                temperature_increment: 0.0,
+            },
+        );
+        assert_eq!(
+            stochastic.session_policy(),
+            crate::asr::types::SessionPolicy::Fresh
+        );
+    }
+
+    #[test]
+    fn cancelled_completion_cannot_surface_stale_output() {
+        let result = finalize_final_asr_result(7, true, Ok("stale"));
+        assert!(matches!(result, Err(crate::error::AppError::Asr(_))));
+        assert_eq!(
+            finalize_final_asr_result(7, false, Ok("current")).unwrap(),
+            "current"
+        );
+    }
+
+    #[test]
+    fn pending_storage_is_latest_only_and_strictly_bounded() {
+        let mut slot = LatestRequestSlot::default();
+        let first = flag();
+        assert_eq!(slot.enqueue(1, Arc::clone(&first), "first"), Ok(None));
+        let second = flag();
+        assert_eq!(
+            slot.enqueue(2, Arc::clone(&second), "second"),
+            Ok(Some("first"))
+        );
+        assert!(first.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(slot.take_pending(), Some((2, "second")));
+        assert!(!second.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!slot.has_pending());
+        assert!(!slot.finish_current(2));
+    }
+
+    #[test]
+    fn late_generation_cannot_displace_newer_audio() {
+        let mut slot = LatestRequestSlot::default();
+        assert_eq!(slot.enqueue(9, flag(), "newer"), Ok(None));
+        assert_eq!(slot.enqueue(8, flag(), "late"), Err("late"));
+        assert_eq!(slot.take_pending(), Some((9, "newer")));
+    }
+
+    #[test]
+    fn newer_generation_aborts_in_flight_and_reset_drops_pending() {
+        let mut slot = LatestRequestSlot::default();
+        let current = flag();
+        assert_eq!(slot.enqueue(3, Arc::clone(&current), "current"), Ok(None));
+        assert_eq!(slot.take_pending(), Some((3, "current")));
+
+        let pending = flag();
+        assert_eq!(slot.enqueue(4, Arc::clone(&pending), "pending"), Ok(None));
+        assert!(current.load(std::sync::atomic::Ordering::Acquire));
+        assert!(slot.finish_current(3));
+        assert_eq!(slot.abort_all(), Some("pending"));
+        assert!(pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!slot.has_pending());
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+struct StatePayload {
+    generation: u64,
+    state: &'static str,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct LevelPayload {
+    generation: u64,
+    level: f32,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TextPayload<'a> {
+    generation: u64,
+    text: &'a str,
+}
+
+fn emit_recording_state(app: &tauri::AppHandle, generation: u64, state: &'static str) {
+    let _ = app.emit("recording-state-change", StatePayload { generation, state });
+}
+
+fn emit_command_state(app: &tauri::AppHandle, generation: u64, state: &'static str) {
+    let _ = app.emit("command-state-change", StatePayload { generation, state });
+}
+
+fn emit_audio_level(app: &tauri::AppHandle, generation: u64, level: f32) {
+    let _ = app.emit("audio-level", LevelPayload { generation, level });
+}
+
+fn emit_text(app: &tauri::AppHandle, event: &'static str, generation: u64, text: &str) {
+    let _ = app.emit(event, TextPayload { generation, text });
+}
 
 /// Payload emitted on `structured-output-ready` so the overlay can render the
 /// panel and offer Paste / Copy / Edit / Dismiss actions.
 #[derive(Clone, serde::Serialize)]
 struct StructuredOutputPayload {
+    generation: u64,
+    /// Random one-time capability bound to this generation's immutable target.
+    /// Absent when the capture targeted an OmniVox window or no target was
+    /// captured; Copy remains available, but Paste must fail closed.
+    binding_id: Option<String>,
     markdown: String,
     /// Profile-specific slot object — `SlotExtraction`-shaped for the
     /// default agent-prompt profile, email/notes shapes for the others.
@@ -32,6 +600,7 @@ struct StructuredOutputPayload {
 /// Payload emitted with `recording-state-change` when the state is "error".
 #[derive(Clone, serde::Serialize)]
 struct ErrorPayload {
+    generation: u64,
     state: &'static str,
     code: ErrorCode,
     message: String,
@@ -55,14 +624,82 @@ fn window_label_for_hwnd(_app: &tauri::AppHandle, _hwnd: isize) -> Option<String
     None
 }
 
-fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into<String>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictationTargetRoute {
+    Foreground,
+    OverlayEditor,
+    BehindOverlay,
+}
+
+fn dictation_target_route(
+    foreground_label: Option<&str>,
+    structured_panel_active: bool,
+) -> DictationTargetRoute {
+    if structured_panel_active {
+        DictationTargetRoute::OverlayEditor
+    } else if foreground_label == Some("overlay") {
+        DictationTargetRoute::BehindOverlay
+    } else {
+        DictationTargetRoute::Foreground
+    }
+}
+
+#[cfg(windows)]
+fn overlay_window_handle(app: &tauri::AppHandle) -> Option<isize> {
+    use tauri::Manager;
+    app.get_webview_window("overlay")
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as isize)
+}
+
+#[cfg(not(windows))]
+fn overlay_window_handle(_app: &tauri::AppHandle) -> Option<isize> {
+    None
+}
+
+#[cfg(test)]
+mod dictation_target_tests {
+    use super::*;
+
+    #[test]
+    fn structured_panel_is_authoritative_even_with_external_foreground() {
+        assert_eq!(
+            dictation_target_route(Some("external"), true),
+            DictationTargetRoute::OverlayEditor
+        );
+    }
+
+    #[test]
+    fn ordinary_overlay_click_targets_the_app_behind_it() {
+        assert_eq!(
+            dictation_target_route(Some("overlay"), false),
+            DictationTargetRoute::BehindOverlay
+        );
+    }
+
+    #[test]
+    fn ordinary_external_foreground_remains_the_target() {
+        assert_eq!(
+            dictation_target_route(Some("external"), false),
+            DictationTargetRoute::Foreground
+        );
+    }
+}
+
+fn emit_error(
+    app_handle: &tauri::AppHandle,
+    generation: u64,
+    code: ErrorCode,
+    message: impl Into<String>,
+) {
     let payload = ErrorPayload {
+        generation,
         state: "error",
         code,
         message: message.into(),
     };
     let _ = app_handle.emit("recording-error", &payload);
-    let _ = app_handle.emit("recording-state-change", "error");
+    emit_recording_state(app_handle, generation, "error");
 }
 
 // ── Capture ownership coordination ───────────────────────────────────────
@@ -73,60 +710,161 @@ fn emit_error(app_handle: &tauri::AppHandle, code: ErrorCode, message: impl Into
 // flips the engine live).  All capture_mode locks recover from poison rather
 // than failing open — a poisoned safety gate must not silently behave as "not
 // owned".
-use std::sync::atomic::Ordering as CaptureOrdering;
+use std::sync::atomic::{AtomicBool, Ordering as CaptureOrdering};
 
 fn read_capture_mode(state: &AppState) -> crate::state::CaptureMode {
-    match state.capture_mode.lock() {
-        Ok(g) => *g,
-        Err(p) => *p.into_inner(),
+    let guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    guard.as_ref().map(|s| s.mode).unwrap_or(CaptureMode::Idle)
+}
+
+fn pipeline_trace_for_capture(
+    state: &AppState,
+    generation: u64,
+    mode: CaptureMode,
+    label: &'static str,
+) -> crate::perf::PipelineTraceGuard {
+    let timing = state
+        .capture
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .filter(|session| session.generation == generation && session.mode == mode)
+        .map(|session| {
+            (
+                session.claimed_at,
+                session.mic_live_at,
+                session.stop_requested_at,
+            )
+        });
+    match timing {
+        Some((claimed_at, mic_live_at, stop_requested_at)) => {
+            crate::perf::PipelineTraceGuard::new_with_capture_timing(
+                generation,
+                label,
+                Some(claimed_at),
+                mic_live_at,
+                stop_requested_at,
+            )
+        }
+        None => crate::perf::PipelineTraceGuard::new(generation, label),
     }
 }
 
 /// Atomically claim capture ownership for `mode`. Returns false if the mic is
 /// already owned (anything other than Idle), making start-vs-start race-free.
-fn claim_capture(state: &AppState, mode: crate::state::CaptureMode) -> bool {
-    let mut guard = match state.capture_mode.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
-    if *guard != crate::state::CaptureMode::Idle {
-        return false;
+///
+/// Meeting Mode is deliberately NOT a blocker: it records through its own mic
+/// and system-loopback streams, and WASAPI shared mode lets dictation open the
+/// same microphone endpoint alongside them. So dictation and Command Mode stay
+/// available for the whole call — this gate only serializes them against each
+/// other.
+fn claim_capture(state: &AppState, mode: CaptureMode) -> Option<u64> {
+    let mut guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.is_some() {
+        return None;
     }
-    *guard = mode;
-    state.pending_stop.store(false, CaptureOrdering::SeqCst);
-    state.capture_live.store(false, CaptureOrdering::SeqCst);
-    true
+    let generation = state
+        .capture_generation
+        .fetch_add(1, CaptureOrdering::SeqCst)
+        + 1;
+    let settings = state
+        .settings
+        .read()
+        .map(|s| s.values().clone())
+        .unwrap_or_default();
+    let output_config = state
+        .output_config
+        .lock()
+        .map(|c| c.clone())
+        .unwrap_or_default();
+    let structured_profile = state
+        .active_structured_profile
+        .lock()
+        .map(|p| *p)
+        .unwrap_or_else(|_| crate::llm::profiles::get(crate::llm::profiles::DEFAULT_PROFILE_ID));
+    *guard = Some(CaptureSession {
+        generation,
+        mode,
+        phase: CapturePhase::Starting { pending: None },
+        claimed_at: std::time::Instant::now(),
+        mic_live_at: None,
+        stop_requested_at: None,
+        live: Arc::new(AtomicBool::new(true)),
+        target: None,
+        structured_panel_edit: false,
+        settings,
+        output_config,
+        structured_profile,
+        screen_context_rx: None,
+        preview_done_rx: None,
+        command_context: None,
+    });
+    Some(generation)
 }
 
-/// Mark the active capture as live (audio is actually recording).
-fn mark_capture_live(state: &AppState) {
-    state.capture_live.store(true, CaptureOrdering::SeqCst);
+#[derive(Debug, PartialEq, Eq)]
+enum LiveDecision {
+    Continue,
+    Stop(CaptureStopIntent),
+    Stale,
 }
 
-/// Release capture ownership back to Idle.
-fn release_capture(state: &AppState) {
-    state.capture_live.store(false, CaptureOrdering::SeqCst);
-    let mut guard = match state.capture_mode.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
+fn mark_capture_live(state: &AppState, generation: u64) -> LiveDecision {
+    let mut guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(session) = guard.as_mut().filter(|s| s.generation == generation) else {
+        return LiveDecision::Stale;
     };
-    *guard = crate::state::CaptureMode::Idle;
+    mark_session_live(session)
 }
 
-/// Called by a start path once audio is live: returns true if a stop arrived
-/// during startup (so the caller should stop immediately). The swap happens
-/// under the capture_mode lock to serialize with [`request_stop`].
-fn take_startup_stop(state: &AppState) -> bool {
-    let _guard = match state.capture_mode.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
-    state.pending_stop.swap(false, CaptureOrdering::SeqCst)
+/// Record when the audio device has actually started accepting samples.
+///
+/// This is deliberately separate from `mark_capture_live`: the capture stays in
+/// `Starting` while foreground-app mode selection and other setup finishes, but
+/// that work must not inflate the device-start portion of the field trace.
+fn mark_microphone_live(state: &AppState, generation: u64) {
+    let mut guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(session) = guard.as_mut().filter(|s| s.generation == generation) {
+        session
+            .mic_live_at
+            .get_or_insert_with(std::time::Instant::now);
+    }
 }
 
+fn mark_session_live(session: &mut CaptureSession) -> LiveDecision {
+    if matches!(session.phase, CapturePhase::Starting { .. }) && session.mic_live_at.is_none() {
+        session.mic_live_at = Some(std::time::Instant::now());
+    }
+    match session.phase {
+        CapturePhase::Starting { pending: None } => {
+            session.phase = CapturePhase::Live;
+            LiveDecision::Continue
+        }
+        CapturePhase::Starting {
+            pending: Some(intent),
+        } => {
+            session.phase = CapturePhase::Stopping;
+            session.live.store(false, CaptureOrdering::Release);
+            LiveDecision::Stop(intent)
+        }
+        CapturePhase::Live => LiveDecision::Continue,
+        CapturePhase::Stopping => LiveDecision::Stale,
+    }
+}
+
+fn release_capture(state: &AppState, generation: u64) {
+    let mut guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.as_ref().is_some_and(|s| s.generation == generation) {
+        if let Some(session) = guard.take() {
+            session.live.store(false, CaptureOrdering::Release);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum StopDecision {
     /// Capture is live — stop and process now.
-    StopNow,
+    StopNow(u64),
     /// Still starting — deferred; the start path will stop once live.
     Deferred,
     /// This capture isn't owned by the requesting path.
@@ -136,18 +874,187 @@ enum StopDecision {
 /// Decide what a stop request for `owner` should do, coordinating with the
 /// start path via the capture_mode lock + `capture_live` atomic.
 fn request_stop(state: &AppState, owner: crate::state::CaptureMode) -> StopDecision {
-    let _guard = match state.capture_mode.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
+    request_stop_with_intent(state, owner, CaptureStopIntent::Finish)
+}
+
+fn request_stop_with_intent(
+    state: &AppState,
+    owner: CaptureMode,
+    intent: CaptureStopIntent,
+) -> StopDecision {
+    let mut guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(session) = guard.as_mut() else {
+        return StopDecision::NotOurs;
     };
-    if *_guard != owner {
+    request_session_stop(session, owner, intent)
+}
+
+fn request_session_stop(
+    session: &mut CaptureSession,
+    owner: CaptureMode,
+    intent: CaptureStopIntent,
+) -> StopDecision {
+    if session.mode != owner {
         return StopDecision::NotOurs;
     }
-    if state.capture_live.load(CaptureOrdering::SeqCst) {
-        StopDecision::StopNow
-    } else {
-        state.pending_stop.store(true, CaptureOrdering::SeqCst);
-        StopDecision::Deferred
+    if session.stop_requested_at.is_none() {
+        session.stop_requested_at = Some(std::time::Instant::now());
+    }
+    let generation = session.generation;
+    match session.phase {
+        CapturePhase::Starting { ref mut pending } => {
+            if pending.is_none() || intent == CaptureStopIntent::Cancel {
+                *pending = Some(intent);
+            }
+            session.live.store(false, CaptureOrdering::Release);
+            StopDecision::Deferred
+        }
+        CapturePhase::Live => {
+            session.phase = CapturePhase::Stopping;
+            session.live.store(false, CaptureOrdering::Release);
+            StopDecision::StopNow(generation)
+        }
+        CapturePhase::Stopping => StopDecision::Deferred,
+    }
+}
+
+/// Cancel whichever capture currently owns the microphone.
+///
+/// Remapping a hotkey must not only clear hook latches: doing so while a
+/// capture is live loses the release edge and leaves the microphone orphaned.
+/// The owner and generation are read under the same capture lock, then the
+/// normal cancel path retains its generation check before touching audio.
+fn request_active_cancel(session: &mut CaptureSession) -> (CaptureMode, StopDecision) {
+    let owner = session.mode;
+    let decision = request_session_stop(session, owner, CaptureStopIntent::Cancel);
+    (owner, decision)
+}
+
+pub fn cancel_active_capture(app_handle: &tauri::AppHandle, state: &AppState) {
+    let (owner, decision) = {
+        let mut guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        request_active_cancel(session)
+    };
+
+    if let StopDecision::StopNow(generation) = decision {
+        cancel_capture_generation(app_handle, state, generation, owner);
+    }
+}
+
+#[cfg(test)]
+mod capture_coordinator_tests {
+    use super::*;
+
+    fn session(mode: CaptureMode) -> CaptureSession {
+        CaptureSession {
+            generation: 7,
+            mode,
+            phase: CapturePhase::Starting { pending: None },
+            claimed_at: std::time::Instant::now(),
+            mic_live_at: None,
+            stop_requested_at: None,
+            live: Arc::new(AtomicBool::new(true)),
+            target: None,
+            structured_panel_edit: false,
+            settings: Default::default(),
+            output_config: Default::default(),
+            structured_profile: crate::llm::profiles::get(crate::llm::profiles::DEFAULT_PROFILE_ID),
+            screen_context_rx: None,
+            preview_done_rx: None,
+            command_context: None,
+        }
+    }
+
+    #[test]
+    fn quick_release_is_deferred_then_finalized_once() {
+        let mut capture = session(CaptureMode::Dictation);
+        assert_eq!(
+            request_session_stop(
+                &mut capture,
+                CaptureMode::Dictation,
+                CaptureStopIntent::Finish,
+            ),
+            StopDecision::Deferred
+        );
+        assert_eq!(
+            mark_session_live(&mut capture),
+            LiveDecision::Stop(CaptureStopIntent::Finish)
+        );
+        assert_eq!(capture.phase, CapturePhase::Stopping);
+        assert!(capture.mic_live_at.is_some());
+        assert!(capture.stop_requested_at.is_some());
+        assert!(!capture.live.load(CaptureOrdering::Acquire));
+        assert_eq!(
+            request_session_stop(
+                &mut capture,
+                CaptureMode::Dictation,
+                CaptureStopIntent::Finish,
+            ),
+            StopDecision::Deferred
+        );
+    }
+
+    #[test]
+    fn cancel_overrides_a_deferred_finish() {
+        let mut capture = session(CaptureMode::Command);
+        let _ = request_session_stop(
+            &mut capture,
+            CaptureMode::Command,
+            CaptureStopIntent::Finish,
+        );
+        let _ = request_session_stop(
+            &mut capture,
+            CaptureMode::Command,
+            CaptureStopIntent::Cancel,
+        );
+        assert_eq!(
+            mark_session_live(&mut capture),
+            LiveDecision::Stop(CaptureStopIntent::Cancel)
+        );
+    }
+
+    #[test]
+    fn wrong_owner_cannot_stop_capture() {
+        let mut capture = session(CaptureMode::Dictation);
+        assert_eq!(
+            request_session_stop(
+                &mut capture,
+                CaptureMode::Command,
+                CaptureStopIntent::Finish,
+            ),
+            StopDecision::NotOurs
+        );
+        assert_eq!(capture.phase, CapturePhase::Starting { pending: None });
+        assert!(capture.stop_requested_at.is_none());
+    }
+
+    #[test]
+    fn hotkey_remap_cancels_a_starting_capture_by_its_own_generation() {
+        let mut capture = session(CaptureMode::Dictation);
+        let (owner, decision) = request_active_cancel(&mut capture);
+
+        assert_eq!(owner, CaptureMode::Dictation);
+        assert_eq!(decision, StopDecision::Deferred);
+        assert_eq!(
+            mark_session_live(&mut capture),
+            LiveDecision::Stop(CaptureStopIntent::Cancel)
+        );
+        assert!(!capture.live.load(CaptureOrdering::Acquire));
+    }
+
+    #[test]
+    fn hotkey_remap_cancels_a_live_command_without_touching_its_owner() {
+        let mut capture = session(CaptureMode::Command);
+        assert_eq!(mark_session_live(&mut capture), LiveDecision::Continue);
+
+        let (owner, decision) = request_active_cancel(&mut capture);
+        assert_eq!(owner, CaptureMode::Command);
+        assert_eq!(decision, StopDecision::StopNow(7));
+        assert_eq!(capture.phase, CapturePhase::Stopping);
+        assert!(!capture.live.load(CaptureOrdering::Acquire));
     }
 }
 
@@ -160,6 +1067,7 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
         Err(_) => {
             emit_error(
                 app_handle,
+                state.capture_generation.load(CaptureOrdering::Acquire),
                 ErrorCode::InternalError,
                 "Audio state lock poisoned",
             );
@@ -170,7 +1078,7 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
     if !is_recording {
         start_recording(app_handle, &state);
     } else {
-        stop_and_transcribe(app_handle, &state).await;
+        stop_recording(app_handle, &state).await;
     }
 }
 
@@ -184,18 +1092,24 @@ pub async fn toggle_recording(app_handle: &tauri::AppHandle) {
 
 /// Claim capture ownership for a hotkey press. Call synchronously on the hook
 /// thread BEFORE spawning the capture worker. Returns false if already owned.
-pub fn try_claim_capture(app_handle: &tauri::AppHandle, mode: crate::state::CaptureMode) -> bool {
+pub fn try_claim_capture(
+    app_handle: &tauri::AppHandle,
+    mode: crate::state::CaptureMode,
+) -> Option<u64> {
     claim_capture(&app_handle.state::<AppState>(), mode)
 }
 
 /// Decide whether a hotkey release should stop now. Call synchronously on the
 /// hook thread. A release that lands before the capture is live is recorded as a
 /// deferred stop inside `request_stop` (the start worker honors it once live).
-pub fn should_stop_now(app_handle: &tauri::AppHandle, owner: crate::state::CaptureMode) -> bool {
-    matches!(
-        request_stop(&app_handle.state::<AppState>(), owner),
-        StopDecision::StopNow
-    )
+pub fn should_stop_now(
+    app_handle: &tauri::AppHandle,
+    owner: crate::state::CaptureMode,
+) -> Option<u64> {
+    match request_stop(&app_handle.state::<AppState>(), owner) {
+        StopDecision::StopNow(generation) => Some(generation),
+        StopDecision::Deferred | StopDecision::NotOurs => None,
+    }
 }
 
 /// Begin microphone capture (frontend / toggle entry — claims ownership itself).
@@ -204,18 +1118,40 @@ pub fn start_recording(app_handle: &tauri::AppHandle, state: &AppState) {
     // already owned — by an active dictation (no self-corruption) or by Command
     // Mode.  The hotkey path claims separately (synchronously on the hook
     // thread) and calls `start_recording_inner` directly.
-    if !claim_capture(state, crate::state::CaptureMode::Dictation) {
+    let Some(generation) = claim_capture(state, crate::state::CaptureMode::Dictation) else {
         return;
-    }
-    start_recording_inner(app_handle, state);
+    };
+    start_recording_inner(app_handle, state, generation);
 }
 
 /// The dictation start body. Assumes capture ownership is ALREADY claimed.
-pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppState) {
+pub(crate) fn start_recording_inner(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    generation: u64,
+) {
     // Snapshot the foreground window BEFORE we do anything that might steal focus.
-    let fg = capture_foreground_window();
+    let foreground = capture_foreground_window();
+    let foreground_label = foreground.and_then(|hwnd| window_label_for_hwnd(app_handle, hwnd));
+    let panel_active = state
+        .structured_panel_active
+        .load(std::sync::atomic::Ordering::Acquire);
+    // Clicking the ordinary always-on-top pill briefly makes OmniVox the
+    // foreground window. In that case the dictation still belongs to the real
+    // app immediately behind it. Only a mounted StructuredPanel deliberately
+    // keeps the overlay as its own plain-edit target.
+    let target_route = dictation_target_route(foreground_label.as_deref(), panel_active);
+    let fg = match target_route {
+        DictationTargetRoute::OverlayEditor => overlay_window_handle(app_handle),
+        DictationTargetRoute::BehindOverlay => crate::focus::capture_command_target_window(),
+        DictationTargetRoute::Foreground => foreground,
+    };
     crate::llm::diaglog::log(&format!(
-        "pipeline: start_recording_inner fg={:?} fg_proc={:?}",
+        "pipeline: start_recording_inner foreground={:?} label={:?} panel_active={} route={:?} target={:?} target_proc={:?}",
+        foreground,
+        foreground_label,
+        panel_active,
+        target_route,
         fg,
         fg.and_then(get_process_name_from_hwnd)
     ));
@@ -226,87 +1162,30 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
     // an inline consequential voice command re-verifies against this, and
     // capturing the pid here (not at output time) means a HWND recycled to a
     // different process before output fails identity instead of passing (B2-3).
-    if let Ok(mut t) = state.dictation_target.lock() {
-        *t = fg.map(|h| crate::focus::WindowTarget {
-            hwnd: h,
-            pid: crate::focus::pid_for_hwnd(h),
-        });
-    }
+    let dictation_target = fg.map(|h| crate::focus::WindowTarget {
+        hwnd: h,
+        pid: crate::focus::pid_for_hwnd(h),
+    });
 
     // Load settings once — used for auto-switch and audio ducking below.
-    let settings = crate::storage::settings::get_settings(&state.db).ok();
-    if let Ok(mut guard) = state.preview_done_rx.lock() {
-        *guard = None;
-    }
+    let settings = {
+        let mut capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(session) = capture.as_mut().filter(|s| s.generation == generation) else {
+            return;
+        };
+        session.target = dictation_target;
+        session.structured_panel_edit = target_route == DictationTargetRoute::OverlayEditor;
+        session.settings.clone()
+    };
 
-    // Auto-switch context mode based on the foreground application.
-    if let Some(hwnd) = fg {
-        let auto_switch = settings
-            .as_ref()
-            .map(|s| s.auto_switch_modes)
-            .unwrap_or(false);
-
-        if auto_switch {
-            if let Some(process_name) = get_process_name_from_hwnd(hwnd) {
-                // Find the target mode: either a bound mode or General fallback.
-                let target_mode_id = match crate::storage::app_bindings::find_mode_for_process(
-                    &state.db,
-                    &process_name,
-                ) {
-                    Ok(Some(id)) => Some(id),
-                    _ => {
-                        // No binding for this app — fall back to the builtin General mode
-                        crate::storage::context_modes::get_general_mode_id(&state.db).ok()
-                    }
-                };
-
-                if let Some(target_mode_id) = target_mode_id {
-                    let current_mode = state.active_context_mode_id.lock().unwrap().clone();
-                    if current_mode.as_deref() != Some(&target_mode_id) {
-                        if let Err(e) = crate::commands::context_modes::activate_mode_internal(
-                            state,
-                            &target_mode_id,
-                        ) {
-                            eprintln!("Auto-switch mode failed: {e}");
-                        } else if let Ok(mode) =
-                            crate::storage::context_modes::get_mode(&state.db, &target_mode_id)
-                        {
-                            let _ = app_handle.emit(
-                                "context-mode-changed",
-                                serde_json::json!({
-                                    "id": mode.id.to_string(),
-                                    "name": mode.name,
-                                    "icon": mode.icon,
-                                    "color": mode.color,
-                                }),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Structured Mode: re-warm the LLM session while the user speaks.  The
-    // runner drops its KV cache after 5 idle minutes; rebuilding it here
-    // overlaps the multi-second prefill with the utterance instead of paying
-    // it on the extraction's critical path.  No-op when already warm.
-    if settings.as_ref().map(|s| s.structured_mode).unwrap_or(false) {
-        if let Some(runner) = state
-            .llm_runner
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| Arc::clone(r)))
-        {
-            runner.prewarm();
-        }
-    }
-
-    // Duck system volume so other audio doesn't compete with the mic.
-    if settings.as_ref().map(|s| s.audio_ducking).unwrap_or(true) {
+    // Duck system volume so other audio doesn't compete with the mic — but
+    // never during a meeting. Ducking moves the master render endpoint, so it
+    // would both quiet the call for the user and bake the volume drop into the
+    // system-loopback audio the meeting is spooling.
+    if settings.audio_ducking && state.meeting.state().meeting_id.is_none() {
         // Convert ducking_amount (0–100, % reduction) to a volume factor.
         // 70 → keep 30% of volume (factor 0.30), 100 → mute (factor 0.0).
-        let amount = settings.as_ref().map(|s| s.ducking_amount).unwrap_or(70);
+        let amount = settings.ducking_amount;
         let factor = 1.0 - (amount.min(100) as f32 / 100.0);
         crate::audio::ducking::duck(Some(factor));
     }
@@ -315,14 +1194,14 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
     // the time stop_and_transcribe runs, the receiver typically already has
     // a value — capture cost (UIA tree walk, ~50–200 ms) is fully hidden
     // under the user's utterance.
-    if settings
-        .as_ref()
-        .map(|s| s.use_screen_context)
-        .unwrap_or(true)
-    {
+    if settings.use_screen_context && target_route != DictationTargetRoute::OverlayEditor {
         let (tx, rx) = oneshot::channel::<ScreenContext>();
-        if let Ok(mut guard) = state.screen_context_rx.lock() {
-            *guard = Some(rx);
+        {
+            let mut capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(session) = capture.as_mut().filter(|s| s.generation == generation) else {
+                return;
+            };
+            session.screen_context_rx = Some(rx);
         }
         let fg_for_task = fg;
         tokio::task::spawn_blocking(move || {
@@ -334,9 +1213,7 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
     } else {
         // Feature toggled off — clear any stale receiver from a prior run
         // so the consumer side never grabs leftover context.
-        if let Ok(mut guard) = state.screen_context_rx.lock() {
-            *guard = None;
-        }
+        // No receiver is installed in this generation's session.
     }
 
     let mut audio = match state.audio.lock() {
@@ -358,26 +1235,161 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
         // also clears any duck leaked by a prior aborted start.
         crate::audio::ducking::unduck();
         // Release the ownership we just claimed so the mic isn't left stuck.
-        release_capture(state);
+        release_capture(state, generation);
         emit_error(
             app_handle,
+            generation,
             e.code(),
             format!("Failed to start recording: {e}"),
         );
         return;
     }
 
+    mark_microphone_live(state, generation);
+
     // Grab Arc handles for the audio level emitter before dropping the lock
-    let is_recording = audio.is_recording_flag();
     let rms_level = audio.rms_level_ref();
     drop(audio);
+
+    // Resolve the foreground app's context mode only after the microphone is
+    // open. Mode activation can perform several SQLite reads and rebuild the
+    // dictionary/Whisper prompt, none of which is required to begin collecting
+    // this utterance. The capture is still in Starting, so a key release during
+    // this work is deferred, and the generation cannot become live until the
+    // auto-switched state has been applied.
+    if target_route != DictationTargetRoute::OverlayEditor {
+        if let Some(hwnd) = fg {
+            if settings.auto_switch_modes {
+                if let Some(process_name) = get_process_name_from_hwnd(hwnd) {
+                    // Find the target mode: either a bound mode or General fallback.
+                    let target_mode_id = match crate::storage::app_bindings::find_mode_for_process(
+                        &state.db,
+                        &process_name,
+                    ) {
+                        Ok(Some(id)) => Some(id),
+                        _ => {
+                            // No binding for this app — fall back to the builtin General mode.
+                            crate::storage::context_modes::get_general_mode_id(&state.db).ok()
+                        }
+                    };
+
+                    if let Some(target_mode_id) = target_mode_id {
+                        let current_mode = state.active_context_mode_id.lock().unwrap().clone();
+                        if current_mode.as_deref() != Some(&target_mode_id) {
+                            if let Err(e) = crate::commands::context_modes::activate_mode_internal(
+                                state,
+                                &target_mode_id,
+                            ) {
+                                eprintln!("Auto-switch mode failed: {e}");
+                            } else if let Ok(mode) =
+                                crate::storage::context_modes::get_mode(&state.db, &target_mode_id)
+                            {
+                                let _ = app_handle.emit(
+                                    "context-mode-changed",
+                                    serde_json::json!({
+                                        "id": mode.id.to_string(),
+                                        "name": mode.name,
+                                        "icon": mode.icon,
+                                        "color": mode.color,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Auto-switch may have selected a different Structured profile after the
+    // original capture claim. Refresh this generation's immutable snapshot and
+    // prewarm that exact profile while the user is speaking.
+    if let Ok(profile) = state.active_structured_profile.lock() {
+        let mut capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(session) = capture.as_mut().filter(|s| s.generation == generation) {
+            session.structured_profile = *profile;
+        }
+    }
+    if settings.structured_mode && target_route != DictationTargetRoute::OverlayEditor {
+        if let Some((model_id, runner)) = state
+            .llm_runner
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|(id, r)| (id.clone(), Arc::clone(r))))
+        {
+            if runner.is_parked() {
+                // A parked runner released its weights, so `prewarm` is a no-op
+                // and the reload would land AFTER the user stops speaking —
+                // exactly where it is most expensive.  The capture window is the
+                // head start, so start the reload now instead.  The keyed loader
+                // holds a blocking mutex across the GGUF load, so it must run on
+                // the blocking pool (B2-8); its single-flight lock also coalesces,
+                // so repeated captures can't stampede a second load.
+                let app = app_handle.clone();
+                let load_epoch = state
+                    .llm_load_epoch
+                    .load(std::sync::atomic::Ordering::Acquire);
+                drop(tauri::async_runtime::spawn_blocking(move || {
+                    let st = app.state::<AppState>();
+                    if let Err(e) = crate::commands::llm::ensure_runner_loaded_at_epoch(
+                        &model_id,
+                        &st,
+                        Some(&app),
+                        load_epoch,
+                    ) {
+                        crate::llm::diaglog::log(&format!(
+                            "prewarm: parked structured runner reload failed: {e}"
+                        ));
+                    }
+                }));
+            } else {
+                runner.prewarm();
+            }
+        }
+    }
+    if settings.cleanup_mode && target_route != DictationTargetRoute::OverlayEditor {
+        if let Some((model_id, runner)) = state
+            .cleanup_runner
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|(id, r)| (id.clone(), Arc::clone(r))))
+        {
+            if runner.is_parked() {
+                // Same head start for cleanup; `ensure_cleanup_runner_loaded`
+                // coalesces on its own single-flight lock.
+                let app = app_handle.clone();
+                drop(tauri::async_runtime::spawn_blocking(move || {
+                    let st = app.state::<AppState>();
+                    if let Err(e) =
+                        crate::commands::llm::ensure_cleanup_runner_loaded(&model_id, &st)
+                    {
+                        crate::llm::diaglog::log(&format!(
+                            "prewarm: parked cleanup runner reload failed: {e}"
+                        ));
+                    }
+                }));
+            } else {
+                runner.prewarm();
+            }
+        }
+    }
+    let capture_live = {
+        let capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(session) = capture.as_ref().filter(|s| s.generation == generation) else {
+            if let Ok(mut audio) = state.audio.lock() {
+                audio.cancel();
+            }
+            return;
+        };
+        Arc::clone(&session.live)
+    };
 
     // Spawn a periodic task that emits audio-level events to the frontend.
     // 150 ms strikes a balance between smooth VU meter animation and CPU usage.
     // (100 ms was too aggressive for low-end laptops — 10 events/s of React
     // re-renders + CSS transitions caused pill jank on integrated GPUs.)
     let handle = app_handle.clone();
-    let is_rec_clone = is_recording.clone();
+    let is_rec_clone = Arc::clone(&capture_live);
     tauri::async_runtime::spawn(async move {
         use std::sync::atomic::Ordering;
         loop {
@@ -386,7 +1398,7 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
                 break;
             }
             let level = f32::from_bits(rms_level.load(Ordering::Relaxed));
-            let _ = handle.emit("audio-level", level);
+            emit_audio_level(&handle, generation, level);
         }
     });
 
@@ -407,14 +1419,11 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
     // pauses and peak memory spikes.  Now the state is allocated ONCE at
     // recording start and reused across every preview tick until recording
     // ends.
-    let live_preview = settings.as_ref().map(|s| s.live_preview).unwrap_or(false);
+    let live_preview = settings.live_preview;
 
     if live_preview {
-        let engine_opt: Option<Arc<crate::asr::engine::WhisperEngine>> = state
-            .engine
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(Arc::clone));
+        let engine_opt: Option<crate::asr::LoadedAsrEngine> =
+            state.engine.lock().ok().and_then(|g| g.clone());
 
         if let Some(engine) = engine_opt {
             // Capacity-1 sync channel: if worker is busy when sender tries
@@ -427,13 +1436,13 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
             // sender (rx.recv returns Err).
             let worker_handle = app_handle.clone();
             let worker_engine = engine.clone();
-            let worker_is_rec = is_recording.clone();
+            let worker_is_rec = Arc::clone(&capture_live);
             let preview_worker = std::thread::Builder::new()
                 .name("omnivox-preview".into())
                 .spawn(move || {
                     use std::sync::atomic::Ordering;
                     use std::sync::mpsc::RecvTimeoutError;
-                    let mut preview_state: Option<whisper_rs::WhisperState> = None;
+                    let mut preview_state: Option<crate::asr::AsrPreviewState> = None;
                     loop {
                         let audio =
                             match rx_audio.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -469,7 +1478,12 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
                         ) {
                             Ok(text) if !text.is_empty() => {
                                 if worker_is_rec.load(Ordering::Relaxed) {
-                                    let _ = worker_handle.emit("transcription-preview", &text);
+                                    emit_text(
+                                        &worker_handle,
+                                        "transcription-preview",
+                                        generation,
+                                        &text,
+                                    );
                                 } else {
                                     break;
                                 }
@@ -492,8 +1506,9 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
 
             match preview_worker {
                 Ok(_) => {
-                    if let Ok(mut guard) = state.preview_done_rx.lock() {
-                        *guard = Some(preview_done_rx);
+                    let mut capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(session) = capture.as_mut().filter(|s| s.generation == generation) {
+                        session.preview_done_rx = Some(preview_done_rx);
                     }
                 }
                 Err(e) => eprintln!("Preview: failed to spawn worker: {e}"),
@@ -518,7 +1533,7 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
                 loop {
-                    if !is_recording.load(Ordering::Relaxed) {
+                    if !capture_live.load(Ordering::Relaxed) {
                         break;
                     }
 
@@ -559,30 +1574,34 @@ pub(crate) fn start_recording_inner(app_handle: &tauri::AppHandle, state: &AppSt
     // installed now — only here do we mark the capture live, so a release during
     // setup is *deferred* (no concurrent stop racing the preview-worker install)
     // and then honored immediately below.  A quick tap can never stick.
-    mark_capture_live(state);
-    if take_startup_stop(state) {
-        // Released during startup (quick tap) — stop instead of showing recording.
-        let handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            let st = handle.state::<AppState>();
-            stop_and_transcribe(&handle, &st).await;
-        });
-    } else {
-        // Announce "recording" only now that the capture is fully live. Emitting
-        // it earlier let a frontend stop/cancel land mid-setup and race this
-        // worker (release with capture_mode already reset to Idle).
-        crate::llm::diaglog::log("pipeline: emitting recording-state-change=recording");
-        let _ = app_handle.emit("recording-state-change", "recording");
+    match mark_capture_live(state, generation) {
+        LiveDecision::Stop(CaptureStopIntent::Finish) => {
+            // Released during startup (quick tap) — stop instead of showing recording.
+            let handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let st = handle.state::<AppState>();
+                stop_and_transcribe_generation(&handle, &st, generation).await;
+            });
+        }
+        LiveDecision::Stop(CaptureStopIntent::Cancel) => {
+            cancel_capture_generation(app_handle, state, generation, CaptureMode::Dictation);
+        }
+        LiveDecision::Continue => {
+            // Announce "recording" only now that the capture is fully live. Emitting
+            // it earlier let a frontend stop/cancel land mid-setup and race this
+            // worker (release with capture_mode already reset to Idle).
+            crate::llm::diaglog::log("pipeline: emitting recording-state-change=recording");
+            emit_recording_state(app_handle, generation, "recording");
+        }
+        LiveDecision::Stale => {
+            if let Ok(mut audio) = state.audio.lock() {
+                audio.cancel();
+            }
+        }
     }
 }
 
-async fn wait_for_preview_worker(state: &AppState) {
-    let rx = state
-        .preview_done_rx
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take());
-
+async fn wait_for_preview_worker(rx: Option<oneshot::Receiver<()>>) {
     if let Some(rx) = rx {
         // Instrumented (audit 2026-07-06): the v0.3.1 abort callback should
         // make the real drain far shorter than the 1500ms ceiling — log the
@@ -602,59 +1621,270 @@ async fn wait_for_preview_worker(state: &AppState) {
     }
 }
 
+/// Longest transcript Cleanup Mode will attempt, in characters.
+///
+/// The normalizer is built for dictation-length input and is documented to
+/// degrade past roughly 1,000 tokens per pass; 3,000 characters is the
+/// conservative character-side equivalent.  Longer transcripts SKIP cleanup
+/// entirely rather than being chunked — splitting mid-dictation would break the
+/// self-correction resolution that is the whole point of the stage.
+const CLEANUP_INPUT_CHAR_CAP: usize = 3000;
+
+/// Ceiling on the cleanup stage's share of the shared LLM budget.
+///
+/// A cleanup pass is ~300 ms on the verified CPU path, so 3s is generous even
+/// including a cold model load.  Capping it here is what guarantees Structured
+/// Mode still gets the bulk of the user's configured budget.
+const CLEANUP_MAX_BUDGET: Duration = Duration::from_secs(3);
+
+/// The single wall-clock budget `llm_timeout_secs` buys, shared by BOTH LLM
+/// stages of one dictation.
+///
+/// Cleanup and Structured Mode run in series, and each used to take a full
+/// `llm_timeout_secs` of its own — so the advertised "8 second" timeout could
+/// hold a dictation for 16.  One budget now covers both.
+fn shared_llm_budget(settings: Option<&crate::storage::types::AppSettings>) -> Duration {
+    Duration::from_secs(settings.map(|s| s.llm_timeout_secs).unwrap_or(8).max(1) as u64)
+}
+
+/// Cleanup's slice of the shared budget: the cap, or half the total, whichever
+/// is smaller.
+///
+/// The `total.min(CAP)` this used to be handed the WHOLE budget to cleanup at
+/// the slider's 3s minimum, which could leave Structured Mode a remainder of
+/// zero — plain dictation, every time, for a user who never turned cleanup's
+/// timeout down. Half is the floor that keeps both stages alive.
+fn cleanup_budget(total: Duration) -> Duration {
+    CLEANUP_MAX_BUDGET.min(total / 2)
+}
+
+/// What is left of the shared budget once cleanup has actually finished.
+///
+/// Zero is a legal outcome: Structured Mode then degrades to plain dictation,
+/// exactly as it does on any other timeout.  Neither stage may ever block the
+/// dictation itself.
+fn structured_budget(total: Duration, cleanup_elapsed: Duration) -> Duration {
+    total.saturating_sub(cleanup_elapsed)
+}
+
+/// Pure gate for the cleanup stage, so the policy is testable without a model.
+fn cleanup_qualifies(enabled: bool, model_id: Option<&str>, text: &str) -> bool {
+    enabled
+        && model_id.is_some_and(|id| !id.is_empty())
+        && !text.trim().is_empty()
+        && text.chars().count() <= CLEANUP_INPUT_CHAR_CAP
+}
+
+/// Pure gate for the Send-command guard, so the policy is testable without a
+/// model.  Cleanup Mode can move or introduce a trailing "send" that the
+/// user's raw speech never contained; when that happens Send would fire
+/// (pressing Enter in the focused app) on words the user didn't actually
+/// say.  The guard: if Cleanup Mode rewrote the transcript and the effective
+/// table includes Send, also parse the PRE-cleanup text (through the same
+/// `format_lists` transform `final_text` gets, for parity) with the same
+/// table — if that parse wouldn't have fired Send, drop Send from the
+/// effective table so the cleanup-introduced "send" stays literal text.
+fn should_drop_cleanup_send(
+    cleanup_applied: bool,
+    table: &[crate::postprocess::voice_commands::CommandDef],
+    pre_cleanup_text: &str,
+) -> bool {
+    use crate::postprocess::voice_commands::{OutputSegment, VoiceCommand};
+
+    if !cleanup_applied {
+        return false;
+    }
+    if !table
+        .iter()
+        .any(|d| matches!(d.command, VoiceCommand::Send))
+    {
+        return false;
+    }
+    let pre_cleanup_final_text = crate::postprocess::formatter::format_lists(pre_cleanup_text);
+    let pre_segments = crate::postprocess::voice_commands::parse_commands_with_table(
+        &pre_cleanup_final_text,
+        table,
+    );
+    !pre_segments
+        .iter()
+        .any(|seg| matches!(seg, OutputSegment::Command(VoiceCommand::Send)))
+}
+
+/// Run one cleanup pass, returning the cleaned transcript and the slice of the
+/// SHARED budget this stage consumed.
+///
+/// `None` means "keep what you had": the stage is off, doesn't qualify, the
+/// model isn't available, or the pass failed / timed out.  Callers must never
+/// treat that as an error — plain dictation is always the fallback.
+/// `budget` is this stage's slice of the shared LLM budget (see
+/// [`cleanup_budget`]) and covers lazy model resolution plus generation.
+///
+/// Only GENERATION time is charged back to the shared budget: a cold GGUF load
+/// is a one-off cost of enabling Cleanup Mode, not work Structured Mode should
+/// pay for, and charging it could hand the second stage a zero remainder on the
+/// first dictation after a restart.
+async fn run_cleanup_stage(
+    app_handle: &tauri::AppHandle,
+    settings: Option<&crate::storage::types::AppSettings>,
+    text: &str,
+    budget: Duration,
+) -> (Option<String>, Duration) {
+    let enabled = settings.map(|s| s.cleanup_mode).unwrap_or(false);
+    let model_id = settings.and_then(|s| s.active_cleanup_model_id.clone());
+    if !cleanup_qualifies(enabled, model_id.as_deref(), text) {
+        if enabled {
+            crate::llm::diaglog::log(&format!(
+                "cleanup: SKIPPED (model={:?} chars={})",
+                model_id,
+                text.chars().count()
+            ));
+        }
+        return (None, Duration::ZERO);
+    }
+    let Some(model_id) = model_id else {
+        return (None, Duration::ZERO);
+    };
+
+    let styling = crate::llm::prompt::cleanup_styling(
+        settings
+            .map(|s| s.writing_style.as_str())
+            .unwrap_or_default(),
+    )
+    .to_string();
+    let deadline = budget;
+    let started = std::time::Instant::now();
+
+    // The keyed single-flight loader holds a blocking mutex across the GGUF
+    // load, so it must run on the blocking pool, never on this tokio worker.
+    let app = app_handle.clone();
+    let mid = model_id.clone();
+    let loaded = tokio::time::timeout(
+        deadline,
+        tokio::task::spawn_blocking(move || {
+            let st = app.state::<AppState>();
+            crate::commands::llm::ensure_cleanup_runner_loaded(&mid, &st)
+        }),
+    )
+    .await;
+    let runner = match loaded {
+        Ok(Ok(Ok(runner))) => runner,
+        Ok(Ok(Err(e))) => {
+            crate::llm::diaglog::log(&format!("cleanup: model resolve FAILED: {e}"));
+            return (None, Duration::ZERO);
+        }
+        Ok(Err(e)) => {
+            crate::llm::diaglog::log(&format!("cleanup: resolve task failed: {e}"));
+            return (None, Duration::ZERO);
+        }
+        Err(_) => {
+            crate::llm::diaglog::log("cleanup: model load exceeded the deadline");
+            return (None, Duration::ZERO);
+        }
+    };
+
+    let remaining = deadline.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        crate::llm::diaglog::log("cleanup: deadline expired during model load");
+        return (None, Duration::ZERO);
+    }
+    // The clock that is charged back to the shared budget starts HERE — after
+    // the (possibly cold) model load, around the generation only.
+    let generation_started = std::time::Instant::now();
+    let outcome = match runner
+        .cleanup_with_timeout(text.to_string(), styling, remaining)
+        .await
+    {
+        // Filler-only input legitimately normalizes to an empty string, but
+        // emitting nothing would look like dictation silently failed — keep the
+        // words the user actually spoke instead.
+        Ok(cleaned) if cleaned.trim().is_empty() => {
+            crate::llm::diaglog::log("cleanup: empty output — keeping the raw transcript");
+            None
+        }
+        Ok(cleaned) => {
+            crate::llm::diaglog::log(&format!(
+                "cleanup: OK in {}ms (generate {}ms) {} -> {} chars",
+                started.elapsed().as_millis(),
+                generation_started.elapsed().as_millis(),
+                text.chars().count(),
+                cleaned.trim().chars().count()
+            ));
+            Some(cleaned.trim().to_string())
+        }
+        Err(e) => {
+            crate::llm::diaglog::log(&format!(
+                "cleanup: FAILED after {}ms: {e}",
+                started.elapsed().as_millis()
+            ));
+            None
+        }
+    };
+    (outcome, generation_started.elapsed())
+}
+
 /// Stop capture, run Whisper inference, post-process, and output the text.
-pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState) {
+pub async fn stop_recording(app_handle: &tauri::AppHandle, state: &AppState) {
+    if let StopDecision::StopNow(generation) = request_stop(state, CaptureMode::Dictation) {
+        stop_and_transcribe_generation(app_handle, state, generation).await;
+    }
+}
+
+pub(crate) async fn stop_and_transcribe_generation(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    generation: u64,
+) {
+    let mut trace =
+        pipeline_trace_for_capture(state, generation, CaptureMode::Dictation, "dictation");
     // Never finish a Command-Mode capture as dictation.  The hotkey stop path
     // already checks this, but the public `stop_recording` command and
     // `toggle_recording` call here directly — without this guard they could
     // transcribe a command utterance as text.  Poison-safe read (a poisoned
     // safety gate must not silently behave as "not command").  Ownership is
     // released only after we claim the samples below.
-    if read_capture_mode(state) == crate::state::CaptureMode::Command {
-        return;
-    }
+    emit_recording_state(app_handle, generation, "processing");
 
     // Restore system volume immediately — don't wait for transcription.
-    crate::audio::ducking::unduck();
-
-    let _ = app_handle.emit("recording-state-change", "processing");
 
     // Snapshot every setting the rest of this function needs in ONE DB read.
     // Previously this was 3 separate get_settings() calls (noise_reduction,
     // voice_commands/command_send, ship_mode) — each a full table scan and
     // HashMap build.  Cache once, reuse everywhere.
-    let settings = crate::storage::settings::get_settings(&state.db).ok();
+    let (
+        settings,
+        screen_context_rx,
+        preview_done_rx,
+        dictation_target,
+        structured_panel_edit,
+        output_config_snapshot,
+        _structured_profile_snapshot,
+    ) = {
+        let mut capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(session) = capture
+            .as_mut()
+            .filter(|s| s.generation == generation && s.mode == CaptureMode::Dictation)
+        else {
+            return;
+        };
+        session.live.store(false, CaptureOrdering::Release);
+        (
+            Some(session.settings.clone()),
+            session.screen_context_rx.take(),
+            session.preview_done_rx.take(),
+            session.target,
+            session.structured_panel_edit,
+            session.output_config.clone(),
+            session.structured_profile,
+        )
+    };
 
     // Drain the screen-context capture spawned at recording start.  Wait at
     // most 50 ms — capture should already be done since the user has been
     // speaking for a while.  On timeout we proceed without context.
-    let screen_context: Option<ScreenContext> = if settings
+    let screen_context_enabled = settings
         .as_ref()
         .map(|s| s.use_screen_context)
-        .unwrap_or(true)
-    {
-        let rx = state
-            .screen_context_rx
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take());
-        if let Some(rx) = rx {
-            match tokio::time::timeout(Duration::from_millis(50), rx).await {
-                Ok(Ok(ctx)) => {
-                    if ctx.is_empty() {
-                        None
-                    } else {
-                        Some(ctx)
-                    }
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+        .unwrap_or(true);
 
     // 1. Stop capture and get raw audio samples
     let samples = {
@@ -666,9 +1896,10 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to stop recording: {e}");
-                release_capture(state);
+                release_capture(state, generation);
                 emit_error(
                     app_handle,
+                    generation,
                     e.code(),
                     format!("Failed to stop recording: {e}"),
                 );
@@ -676,6 +1907,8 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             }
         }
     };
+    trace.mark("audio_stopped");
+    trace.describe_audio(samples.len());
 
     // Snapshot THIS dictation's bound target (hwnd + owning pid) BEFORE we
     // release capture — the instant we do, an overlapping dictation can start
@@ -683,19 +1916,32 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // stopping dictation must send its text into the window IT targeted, so we
     // carry the snapshot through transcription → output rather than re-reading
     // the shared slot late (B2-11).
-    let dictation_target = state.dictation_target.lock().ok().and_then(|g| *g);
-
     // Samples are claimed — release capture ownership so the next dictation or
     // command capture can begin while this one finishes transcribing.
-    release_capture(state);
+    release_capture(state, generation);
+    crate::audio::ducking::unduck();
 
     // 1a. Let the live-preview worker drop its WhisperState before final
     // transcription allocates a fresh state. This avoids overlapping decode
     // buffers on smaller GPUs and 16 GB machines.
-    wait_for_preview_worker(state).await;
+    wait_for_preview_worker(preview_done_rx).await;
+    trace.mark("preview_drained");
+
+    let screen_context: Option<ScreenContext> = if screen_context_enabled {
+        if let Some(rx) = screen_context_rx {
+            match tokio::time::timeout(Duration::from_millis(50), rx).await {
+                Ok(Ok(ctx)) if !ctx.is_empty() => Some(ctx),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     if samples.is_empty() {
-        let _ = app_handle.emit("recording-state-change", "idle");
+        emit_recording_state(app_handle, generation, "idle");
         return;
     }
 
@@ -705,28 +1951,40 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         .as_ref()
         .map(|s| s.noise_reduction)
         .unwrap_or(false);
-    if noise_reduction {
-        crate::audio::denoise::denoise(&mut samples);
+    let speech_analysis = if noise_reduction {
+        crate::audio::denoise::denoise_with_speech_analysis(&mut samples)
+    } else {
+        crate::audio::denoise::analyze_speech(&samples)
+    };
+    if !speech_analysis.should_transcribe() {
+        emit_recording_state(app_handle, generation, "idle");
+        return;
     }
 
     // 1c. Normalize audio levels for consistent Whisper performance.
     //     Done here (not in the capture callback) to avoid affecting the VU meter.
     crate::audio::normalize::normalize_peak(&mut samples);
+    trace.mark("preprocess_done");
 
     // 2. Transcribe — CPU-bound, runs on a blocking thread to keep the async
     //    runtime free for UI events during inference.
-    let engine: Arc<crate::asr::engine::WhisperEngine> = {
+    let model_transition = state
+        .asr_model_transition
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let engine: crate::asr::LoadedAsrEngine = {
         let guard = match state.engine.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        match guard.as_ref().map(Arc::clone) {
+        match guard.clone() {
             Some(e) => e,
             None => {
                 drop(guard);
                 eprintln!("No model loaded — cannot transcribe");
                 emit_error(
                     app_handle,
+                    generation,
                     ErrorCode::NoModelLoaded,
                     "No model loaded — go to Models to download one",
                 );
@@ -735,57 +1993,49 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         }
     };
 
-    // Snapshot the current vocabulary prompt so we can restore it after this
-    // transcription — screen-context tokens are dynamic per utterance and
-    // must not bleed into subsequent calls.  When no merged prompt is
-    // produced (no screen context, or feature off) we leave the engine
-    // untouched and skip the restore.
+    // The engine's standing vocabulary prompt is the BASE the per-utterance
+    // screen-context tokens are merged onto.  Nothing is mutated on the engine:
+    // the merged prompt rides along on this call's `TranscriptionOptions`, so
+    // dynamic tokens cannot bleed into the next utterance and there is nothing
+    // to restore afterwards.
     let saved_initial_prompt = engine.get_initial_prompt();
     let merged_prompt = screen_context.as_ref().and_then(|ctx| {
         crate::screen_context::build_initial_prompt(ctx, saved_initial_prompt.as_deref())
     });
-    let prompt_was_overridden = merged_prompt.is_some();
-    if let Some(p) = merged_prompt.as_ref() {
-        engine.set_initial_prompt(Some(p.clone()));
-    }
+    let options = match merged_prompt {
+        Some(prompt) => {
+            crate::asr::types::TranscriptionOptions::configured().with_initial_prompt(Some(prompt))
+        }
+        None => crate::asr::types::TranscriptionOptions::configured(),
+    };
 
-    let engine_for_transcribe = Arc::clone(&engine);
-    let transcription =
-        match tokio::task::spawn_blocking(move || engine_for_transcribe.transcribe(&samples)).await
-        {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                if prompt_was_overridden {
-                    engine.set_initial_prompt(saved_initial_prompt.clone());
-                }
-                eprintln!("Transcription failed: {e}");
-                emit_error(
-                    app_handle,
-                    ErrorCode::TranscriptionFailed,
-                    format!("Transcription failed: {e}"),
-                );
-                return;
-            }
-            Err(e) => {
-                if prompt_was_overridden {
-                    engine.set_initial_prompt(saved_initial_prompt.clone());
-                }
-                eprintln!("Transcription task panicked: {e}");
-                emit_error(
-                    app_handle,
-                    ErrorCode::TranscriptionPanicked,
-                    format!("Transcription crashed: {e}"),
-                );
-                return;
-            }
-        };
-
-    if prompt_was_overridden {
-        engine.set_initial_prompt(saved_initial_prompt);
-    }
+    let engine_uses_gpu = engine.uses_gpu();
+    let engine_family = model_family_of(&engine);
+    trace.mark("asr_started");
+    let receive = enqueue_final_transcription(generation, engine.clone(), samples, options);
+    drop(model_transition);
+    let transcription = match await_final_transcription(receive).await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Transcription failed: {e}");
+            emit_error(
+                app_handle,
+                generation,
+                ErrorCode::TranscriptionFailed,
+                format!("Transcription failed: {e}"),
+            );
+            return;
+        }
+    };
+    trace.mark("asr_done");
+    trace.describe_model(
+        transcription.model_name.clone(),
+        engine_uses_gpu,
+        engine_family,
+    );
 
     if transcription.text.is_empty() {
-        let _ = app_handle.emit("recording-state-change", "idle");
+        emit_recording_state(app_handle, generation, "idle");
         return;
     }
 
@@ -800,6 +2050,34 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             Err(_) => transcription.text.clone(),
         }
     };
+
+    // 3a. Cleanup Mode.
+    //
+    // Rewrites the transcript as clean written text (fillers, self-corrections,
+    // punctuation, spoken numbers/dates/emails) before anything downstream sees
+    // it — Structured Mode's input, list formatting, output and history all use
+    // the cleaned text.  Every failure mode degrades silently to the un-cleaned
+    // transcript: dictation must never block on this stage.
+    //
+    // Cleanup and Structured Mode share ONE `llm_timeout_secs` budget between
+    // them, with cleanup additionally capped at `CLEANUP_MAX_BUDGET`; whatever
+    // it leaves is what Structured Mode gets below.  Two independent full
+    // budgets used to stack into ~16s of serial LLM work for an 8s setting.
+    //
+    // The stage reports its GENERATION time, not its wall clock: charging a
+    // cold GGUF load against the shared budget could zero out Structured Mode's
+    // remainder on the first dictation after a restart.
+    let llm_budget = shared_llm_budget(settings.as_ref());
+    let pre_cleanup_text = processed_text.clone();
+    let (cleanup_result, cleanup_elapsed) = run_cleanup_stage(
+        app_handle,
+        settings.as_ref(),
+        &processed_text,
+        cleanup_budget(llm_budget),
+    )
+    .await;
+    let cleanup_applied = cleanup_result.is_some();
+    let processed_text = cleanup_result.unwrap_or(processed_text);
 
     // 3b. Structured Mode branch.
     //
@@ -828,7 +2106,12 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         .as_ref()
         .map(|s| s.structured_min_chars)
         .unwrap_or(40) as usize;
-    let llm_timeout = settings.as_ref().map(|s| s.llm_timeout_secs).unwrap_or(8);
+    // Whatever cleanup left of the shared budget covers lazy model resolution
+    // plus generation.  Timing only the decode let a cold load keep the overlay
+    // in "structuring" for many seconds before the advertised timeout even
+    // started.
+    let structured_deadline = structured_budget(llm_budget, cleanup_elapsed);
+    let structured_started = std::time::Instant::now();
 
     // Detect and strip the trailing "Voxify" trigger word — but ONLY when
     // the voice-command gate is armed.  With the gate off, "voxify" is
@@ -852,12 +2135,11 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // window being visible, so a closed pad never hijacks normal dictation.
     // Either way it's PLAIN capture — never Structured Mode, which yields a slot
     // panel, not text to append.
+    let target_window_label =
+        dictation_target.and_then(|target| window_label_for_hwnd(app_handle, target.hwnd));
     let route_to_scratchpad = {
         use tauri::Manager;
-        let foreground_is_scratchpad = dictation_target
-            .and_then(|t| window_label_for_hwnd(app_handle, t.hwnd))
-            .as_deref()
-            == Some("scratchpad");
+        let foreground_is_scratchpad = target_window_label.as_deref() == Some("scratchpad");
         let capturing = state
             .scratchpad_capture
             .load(std::sync::atomic::Ordering::Acquire)
@@ -868,11 +2150,19 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         foreground_is_scratchpad || capturing
     };
 
+    // Dictation started while the Structured panel is open is an in-place edit
+    // operation. Running the structured LLM again would add seconds, produce a
+    // second panel event that the frontend intentionally discards, and append
+    // generated Markdown instead of the words the user just dictated.
+    let route_to_structured_panel = structured_panel_edit;
+
     // Resolve whether the LLM should run for THIS utterance.  With the
     // gate on, it's an explicit opt-in per utterance.  With the gate off,
     // the global setting governs (every qualifying transcription runs).
-    let should_structure =
-        structured_enabled && (!voice_command_gate || voxify_said) && !route_to_scratchpad;
+    let should_structure = structured_enabled
+        && (!voice_command_gate || voxify_said)
+        && !route_to_scratchpad
+        && !route_to_structured_panel;
 
     let configured_llm_id = settings
         .as_ref()
@@ -887,7 +2177,8 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         })
         .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state));
 
-    let runner_opt = if should_structure {
+    let qualifies_for_structure = should_structure && processed_text.chars().count() >= min_chars;
+    let runner_opt = if qualifies_for_structure {
         if let Some(model_id) = configured_llm_id.clone() {
             // Always resolve through the KEYED single-flight loader — never a
             // bare "use whatever runner is loaded" fast path (B2-16): its own
@@ -898,28 +2189,47 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             // GGUF load + thread join, so it runs on the blocking pool — never on
             // this tokio worker (B2-8).
             crate::llm::diaglog::log(&format!("runner: resolving '{model_id}' (keyed)"));
+            let load_epoch = state
+                .llm_load_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
             let app = app_handle.clone();
             let mid = model_id.clone();
-            let loaded = tokio::task::spawn_blocking(move || {
-                let st = app.state::<AppState>();
-                crate::commands::llm::ensure_runner_loaded(&mid, &st, Some(&app))
-            })
+            let loaded = tokio::time::timeout(
+                structured_deadline,
+                tokio::task::spawn_blocking(move || {
+                    let st = app.state::<AppState>();
+                    crate::commands::llm::ensure_runner_loaded_at_epoch(
+                        &mid,
+                        &st,
+                        Some(&app),
+                        load_epoch,
+                    )
+                }),
+            )
             .await;
             match loaded {
-                Ok(Ok(r)) => {
+                Ok(Ok(Ok(r))) => {
                     crate::llm::diaglog::log("runner: resolve ok");
                     Some(r)
                 }
-                Ok(Err(e)) => {
+                Ok(Ok(Err(e))) => {
                     crate::llm::diaglog::log(&format!("runner: resolve FAILED: {e}"));
                     let _ =
                         app_handle.emit("structured-mode-degraded", &format!("Load failed: {e}"));
                     None
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     crate::llm::diaglog::log(&format!("runner: resolve task failed: {e}"));
                     let _ =
                         app_handle.emit("structured-mode-degraded", &format!("Load failed: {e}"));
+                    None
+                }
+                Err(_) => {
+                    crate::llm::diaglog::log("runner: resolve exceeded structured deadline");
+                    let _ = app_handle.emit(
+                        "structured-mode-degraded",
+                        "Local model load exceeded the Structured Mode deadline. Using plain dictation for this result.",
+                    );
                     None
                 }
             }
@@ -952,11 +2262,10 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         processed_text.clone()
     };
 
-    let structured: Option<ProfileOutput> = if should_structure
-        && processed_text.chars().count() >= min_chars
-    {
+    let structured: Option<ProfileOutput> = if qualifies_for_structure {
         if let Some(runner) = runner_opt {
-            let _ = app_handle.emit("recording-state-change", "structuring");
+            emit_recording_state(app_handle, generation, "structuring");
+            trace.mark("llm_started");
             let t0 = std::time::Instant::now();
 
             // Phase 2: when both Structured Mode and the screen-context
@@ -978,22 +2287,30 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
             };
 
             crate::llm::diaglog::log(&format!(
-                    "pipeline: starting extraction input_chars={} llm_input_chars={} timeout={}s min_chars={} screen_tokens={}",
+                    "pipeline: starting extraction input_chars={} llm_input_chars={} timeout={}ms min_chars={} screen_tokens={}",
                     processed_text.chars().count(),
                     structured_input.chars().count(),
-                    llm_timeout,
+                    structured_deadline.as_millis(),
                     min_chars,
                     sm_tokens.len(),
                 ));
-            match runner
-                .extract_with_context_and_timeout(
-                    structured_input.clone(),
-                    sm_tokens,
-                    sm_app,
-                    Duration::from_secs(llm_timeout as u64),
-                )
-                .await
-            {
+            let remaining = structured_deadline.saturating_sub(structured_started.elapsed());
+            let extraction = if remaining.is_zero() {
+                Err(crate::error::AppError::Llm(
+                    "Structured Mode deadline expired during model load".into(),
+                ))
+            } else {
+                runner
+                    .extract_with_context_and_timeout(
+                        structured_input.clone(),
+                        sm_tokens,
+                        sm_app,
+                        remaining,
+                    )
+                    .await
+            };
+            trace.mark("llm_done");
+            match extraction {
                 Ok(out) => {
                     crate::llm::diaglog::log(&format!(
                         "pipeline: extraction OK in {}ms slots={}",
@@ -1095,6 +2412,17 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                 )
             });
         }
+        // Cleanup Mode rewrote the transcript — guard against a
+        // cleanup-introduced trailing "send" firing on words the user never
+        // actually spoke (see `should_drop_cleanup_send`).
+        if should_drop_cleanup_send(cleanup_applied, &table, &pre_cleanup_text) {
+            table.retain(|d| {
+                !matches!(
+                    d.command,
+                    crate::postprocess::voice_commands::VoiceCommand::Send
+                )
+            });
+        }
         Some(table)
     } else {
         None
@@ -1126,12 +2454,13 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     // own windows we insert the text via the frontend (DOM caret insertion)
     // instead of OS paste — and we skip focus restoration since our window is
     // already foreground.
-    let target_is_self = prev_hwnd.map(crate::focus::hwnd_is_own_process).unwrap_or(false);
+    let target_is_self = prev_hwnd
+        .map(crate::focus::hwnd_is_own_process)
+        .unwrap_or(false);
 
     let focus_task = if structured.is_none() && !target_is_self {
-        dictation_target.map(|t| {
-            tokio::task::spawn_blocking(move || restore_foreground_window(t.hwnd, t.pid))
-        })
+        dictation_target
+            .map(|t| tokio::task::spawn_blocking(move || restore_foreground_window(t.hwnd, t.pid)))
     } else {
         None
     };
@@ -1146,28 +2475,59 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //     the Structured panel becomes the commit point (Paste / Copy / Edit /
     //     Dismiss).  The Markdown still reaches the UI via
     //     `structured-output-ready`, and history still records it.
-    let output_config = match state.output_config.lock() {
-        Ok(guard) => guard.clone(),
-        Err(poisoned) => poisoned.into_inner().clone(),
-    };
+    let output_config = output_config_snapshot;
+    // The effective command table, rather than the raw setting, decides
+    // whether spoken "send" owns submission for this utterance.
+    let command_send_active = voice_command_table
+        .as_ref()
+        .map(|table| {
+            table.iter().any(|definition| {
+                matches!(
+                    definition.command,
+                    crate::postprocess::voice_commands::VoiceCommand::Send
+                )
+            })
+        })
+        .unwrap_or(false);
+    let ship_mode_active = structured.is_none()
+        && !target_is_self
+        && !route_to_scratchpad
+        && output_config.ship_mode
+        && !command_send_active
+        && matches!(
+            &output_config.mode,
+            crate::output::types::OutputMode::TypeSimulation
+                | crate::output::types::OutputMode::Both
+        );
     if structured.is_none() {
+        trace.mark("output_started");
         if route_to_scratchpad {
             // The scratchpad is the target (its window was foreground at record
             // start, OR it's open with capture on). Route the plain transcript
             // there regardless of which app is focused — never paste into some
             // other window the user was only reading.
-            let _ = app_handle.emit(
+            if app_handle
+                .emit(
                 "dictation-insert",
-                serde_json::json!({ "text": final_text, "target": "scratchpad" }),
-            );
+                serde_json::json!({ "generation": generation, "text": final_text, "target": "scratchpad" }),
+                )
+                .is_ok()
+            {
+                trace.mark_visible_delivery("in_app_event_emitted");
+            }
         } else if target_is_self {
             // A different OmniVox window (main/overlay) — caret-insert there. The
             // "main" label lets the main window stand its Notes-append down when
             // the dictation was actually aimed at another OmniVox window.
-            let _ = app_handle.emit(
+            if app_handle
+                .emit(
                 "dictation-insert",
-                serde_json::json!({ "text": final_text, "target": "main" }),
-            );
+                serde_json::json!({ "generation": generation, "text": final_text, "target": "main" }),
+                )
+                .is_ok()
+            {
+                trace.mark_visible_delivery("in_app_event_emitted");
+            }
         } else {
             let output_result = if let Some(ref segments) = voice_segments {
                 // Inline voice commands that fire OS input (Send/Enter, mouse,
@@ -1187,117 +2547,102 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
                             crate::postprocess::voice_commands::VoiceCommand::LaunchApp(_)
                         )
                     )
-                }) && crate::commands::settings::launch_app_voice_command_enabled(&state.db);
-                state
-                    .output
-                    .send_segments(segments, &output_config, target, allow_launch)
-            } else {
-                // Plain paste (Ctrl+V) is focus-dependent. restore_foreground_window
-                // can fail silently (Windows foreground lock, HWND recycle, another
-                // app grabbing focus) — its own doc says a failed restore must not be
-                // treated as success (H2). Re-verify identity right at paste time so a
-                // failed restore can't land the dictation in the wrong window. This is
-                // the same gate the segment/command path applies. verify_foreground_target
-                // returns true on non-Windows and when the target was already foreground,
-                // so normal dictation is unaffected; a refusal still saves to history below.
-                let target_ok = dictation_target
-                    .map(|t| crate::focus::verify_foreground_target(t.hwnd, t.pid))
-                    .unwrap_or(true);
-                if target_ok {
-                    state.output.send(&final_text, &output_config)
+                })
+                    && crate::commands::settings::launch_app_voice_command_enabled(&state.db);
+                if ship_mode_active {
+                    match target {
+                        Some(target) => {
+                            let segments = segments.clone();
+                            let config = output_config.clone();
+                            tokio::task::spawn_blocking(move || {
+                                crate::output::router::OutputRouter::new()
+                                    .send_segments_to_target_with_submit(
+                                        &segments,
+                                        &config,
+                                        target,
+                                        allow_launch,
+                                        Duration::from_millis(600),
+                                    )
+                            })
+                            .await
+                            .unwrap_or_else(|error| {
+                                Err(crate::error::AppError::Output(format!(
+                                    "Ship Mode output task failed: {error}"
+                                )))
+                            })
+                        }
+                        None => Err(crate::error::AppError::Output(
+                            "Ship Mode refused: no verified target window was captured".into(),
+                        )),
+                    }
                 } else {
+                    state
+                        .output
+                        .send_segments(segments, &output_config, target, allow_launch)
+                }
+            } else {
+                // Plain Ctrl+V is focus-dependent. The router verifies the
+                // immutable target identity only after acquiring the global
+                // output transaction, immediately before input injection. A
+                // missing target is refused; there is no blind-focus fallback.
+                if ship_mode_active {
+                    match dictation_target {
+                        Some(target) => {
+                            let text = final_text.clone();
+                            let config = output_config.clone();
+                            tokio::task::spawn_blocking(move || {
+                                crate::output::router::OutputRouter::new()
+                                    .send_to_target_with_submit(
+                                        &text,
+                                        &config,
+                                        target,
+                                        Duration::from_millis(600),
+                                    )
+                            })
+                            .await
+                            .unwrap_or_else(|error| {
+                                Err(crate::error::AppError::Output(format!(
+                                    "Ship Mode output task failed: {error}"
+                                )))
+                            })
+                        }
+                        None => Err(crate::error::AppError::Output(
+                            "Ship Mode refused: no verified target window was captured".into(),
+                        )),
+                    }
+                } else {
+                    state
+                        .output
+                        .send_to_target(&final_text, &output_config, dictation_target)
+                }
+            };
+            match output_result {
+                Ok(()) => trace.mark_visible_delivery("os_output_completed"),
+                Err(e) => {
+                    eprintln!("Output failed: {e}");
                     emit_error(
                         app_handle,
-                        crate::error::ErrorCode::KeystrokeError,
-                        "Paste skipped — the target window lost focus. Your dictation is saved to history.",
+                        generation,
+                        e.code(),
+                        format!("Output failed: {e}"),
                     );
-                    Ok(())
                 }
-            };
-            if let Err(e) = output_result {
-                eprintln!("Output failed: {e}");
-                emit_error(app_handle, e.code(), format!("Output failed: {e}"));
             }
         }
-    }
-
-    // 6b. Ship Mode — automatically press Enter to send the message.
-    //     Only fires when type simulation was used (clipboard-only can't auto-send).
-    //     When Command Send is enabled it overrides Ship Mode — the user controls
-    //     sending by saying "send" at the end, so we skip the automatic Enter.
-    //     Also skipped in Structured Mode — pasting is user-driven from the panel.
-    //     Derived from the effective table (not just the setting): if the user
-    //     disabled the Send command, Ship Mode auto-send stays available.
-    let command_send_active = voice_command_table
-        .as_ref()
-        .map(|t| {
-            t.iter().any(|d| {
-                matches!(
-                    d.command,
-                    crate::postprocess::voice_commands::VoiceCommand::Send
-                )
-            })
-        })
-        .unwrap_or(false);
-    if structured.is_none()
-        && !target_is_self
-        && !route_to_scratchpad
-        && output_config.ship_mode
-        && !command_send_active
-        && matches!(
-            output_config.mode,
-            crate::output::types::OutputMode::TypeSimulation
-                | crate::output::types::OutputMode::Both
-        )
-    {
-        let ship_target = dictation_target;
-        let _ = tokio::task::spawn_blocking(move || {
-            // The router's send/send_segments are synchronous and already
-            // include the 250ms post-paste guard, so by this point the paste
-            // keystroke has been delivered and the clipboard held stable.
-            // This settle only covers the target app *processing* its Ctrl+V
-            // before Enter arrives.  600ms (850ms total after paste) is sized
-            // for Ship Mode's actual targets — Electron chat/agent UIs, which
-            // process paste on a renderer tick — while still 900ms faster
-            // than the old blind 1500ms.  Native edit controls need far less.
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            // Re-verify foreground AFTER the settle: focus may have changed
-            // during the 600ms, and Enter == "send" in Ship Mode's chat/agent
-            // targets — firing it into a window we KNOW is no longer the target
-            // could submit somewhere else. Skip ONLY when we have a target that
-            // fails verification. When no target was captured (None), fall back
-            // to the pre-change behavior and fire — there's no identity to check
-            // against, and refusing would leave the message pasted-but-unsent.
-            let send_ok = match ship_target {
-                Some(t) => crate::focus::verify_foreground_target(t.hwnd, t.pid),
-                None => true,
-            };
-            if send_ok {
-                if let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) {
-                    let _ = enigo::Keyboard::key(
-                        &mut enigo,
-                        enigo::Key::Return,
-                        enigo::Direction::Click,
-                    );
-                }
-            } else {
-                crate::llm::diaglog::log(
-                    "ship mode: auto-send Enter skipped — target window changed after paste",
-                );
-            }
-        })
-        .await;
+        trace.mark("output_done");
     }
 
     // 7. Save to history.
     //     `text` is the final paste-ready string (Markdown in Structured
     //     Mode, plain text otherwise).  `raw_transcript` stores the
     //     pre-processor ASR text so the Structured panel's "View raw"
-    //     disclosure always reflects what the user actually spoke.
+    //     disclosure always reflects what the user actually spoke. Also kept
+    //     when Cleanup Mode rewrote the transcript, for the same reason —
+    //     `text` is no longer verbatim what was said.
     //     This happens BEFORE the `transcription-result` emit so listeners
     //     that re-query history (the History page auto-refresh) see the
     //     new row without needing a settle timer.
-    let raw_transcript = if structured.is_some() {
+    let raw_transcript = if structured.is_some() || cleanup_applied {
         Some(transcription.text.clone())
     } else {
         None
@@ -1310,8 +2655,30 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
         created_at: chrono::Utc::now(),
         raw_transcript,
     };
-    if let Err(e) = crate::storage::history::save_transcription(&state.db, &record) {
-        eprintln!("Failed to save transcription to history: {e}");
+    // Read the live setting here, not the capture-start snapshot: if the user
+    // disables history while ASR/LLM work is still in flight, this result must
+    // not race the purge and recreate sensitive content afterward. A poisoned
+    // settings lock fails private (no persistence) while delivery still works.
+    let saved_to_history = if let Ok(settings) = state.settings.read() {
+        if settings.values().history_enabled {
+            // Keep the settings read lock through the DB commit. A concurrent
+            // disable must acquire the write lock first and then schedule its
+            // purge, so no pre-disable save can land after that purge.
+            match crate::storage::history::save_transcription(&state.db, &record) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("Failed to save transcription to history: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if saved_to_history {
+        crate::storage::privacy::schedule_retention_cleanup(app_handle, false);
     }
 
     // 8. Notify frontend of the result.
@@ -1321,40 +2688,76 @@ pub async fn stop_and_transcribe(app_handle: &tauri::AppHandle, state: &AppState
     //    it, so skipping it on the Structured path would silently break
     //    those flows.  For Structured Mode we also emit the rich payload
     //    so the overlay can render the preview panel.
-    let _ = app_handle.emit("transcription-result", &record.text);
+    emit_text(app_handle, "transcription-result", generation, &record.text);
     if let Some(out) = &structured {
-        let _ = app_handle.emit(
-            "structured-output-ready",
-            &StructuredOutputPayload {
-                markdown: out.markdown.clone(),
-                slots: out.slots.clone(),
-                // Use the pre-processor ASR output so "View raw transcript"
-                // actually shows what the user said — processed_text has
-                // already been through filler removal, dictionary, and
-                // capitalization, which would mask the original words.
-                raw_transcript: transcription.text.clone(),
-                truncated_chars,
-            },
-        );
+        // A panel-dictation pass targets OmniVox itself and is intentionally
+        // merged into the existing editable panel by the frontend. Preserve
+        // that panel's original external target binding. Any new external
+        // result replaces the previous capability; an unbound result clears it.
+        let binding_id = match dictation_target {
+            Some(target) if crate::focus::hwnd_is_own_process(target.hwnd) => None,
+            Some(target) => Some(state.structured_outputs.issue(generation, target)),
+            None => {
+                state.structured_outputs.invalidate();
+                None
+            }
+        };
+        if app_handle
+            .emit(
+                "structured-output-ready",
+                &StructuredOutputPayload {
+                    generation,
+                    binding_id,
+                    markdown: out.markdown.clone(),
+                    slots: out.slots.clone(),
+                    // Use the pre-processor ASR output so "View raw transcript"
+                    // actually shows what the user said — processed_text has
+                    // already been through filler removal, dictionary, and
+                    // capitalization, which would mask the original words.
+                    raw_transcript: transcription.text.clone(),
+                    truncated_chars,
+                },
+            )
+            .is_ok()
+        {
+            trace.mark_visible_delivery("structured_event_emitted");
+        }
     }
 
-    let _ = app_handle.emit("recording-state-change", "idle");
+    emit_recording_state(app_handle, generation, "idle");
+    trace.finish("ok");
 }
 
 /// Cancel an in-progress recording without transcribing.
 pub fn cancel_recording(app_handle: &tauri::AppHandle, state: &AppState) {
     // Reset the surface that actually owns the mic — cancelling a Command-Mode
     // capture must clear the command pill, not emit a dictation idle event.
-    let was_command = read_capture_mode(state) == crate::state::CaptureMode::Command;
-    release_capture(state);
+    cancel_capture(app_handle, state, CaptureMode::Dictation);
+}
+
+pub fn cancel_capture(app_handle: &tauri::AppHandle, state: &AppState, mode: CaptureMode) {
+    if let StopDecision::StopNow(generation) =
+        request_stop_with_intent(state, mode, CaptureStopIntent::Cancel)
+    {
+        cancel_capture_generation(app_handle, state, generation, mode);
+    }
+}
+
+fn cancel_capture_generation(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    generation: u64,
+    mode: CaptureMode,
+) {
     crate::audio::ducking::unduck();
     if let Ok(mut audio) = state.audio.lock() {
         audio.cancel();
     }
-    if was_command {
-        let _ = app_handle.emit("command-state-change", "idle");
+    release_capture(state, generation);
+    if mode == CaptureMode::Command {
+        emit_command_state(app_handle, generation, "idle");
     } else {
-        let _ = app_handle.emit("recording-state-change", "idle");
+        emit_recording_state(app_handle, generation, "idle");
     }
 }
 
@@ -1378,6 +2781,7 @@ pub fn current_audio_level(state: &AppState) -> f32 {
 /// action isn't an editable send) to match the frontend contract.
 #[derive(Clone, serde::Serialize)]
 struct CommandConfirmPayload {
+    generation: u64,
     id: u64,
     summary: String,
     /// When the pending action sends a typed message, the message text —
@@ -1390,45 +2794,78 @@ struct CommandConfirmPayload {
 /// Payload for `command-result`.
 #[derive(Clone, serde::Serialize)]
 struct CommandResultPayload {
+    generation: u64,
     status: &'static str, // "done" | "error"
     summary: String,
 }
 
 fn emit_command_result(
     app_handle: &tauri::AppHandle,
+    generation: u64,
     status: &'static str,
     summary: impl Into<String>,
 ) {
-    let _ = app_handle.emit(
-        "command-result",
-        &CommandResultPayload {
-            status,
-            summary: summary.into(),
-        },
-    );
+    if app_handle
+        .emit(
+            "command-result",
+            &CommandResultPayload {
+                generation,
+                status,
+                summary: summary.into(),
+            },
+        )
+        .is_ok()
+    {
+        crate::perf::observe_visible_delivery(generation, "command_result_event_emitted");
+    }
 }
 
 /// Snapshot the current command's [`crate::state::CommandContext`].  Falls back
 /// to an empty, id-0 context if none is set (shouldn't happen — the capture
 /// start always sets one — but never target a stale/absent binding).
-fn current_command_context(state: &AppState) -> crate::state::CommandContext {
-    state
-        .command_context
-        .lock()
-        .ok()
-        .and_then(|g| *g)
-        .unwrap_or(crate::state::CommandContext {
-            id: 0,
-            target_hwnd: None,
-            target_pid: None,
-            captured_at: std::time::Instant::now(),
-        })
-}
-
 /// A command is superseded (cancelled) when the monotonic cancellation floor has
 /// been raised to at least its id — i.e. a "stop" for this or a later capture.
 fn command_superseded(cancel_floor: u64, ctx_id: u64) -> bool {
     ctx_id != 0 && cancel_floor >= ctx_id
+}
+
+fn park_pending_command(
+    state: &AppState,
+    ctx: crate::state::CommandContext,
+    command: crate::state::PendingCommand,
+) -> bool {
+    let latest = state
+        .command_id_gen
+        .load(std::sync::atomic::Ordering::Acquire);
+    let cancelled = state
+        .command_cancel_floor
+        .load(std::sync::atomic::Ordering::Acquire);
+    if latest != ctx.id || command_superseded(cancelled, ctx.id) {
+        return false;
+    }
+    let mut pending = state
+        .pending_command
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // Re-check under the slot lock. A newer capture can claim between the
+    // optimistic check and this write; an older classifier must never replace
+    // the newer command's confirmation.
+    let latest = state
+        .command_id_gen
+        .load(std::sync::atomic::Ordering::Acquire);
+    let cancelled = state
+        .command_cancel_floor
+        .load(std::sync::atomic::Ordering::Acquire);
+    if latest != ctx.id
+        || command_superseded(cancelled, ctx.id)
+        || pending
+            .as_ref()
+            .is_some_and(|(existing, _)| existing.id > ctx.id)
+    {
+        return false;
+    }
+    *pending = Some((ctx, command));
+    true
 }
 
 /// Whether a confirm/cancel request targets the current pending command.  A
@@ -1470,13 +2907,19 @@ fn emit_command_idle_if_free(app_handle: &tauri::AppHandle, state: &AppState, fi
         .map(|g| g.is_none())
         .unwrap_or(true);
     if capture_idle && no_pending {
-        let _ = app_handle.emit("command-state-change", "idle");
+        emit_command_state(
+            app_handle,
+            state
+                .capture_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            "idle",
+        );
     }
 }
 
 /// The command capture body. Assumes capture ownership is ALREADY claimed (the
 /// hotkey hook claims synchronously on its thread before spawning this).
-pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
+pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle, generation: u64) {
     let state = app_handle.state::<AppState>();
 
     // Snapshot the foreground window so we can restore focus before firing key
@@ -1490,13 +2933,22 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
     // re-reads the shared `prev_foreground` slot (a concurrent dictation can
     // overwrite it — the H1 redirect).
     let ctx = crate::state::CommandContext {
+        generation,
         id: state.next_command_id(),
         target_hwnd: fg,
         target_pid: fg.and_then(crate::focus::pid_for_hwnd),
         captured_at: std::time::Instant::now(),
     };
-    if let Ok(mut c) = state.command_context.lock() {
-        *c = Some(ctx);
+    {
+        let mut capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(session) = capture
+            .as_mut()
+            .filter(|s| s.generation == generation && s.mode == CaptureMode::Command)
+        else {
+            return;
+        };
+        session.target = ctx.target();
+        session.command_context = Some(ctx);
     }
     // Keep the legacy dictation slot in sync (harmless — nothing in the command
     // path reads it now), but the command's real target lives in `ctx`.
@@ -1510,7 +2962,7 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
 
     // Scope the audio guard so it's provably dropped before any `.await` below
     // (a MutexGuard isn't Send, and this fn is spawned as a Send future).
-    let (start_result, is_recording, rms_level) = {
+    let (start_result, rms_level) = {
         let mut audio = match state.audio.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -1520,49 +2972,101 @@ pub(crate) async fn start_command_inner(app_handle: &tauri::AppHandle) {
             }
         };
         let r = audio.start();
-        (r, audio.is_recording_flag(), audio.rms_level_ref())
+        (r, audio.rms_level_ref())
     };
     if let Err(e) = start_result {
-        release_capture(&state);
-        emit_command_result(app_handle, "error", format!("Microphone error: {e}"));
+        release_capture(&state, generation);
+        emit_command_result(
+            app_handle,
+            generation,
+            "error",
+            format!("Microphone error: {e}"),
+        );
         return;
     }
 
+    mark_microphone_live(&state, generation);
+
+    let capture_live = {
+        let capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(session) = capture.as_ref().filter(|s| s.generation == generation) else {
+            drop(capture);
+            if let Ok(mut audio) = state.audio.lock() {
+                audio.cancel();
+            }
+            return;
+        };
+        Arc::clone(&session.live)
+    };
+
     // Audio is live. Honor a release that already landed during startup (a quick
     // tap), otherwise show the listening pill.
-    mark_capture_live(&state);
-    if take_startup_stop(&state) {
-        stop_and_run_command(app_handle, &state).await;
-    } else {
-        // Drive the command pill's volume waveform: emit `audio-level` events
-        // while listening, mirroring the dictation path.  Without this the
-        // command waveform sits flat because nothing publishes the mic level
-        // during a command capture (the emitter lived only in start_recording_inner).
-        let handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            use std::sync::atomic::Ordering;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                if !is_recording.load(Ordering::Relaxed) {
-                    break;
+    match mark_capture_live(&state, generation) {
+        LiveDecision::Stop(CaptureStopIntent::Finish) => {
+            stop_and_run_command(app_handle, &state, generation).await;
+        }
+        LiveDecision::Stop(CaptureStopIntent::Cancel) => {
+            cancel_capture_generation(app_handle, &state, generation, CaptureMode::Command);
+        }
+        LiveDecision::Continue => {
+            // Drive the command pill's volume waveform: emit `audio-level` events
+            // while listening, mirroring the dictation path.  Without this the
+            // command waveform sits flat because nothing publishes the mic level
+            // during a command capture (the emitter lived only in start_recording_inner).
+            let handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                use std::sync::atomic::Ordering;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    if !capture_live.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let level = f32::from_bits(rms_level.load(Ordering::Relaxed));
+                    emit_audio_level(&handle, generation, level);
                 }
-                let level = f32::from_bits(rms_level.load(Ordering::Relaxed));
-                let _ = handle.emit("audio-level", level);
+            });
+            emit_command_state(app_handle, generation, "listening");
+        }
+        LiveDecision::Stale => {
+            if let Ok(mut audio) = state.audio.lock() {
+                audio.cancel();
             }
-        });
-        let _ = app_handle.emit("command-state-change", "listening");
+        }
     }
 }
 
 /// Stop a command capture and run the recognized command. The hotkey hook
 /// decides StopNow synchronously, then spawns this.
-pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &AppState) {
-    let _ = app_handle.emit("command-state-change", "recognizing");
+pub(crate) async fn stop_and_run_command(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    generation: u64,
+) {
+    let mut trace = pipeline_trace_for_capture(state, generation, CaptureMode::Command, "command");
+    emit_command_state(app_handle, generation, "recognizing");
 
     // Snapshot the command's immutable context NOW, while this capture still
     // owns the mic — a later capture can overwrite `state.command_context`, but
     // this in-flight command carries its own bound target + id from here on.
-    let ctx = current_command_context(state);
+    let (ctx, command_settings) = {
+        let capture = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+        let session = capture
+            .as_ref()
+            .filter(|s| s.generation == generation && s.mode == CaptureMode::Command)
+            .expect("stop generation owns command capture");
+        (
+            session
+                .command_context
+                .unwrap_or(crate::state::CommandContext {
+                    generation,
+                    id: 0,
+                    target_hwnd: None,
+                    target_pid: None,
+                    captured_at: std::time::Instant::now(),
+                }),
+            session.settings.clone(),
+        )
+    };
 
     let mut samples = {
         let mut audio = match state.audio.lock() {
@@ -1572,47 +3076,85 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         match audio.stop() {
             Ok(s) => s,
             Err(e) => {
-                release_capture(state);
-                emit_command_result(app_handle, "error", format!("Microphone error: {e}"));
+                release_capture(state, generation);
+                emit_command_result(
+                    app_handle,
+                    generation,
+                    "error",
+                    format!("Microphone error: {e}"),
+                );
+                trace.finish("microphone_error");
                 return;
             }
         }
     };
+    trace.mark("audio_stopped");
+    trace.mark("preview_drained");
+    trace.describe_audio(samples.len());
 
     // Samples claimed — release capture ownership (held through audio.stop() so a
     // racing dictation start can't grab the mic mid-stop).
-    release_capture(state);
+    release_capture(state, generation);
 
     if samples.is_empty() {
-        let _ = app_handle.emit("command-state-change", "idle");
+        emit_command_state(app_handle, generation, "idle");
+        trace.finish("empty_audio");
+        return;
+    }
+    if !crate::audio::denoise::analyze_speech(&samples).should_transcribe() {
+        emit_command_state(app_handle, generation, "idle");
+        trace.finish("silence");
         return;
     }
     crate::audio::normalize::normalize_peak(&mut samples);
+    trace.mark("preprocess_done");
 
+    let model_transition = state
+        .asr_model_transition
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let engine = {
         let guard = match state.engine.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        guard.as_ref().map(Arc::clone)
+        guard.clone()
     };
     let Some(engine) = engine else {
-        emit_command_result(app_handle, "error", "No speech model loaded");
+        emit_command_result(app_handle, generation, "error", "No speech model loaded");
+        trace.finish("no_asr_model");
         return;
     };
 
-    let transcription =
-        match tokio::task::spawn_blocking(move || engine.transcribe(&samples)).await {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                emit_command_result(app_handle, "error", format!("Transcription failed: {e}"));
-                return;
-            }
-            Err(e) => {
-                emit_command_result(app_handle, "error", format!("Transcription crashed: {e}"));
-                return;
-            }
-        };
+    let engine_uses_gpu = engine.uses_gpu();
+    let engine_family = model_family_of(&engine);
+    trace.mark("asr_started");
+    let receive = enqueue_final_transcription(
+        generation,
+        engine,
+        samples,
+        crate::asr::types::TranscriptionOptions::latency_first(true),
+    );
+    drop(model_transition);
+    let transcription = match await_final_transcription(receive).await {
+        Ok(t) => t,
+        Err(e) => {
+            emit_command_result(
+                app_handle,
+                generation,
+                "error",
+                format!("Transcription failed: {e}"),
+            );
+            trace.finish("asr_error");
+            return;
+        }
+    };
+    trace.mark("asr_done");
+    trace.describe_model(
+        transcription.model_name.clone(),
+        engine_uses_gpu,
+        engine_family,
+    );
 
     let utterance = transcription.text.trim().to_string();
 
@@ -1623,21 +3165,14 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
     // classifying checks it before executing).  It never gets cleared, so a stop
     // spoken during classification still prevents that command's execution while
     // later commands (higher ids) proceed.  Also clears any parked confirm.
-    let norm = crate::actions::matcher::normalize(&utterance);
+    let tier0 = crate::actions::matcher::match_tier0_command(&utterance);
     // Also test the politeness-peeled form so "please stop", "can you stop",
     // "stop please", "undo that please" still hit these tier-0 phrases — Whisper
     // very commonly returns the polite wrapper, and a cancel that only matched
     // the bare word could watch a queued send fire anyway. peel_politeness only
     // strips leading/trailing politeness, so "stop music" stays "stop music"
     // (still a transport command, not a cancel).
-    let peeled = crate::actions::matcher::peel_politeness(&norm);
-    let is_cancel = |s: &str| {
-        matches!(
-            s,
-            "stop" | "stop it" | "cancel" | "cancel that" | "never mind" | "nevermind" | "abort"
-        )
-    };
-    if is_cancel(norm.as_str()) || is_cancel(peeled.as_str()) {
+    if tier0 == Some(crate::actions::matcher::Tier0Command::Cancel) {
         // `fetch_max`, never `store` (B2-1): an older delayed stop must not
         // LOWER a floor a newer command already raised.  The floor only ever
         // rises, so a "stop" for an earlier command can't un-cancel a later one.
@@ -1654,25 +3189,34 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
                 crate::hotkey::set_confirm_pending(None);
             }
         }
-        emit_command_result(app_handle, "done", "Stopped");
+        emit_command_result(app_handle, ctx.generation, "done", "Stopped");
+        trace.finish("stopped");
         return;
     }
 
     // Tier-0 undo — before the matcher so bare "undo" (Ctrl+Z chord) never
     // shadows it.  Reverses the assistant's own last action, not the app's.
-    let is_undo = |s: &str| {
-        matches!(
-            s,
-            "undo that" | "undo it" | "undo last command" | "undo the last command"
-        )
-    };
-    if is_undo(norm.as_str()) || is_undo(peeled.as_str()) {
+    if tier0 == Some(crate::actions::matcher::Tier0Command::Undo) {
         run_undo(app_handle, state, ctx).await;
+        trace.finish("ok");
         return;
     }
 
-    // Fast path: deterministic grammar match (microseconds, no LLM).
-    if let Some(intent) = crate::actions::match_command(&utterance) {
+    // Fast path: a fully recognized, deterministic sequence. The matcher only
+    // returns multi-step chains when every segment is independently safe; an
+    // ambiguous/partial sequence falls through without executing a prefix.
+    if let Some(mut intents) = crate::actions::matcher::match_command_sequence(&utterance) {
+        if intents.len() > 1 {
+            run_chain(app_handle, state, ctx, intents).await;
+            trace.finish("ok");
+            return;
+        }
+        // `match_command_sequence` always returns a non-empty vector. Reuse its
+        // single result instead of invoking the matcher a second time through
+        // `match_command`.
+        let intent = intents
+            .pop()
+            .expect("matched command sequence is non-empty");
         if let crate::actions::CommandIntent::OpenApp(name) = intent {
             // Resolve ONCE here — dispatch_open_app reuses this result instead of
             // re-resolving. The open-verb matcher is greedy ("show me the desktop",
@@ -1682,27 +3226,30 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
             // ONLY when an LLM is actually installed. With no LLM, dispatch straight
             // to the precise "No app found" instead of a misleading "install a model".
             let lookup = name.clone();
-            let resolved = tokio::task::spawn_blocking(move || {
-                crate::actions::app_index::resolve(&lookup)
-            })
-            .await
-            .ok()
-            .flatten();
-            if resolved.is_none() && any_llm_configured(state) {
+            let resolved =
+                tokio::task::spawn_blocking(move || crate::actions::app_index::resolve(&lookup))
+                    .await
+                    .ok()
+                    .flatten();
+            if resolved.is_none() && any_llm_configured(state, &command_settings) {
                 // fall through to classify_command_via_llm below
             } else {
                 dispatch_open_app(app_handle, state, ctx, name, resolved).await;
+                trace.finish("ok");
                 return;
             }
         } else {
             run_intent(app_handle, state, ctx, intent).await;
+            trace.finish("ok");
             return;
         }
     }
 
     // Slow path: free-form phrasing the grammar didn't catch → Qwen fallback.
     // The LLM may interpret one utterance as a multi-step chain.
-    let intents = classify_command_via_llm(app_handle, state, &utterance).await;
+    trace.mark("llm_started");
+    let intents = classify_command_via_llm(app_handle, state, &command_settings, &utterance).await;
+    trace.mark("llm_done");
     if !intents.is_empty() {
         // A "stop" spoken WHILE we were classifying (a fresh capture can start
         // once this one released the mic) raised the floor to at/above our id —
@@ -1713,17 +3260,20 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
                 .load(std::sync::atomic::Ordering::Acquire),
             ctx.id,
         ) {
-            emit_command_result(app_handle, "done", "Stopped");
+            emit_command_result(app_handle, ctx.generation, "done", "Stopped");
+            trace.finish("stopped");
             return;
         }
         // A submitting type_text (send_message) presses Enter in another app —
         // never fire that blind. Park the WHOLE sequence and route it through
         // the same Enter/Esc confirm pill as OpenApp/CloseWindow; the chain
         // runs only after the user accepts.
-        if intents
-            .iter()
-            .any(|i| matches!(i, crate::actions::CommandIntent::TypeText { submit: true, .. }))
-        {
+        if intents.iter().any(|i| {
+            matches!(
+                i,
+                crate::actions::CommandIntent::TypeText { submit: true, .. }
+            )
+        }) {
             let summary = confirm_chain_summary(&ctx, &intents);
             // Editable when the chain sends exactly one message — the pill
             // shows a textarea so a Whisper mishearing can be corrected
@@ -1743,8 +3293,9 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
                     _ => None,
                 }
             };
-            if let Ok(mut pending) = state.pending_command.lock() {
-                *pending = Some((ctx, crate::state::PendingCommand::Chain { intents }));
+            if !park_pending_command(state, ctx, crate::state::PendingCommand::Chain { intents }) {
+                trace.finish("superseded");
+                return;
             }
             // Editable confirms deliberately do NOT arm the hook's Enter/Esc
             // path: the pill shows a focusable textarea, and a global Enter
@@ -1756,14 +3307,24 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
             } else {
                 None
             });
-            let _ = app_handle.emit(
-                "command-confirm",
-                &CommandConfirmPayload {
-                    id: ctx.id,
-                    summary,
-                    editable_text,
-                },
-            );
+            if app_handle
+                .emit(
+                    "command-confirm",
+                    &CommandConfirmPayload {
+                        generation: ctx.generation,
+                        id: ctx.id,
+                        summary,
+                        editable_text,
+                    },
+                )
+                .is_ok()
+            {
+                crate::perf::observe_visible_delivery(
+                    ctx.generation,
+                    "command_confirm_event_emitted",
+                );
+            }
+            trace.finish("pending_confirmation");
             return;
         }
 
@@ -1785,18 +3346,29 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
                 [crate::actions::CommandIntent::OpenUrl(url)] => format!("Open {url}?"),
                 _ => confirm_chain_summary(&ctx, &intents),
             };
-            if let Ok(mut pending) = state.pending_command.lock() {
-                *pending = Some((ctx, crate::state::PendingCommand::Chain { intents }));
+            if !park_pending_command(state, ctx, crate::state::PendingCommand::Chain { intents }) {
+                trace.finish("superseded");
+                return;
             }
             crate::hotkey::set_confirm_pending(Some(ctx.id));
-            let _ = app_handle.emit(
-                "command-confirm",
-                &CommandConfirmPayload {
-                    id: ctx.id,
-                    summary,
-                    editable_text: None,
-                },
-            );
+            if app_handle
+                .emit(
+                    "command-confirm",
+                    &CommandConfirmPayload {
+                        generation: ctx.generation,
+                        id: ctx.id,
+                        summary,
+                        editable_text: None,
+                    },
+                )
+                .is_ok()
+            {
+                crate::perf::observe_visible_delivery(
+                    ctx.generation,
+                    "command_confirm_event_emitted",
+                );
+            }
+            trace.finish("pending_confirmation");
             return;
         }
         if intents.len() == 1 {
@@ -1804,6 +3376,7 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
         } else {
             run_chain(app_handle, state, ctx, intents).await;
         }
+        trace.finish("ok");
         return;
     }
 
@@ -1811,12 +3384,14 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
     // installed to interpret free-form phrasings". Without a model, everything
     // the deterministic matcher misses (search, "tell X …", multi-step) would
     // otherwise report as a generic non-command — tell the user the real cause.
-    if !utterance.is_empty() && !any_llm_configured(state) {
+    if !utterance.is_empty() && !any_llm_configured(state, &command_settings) {
         emit_command_result(
             app_handle,
+            ctx.generation,
             "error",
             "No language model installed — add one in Models for free-form commands",
         );
+        trace.finish("no_llm_model");
         return;
     }
 
@@ -1825,7 +3400,13 @@ pub(crate) async fn stop_and_run_command(app_handle: &tauri::AppHandle, state: &
     } else {
         format!("\u{201c}{utterance}\u{201d}")
     };
-    emit_command_result(app_handle, "error", format!("No command recognized ({heard})"));
+    emit_command_result(
+        app_handle,
+        ctx.generation,
+        "error",
+        format!("No command recognized ({heard})"),
+    );
+    trace.finish("unrecognized");
 }
 
 /// Reverse the assistant's most recent undoable action ("undo that").
@@ -1840,7 +3421,7 @@ async fn run_undo(
 
     let action = state.last_action.lock().ok().and_then(|mut g| g.take());
     let Some(action) = action else {
-        emit_command_result(app_handle, "error", "Nothing to undo");
+        emit_command_result(app_handle, ctx.generation, "error", "Nothing to undo");
         return;
     };
 
@@ -1854,7 +3435,7 @@ async fn run_undo(
             .load(std::sync::atomic::Ordering::Acquire),
         ctx.id,
     ) {
-        emit_command_result(app_handle, "done", "Stopped");
+        emit_command_result(app_handle, ctx.generation, "done", "Stopped");
         return;
     }
 
@@ -1919,7 +3500,12 @@ async fn run_undo(
         }
     };
 
-    emit_command_result(app_handle, if ok { "done" } else { "error" }, summary);
+    emit_command_result(
+        app_handle,
+        ctx.generation,
+        if ok { "done" } else { "error" },
+        summary,
+    );
 }
 
 /// `run_blocking` sibling that preserves the Result instead of flattening to
@@ -2022,7 +3608,10 @@ mod url_grounding_tests {
             "https://github.evil.com"
         ));
         // A genuinely grounded registrable domain still passes.
-        assert!(url_grounded_in_utterance("go to github", "https://github.com"));
+        assert!(url_grounded_in_utterance(
+            "go to github",
+            "https://github.com"
+        ));
     }
 
     #[test]
@@ -2066,6 +3655,162 @@ mod url_grounding_tests {
         assert!(!url_grounded_in_utterance(
             "open my application",
             "https://app.com"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod cleanup_gating_tests {
+    use super::{
+        cleanup_budget, cleanup_qualifies, shared_llm_budget, should_drop_cleanup_send,
+        structured_budget, CLEANUP_INPUT_CHAR_CAP, CLEANUP_MAX_BUDGET,
+    };
+    use crate::postprocess::voice_commands::default_command_table;
+    use crate::storage::types::AppSettings;
+    use std::time::Duration;
+
+    fn settings_with_timeout(llm_timeout_secs: u32) -> AppSettings {
+        AppSettings {
+            llm_timeout_secs,
+            ..Default::default()
+        }
+    }
+
+    /// `llm_timeout_secs` is ONE budget for both serial LLM stages, not one
+    /// each — an 8s setting must never let cleanup + Structured Mode hold a
+    /// dictation for 16s.
+    #[test]
+    fn the_two_llm_stages_share_one_configured_budget() {
+        let total = shared_llm_budget(Some(&settings_with_timeout(8)));
+        assert_eq!(total, Duration::from_secs(8));
+
+        // Cleanup is capped well below the total, so a slow cleanup can never
+        // consume the whole budget (8s / 2 = 4s, so the 3s cap binds here).
+        assert_eq!(cleanup_budget(total), CLEANUP_MAX_BUDGET);
+
+        // Structured Mode gets the remainder of the SAME budget, charged for
+        // what cleanup actually spent.
+        assert_eq!(
+            structured_budget(total, Duration::from_millis(300)),
+            Duration::from_millis(7_700)
+        );
+        assert_eq!(
+            structured_budget(total, CLEANUP_MAX_BUDGET),
+            Duration::from_secs(5)
+        );
+        // Cleanup off or skipped → Structured Mode keeps the full budget.
+        assert_eq!(structured_budget(total, Duration::ZERO), total);
+    }
+
+    #[test]
+    fn cleanup_never_gets_more_than_the_whole_budget() {
+        let total = shared_llm_budget(Some(&settings_with_timeout(2)));
+        assert_eq!(cleanup_budget(total), Duration::from_secs(1));
+        // An overrun leaves Structured Mode nothing; it degrades to plain
+        // dictation instead of extending the dictation past the budget.
+        assert_eq!(
+            structured_budget(total, Duration::from_secs(5)),
+            Duration::ZERO
+        );
+    }
+
+    /// Below ~6s the `total / 2` rule binds instead of the cap, so Structured
+    /// Mode always keeps at least half the configured budget.  At the slider's
+    /// 3s minimum the old `total.min(CAP)` handed cleanup all 3s and left
+    /// Structured Mode zero — plain dictation, every single time.
+    #[test]
+    fn cleanup_never_takes_more_than_half_the_budget() {
+        for secs in [1_u32, 2, 3, 4, 5] {
+            let total = shared_llm_budget(Some(&settings_with_timeout(secs)));
+            let cleanup = cleanup_budget(total);
+            assert_eq!(cleanup, total / 2, "timeout={secs}s");
+            assert!(
+                structured_budget(total, cleanup) > Duration::ZERO,
+                "timeout={secs}s left Structured Mode nothing"
+            );
+        }
+        // From 6s up the 3s cap is the binding limit again.
+        let total = shared_llm_budget(Some(&settings_with_timeout(6)));
+        assert_eq!(cleanup_budget(total), CLEANUP_MAX_BUDGET);
+    }
+
+    #[test]
+    fn an_absent_or_zero_timeout_setting_still_yields_a_usable_budget() {
+        assert_eq!(shared_llm_budget(None), Duration::from_secs(8));
+        assert_eq!(
+            shared_llm_budget(Some(&settings_with_timeout(0))),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn cleanup_runs_only_when_enabled_configured_and_dictation_sized() {
+        let model = Some("s1-mini-0.6b-q4");
+        assert!(cleanup_qualifies(true, model, "send the report by friday"));
+
+        // Off, unconfigured, or cleared selection.
+        assert!(!cleanup_qualifies(false, model, "send the report"));
+        assert!(!cleanup_qualifies(true, None, "send the report"));
+        assert!(!cleanup_qualifies(true, Some(""), "send the report"));
+
+        // Nothing to clean.
+        assert!(!cleanup_qualifies(true, model, ""));
+        assert!(!cleanup_qualifies(true, model, "  \n\t "));
+    }
+
+    #[test]
+    fn transcripts_past_the_single_pass_limit_skip_cleanup_entirely() {
+        let model = Some("s1-mini-0.6b-q4");
+        let at_cap = "a".repeat(CLEANUP_INPUT_CHAR_CAP);
+        assert!(cleanup_qualifies(true, model, &at_cap));
+        // One char over: skipped, never chunked.
+        let over_cap = "a".repeat(CLEANUP_INPUT_CHAR_CAP + 1);
+        assert!(!cleanup_qualifies(true, model, &over_cap));
+        // The cap counts characters, not bytes.
+        let multibyte = "é".repeat(CLEANUP_INPUT_CHAR_CAP);
+        assert!(cleanup_qualifies(true, model, &multibyte));
+    }
+
+    #[test]
+    fn send_guard_is_a_no_op_when_cleanup_did_not_run() {
+        let table = default_command_table();
+        // Even though the raw text has no trailing "send", the guard only
+        // ever acts when cleanup actually rewrote the transcript.
+        assert!(!should_drop_cleanup_send(false, &table, "draft the email"));
+    }
+
+    #[test]
+    fn send_guard_is_a_no_op_when_the_table_has_no_send_command() {
+        let mut table = default_command_table();
+        table.retain(|d| {
+            !matches!(
+                d.command,
+                crate::postprocess::voice_commands::VoiceCommand::Send
+            )
+        });
+        assert!(!should_drop_cleanup_send(true, &table, "draft the email"));
+    }
+
+    #[test]
+    fn send_guard_keeps_send_when_the_raw_speech_also_ends_with_send() {
+        let table = default_command_table();
+        // The user actually said "send" — cleanup didn't introduce it.
+        assert!(!should_drop_cleanup_send(
+            true,
+            &table,
+            "tell him the report is ready send"
+        ));
+    }
+
+    #[test]
+    fn send_guard_drops_send_when_cleanup_introduced_a_trailing_send() {
+        let table = default_command_table();
+        // Raw speech never said "send" — a cleanup-introduced trailing
+        // "send" must not fire the keystroke.
+        assert!(should_drop_cleanup_send(
+            true,
+            &table,
+            "tell him the report is ready"
         ));
     }
 }
@@ -2192,21 +3937,34 @@ mod cancel_in_closure_tests {
 fn ensure_llm_runner(
     app_handle: &tauri::AppHandle,
     state: &AppState,
+    settings: &crate::storage::types::AppSettings,
+    load_epoch: u64,
 ) -> Option<Arc<crate::llm::runner::LlmRunner>> {
     // Resolve the configured model id and go through the KEYED loader — no bare
     // "return whatever runner is loaded" fast path (B2-16).  `ensure_runner_loaded`
     // returns the already-loaded runner when it matches this id, else loads it,
     // so Command Mode and Structured Mode always share ONE model rather than one
     // silently getting the other's runner during a switch.
-    let id = crate::storage::settings::get_settings(&state.db)
-        .ok()
-        .and_then(|s| s.active_llm_model_id)
+    let id = settings
+        .active_llm_model_id
+        .clone()
         .filter(|id| !id.is_empty())
-        .or_else(|| state.active_llm_model_id.lock().ok().and_then(|g| g.clone()))
+        .or_else(|| {
+            state
+                .active_llm_model_id
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+        })
         .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state))?;
     // Single-flight: shares the model load with a concurrent Structured-Mode
     // dictation instead of loading a second GGUF copy (M3).
-    match crate::commands::llm::ensure_runner_loaded(&id, state, Some(app_handle)) {
+    match crate::commands::llm::ensure_runner_loaded_at_epoch(
+        &id,
+        state,
+        Some(app_handle),
+        load_epoch,
+    ) {
         Ok(r) => Some(r),
         Err(e) => {
             crate::llm::diaglog::log(&format!("command LLM lazy-load failed: {e}"));
@@ -2218,12 +3976,18 @@ fn ensure_llm_runner(
 /// True when some LLM model is configured or downloaded (does NOT load it).
 /// Mirrors `ensure_llm_runner`'s id-resolution chain so Command Mode can tell
 /// "not a command" apart from "no model installed to interpret free-form speech".
-fn any_llm_configured(state: &AppState) -> bool {
-    crate::storage::settings::get_settings(&state.db)
-        .ok()
-        .and_then(|s| s.active_llm_model_id)
+fn any_llm_configured(state: &AppState, settings: &crate::storage::types::AppSettings) -> bool {
+    settings
+        .active_llm_model_id
+        .clone()
         .filter(|id| !id.is_empty())
-        .or_else(|| state.active_llm_model_id.lock().ok().and_then(|g| g.clone()))
+        .or_else(|| {
+            state
+                .active_llm_model_id
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+        })
         .or_else(|| crate::commands::llm::preferred_downloaded_llm_id(state))
         .is_some()
 }
@@ -2231,6 +3995,7 @@ fn any_llm_configured(state: &AppState) -> bool {
 async fn classify_command_via_llm(
     app_handle: &tauri::AppHandle,
     state: &AppState,
+    settings: &crate::storage::types::AppSettings,
     utterance: &str,
 ) -> Vec<crate::actions::CommandIntent> {
     if utterance.is_empty() {
@@ -2240,28 +4005,35 @@ async fn classify_command_via_llm(
     // fast.  The load holds LLM_LOAD_LOCK across a blocking GGUF load + thread
     // join, so run it on the blocking pool rather than stalling this tokio
     // worker (B2-8).
+    let timeout = settings.llm_timeout_secs;
+    let deadline = Duration::from_secs(timeout.max(1) as u64);
+    let started = std::time::Instant::now();
+    let load_epoch = state
+        .llm_load_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
     let app = app_handle.clone();
-    let runner = tokio::task::spawn_blocking(move || {
-        let st = app.state::<AppState>();
-        ensure_llm_runner(&app, &st)
-    })
-    .await
-    .ok()
-    .flatten();
-    let runner = match runner {
-        Some(r) => r,
-        None => return Vec::new(),
-    };
-
-    let timeout = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.llm_timeout_secs)
-        .unwrap_or(8);
-
-    match runner
-        .classify_command_with_timeout(utterance.to_string(), Duration::from_secs(timeout as u64))
+    let settings_for_load = settings.clone();
+    let utterance = utterance.to_string();
+    let operation = async move {
+        let runner = tokio::task::spawn_blocking(move || {
+            let st = app.state::<AppState>();
+            ensure_llm_runner(&app, &st, &settings_for_load, load_epoch)
+        })
         .await
-    {
-        Ok(intents) => intents,
+        .ok()
+        .flatten()?;
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return None;
+        }
+        runner
+            .classify_command_with_timeout(utterance, remaining)
+            .await
+            .ok()
+    };
+    match tokio::time::timeout(deadline, operation).await {
+        Ok(Some(intents)) => intents,
+        Ok(None) => Vec::new(),
         Err(e) => {
             crate::llm::diaglog::log(&format!("command classify failed: {e}"));
             Vec::new()
@@ -2286,6 +4058,7 @@ async fn dispatch_open_app(
             tokio::task::spawn_blocking(crate::actions::app_index::refresh_if_stale);
             emit_command_result(
                 app_handle,
+                ctx.generation,
                 "error",
                 format!("No app found for \u{201c}{name}\u{201d}"),
             )
@@ -2300,32 +4073,39 @@ async fn dispatch_open_app(
                     .load(std::sync::atomic::Ordering::Acquire),
                 ctx.id,
             ) {
-                emit_command_result(app_handle, "done", "Stopped");
+                emit_command_result(app_handle, ctx.generation, "done", "Stopped");
                 return;
             }
             match crate::actions::app_index::launch(&r.app_id) {
                 Ok(identity) => {
                     record_launch_for_undo(app_handle, r.name.clone(), ctx.target_hwnd, identity);
-                    emit_command_result(app_handle, "done", format!("Opened {}", r.name))
+                    emit_command_result(
+                        app_handle,
+                        ctx.generation,
+                        "done",
+                        format!("Opened {}", r.name),
+                    )
                 }
-                Err(e) => emit_command_result(app_handle, "error", e),
+                Err(e) => emit_command_result(app_handle, ctx.generation, "error", e),
             }
         }
         Some(r) => {
             // Low confidence or ambiguous (close runner-up) — ask first.
-            if let Ok(mut pending) = state.pending_command.lock() {
-                *pending = Some((
-                    ctx,
-                    crate::state::PendingCommand::OpenApp {
-                        app_id: r.app_id,
-                        name: r.name.clone(),
-                    },
-                ));
+            if !park_pending_command(
+                state,
+                ctx,
+                crate::state::PendingCommand::OpenApp {
+                    app_id: r.app_id,
+                    name: r.name.clone(),
+                },
+            ) {
+                return;
             }
             crate::hotkey::set_confirm_pending(Some(ctx.id));
             let _ = app_handle.emit(
                 "command-confirm",
                 &CommandConfirmPayload {
+                    generation: ctx.generation,
                     id: ctx.id,
                     summary: format!("Open {}?", r.name),
                     editable_text: None,
@@ -2350,7 +4130,7 @@ async fn run_intent(
             .load(std::sync::atomic::Ordering::Acquire),
         ctx.id,
     ) {
-        emit_command_result(app_handle, "done", "Stopped");
+        emit_command_result(app_handle, ctx.generation, "done", "Stopped");
         return;
     }
 
@@ -2361,49 +4141,48 @@ async fn run_intent(
             // Resolve off the async runtime — a cold index spawns PowerShell, and
             // even warm scoring shouldn't run on a tokio worker.
             let lookup = name.clone();
-            let resolved = tokio::task::spawn_blocking(move || {
-                crate::actions::app_index::resolve(&lookup)
-            })
-            .await
-            .ok()
-            .flatten();
+            let resolved =
+                tokio::task::spawn_blocking(move || crate::actions::app_index::resolve(&lookup))
+                    .await
+                    .ok()
+                    .flatten();
             dispatch_open_app(app_handle, state, ctx, name, resolved).await;
         }
         // Consequential — never fire blind. Stash the BOUND window (captured at
         // command start, not the live foreground) + its pid and route through
         // the same Enter/Esc confirm pill that OpenApp uses.
-        CommandIntent::CloseWindow => {
-            match ctx.target_hwnd {
-                None => emit_command_result(app_handle, "error", "No window to close"),
-                Some(h) => {
-                    let title = crate::actions::executor::window_title(h);
-                    if let Ok(mut pending) = state.pending_command.lock() {
-                        *pending = Some((
-                            ctx,
-                            crate::state::PendingCommand::CloseWindow {
-                                hwnd: h,
-                                pid: ctx.target_pid,
-                                title: title.clone(),
-                            },
-                        ));
-                    }
-                    crate::hotkey::set_confirm_pending(Some(ctx.id));
-                    let summary = if title.trim().is_empty() {
-                        "Close this window?".to_string()
-                    } else {
-                        format!("Close \u{201c}{title}\u{201d}?")
-                    };
-                    let _ = app_handle.emit(
-                        "command-confirm",
-                        &CommandConfirmPayload {
-                            id: ctx.id,
-                            summary,
-                            editable_text: None,
-                        },
-                    );
+        CommandIntent::CloseWindow => match ctx.target_hwnd {
+            None => emit_command_result(app_handle, ctx.generation, "error", "No window to close"),
+            Some(h) => {
+                let title = crate::actions::executor::window_title(h);
+                if !park_pending_command(
+                    state,
+                    ctx,
+                    crate::state::PendingCommand::CloseWindow {
+                        hwnd: h,
+                        pid: ctx.target_pid,
+                        title: title.clone(),
+                    },
+                ) {
+                    return;
                 }
+                crate::hotkey::set_confirm_pending(Some(ctx.id));
+                let summary = if title.trim().is_empty() {
+                    "Close this window?".to_string()
+                } else {
+                    format!("Close \u{201c}{title}\u{201d}?")
+                };
+                let _ = app_handle.emit(
+                    "command-confirm",
+                    &CommandConfirmPayload {
+                        generation: ctx.generation,
+                        id: ctx.id,
+                        summary,
+                        editable_text: None,
+                    },
+                );
             }
-        }
+        },
         // OmniVox's own scratchpad window — dispatched here rather than in the
         // OS-only executor because it needs the Tauri AppHandle.  Open/close
         // are harmless and run immediately; clear wipes saved content, so it
@@ -2413,27 +4192,45 @@ async fn run_intent(
             match action {
                 ScratchpadAction::Open => {
                     match crate::commands::scratchpad::open_scratchpad_impl(app_handle).await {
-                        Ok(()) => {
-                            emit_command_result(app_handle, "done", "Opened the scratchpad")
-                        }
-                        Err(e) => emit_command_result(app_handle, "error", e),
+                        Ok(()) => emit_command_result(
+                            app_handle,
+                            ctx.generation,
+                            "done",
+                            "Opened the scratchpad",
+                        ),
+                        Err(e) => emit_command_result(app_handle, ctx.generation, "error", e),
                     }
                 }
                 ScratchpadAction::Close => {
                     if crate::commands::scratchpad::close_scratchpad_impl(app_handle) {
-                        emit_command_result(app_handle, "done", "Closed the scratchpad");
+                        emit_command_result(
+                            app_handle,
+                            ctx.generation,
+                            "done",
+                            "Closed the scratchpad",
+                        );
                     } else {
-                        emit_command_result(app_handle, "error", "The scratchpad isn't open");
+                        emit_command_result(
+                            app_handle,
+                            ctx.generation,
+                            "error",
+                            "The scratchpad isn't open",
+                        );
                     }
                 }
                 ScratchpadAction::Clear => {
-                    if let Ok(mut pending) = state.pending_command.lock() {
-                        *pending = Some((ctx, crate::state::PendingCommand::ClearScratchpad));
+                    if !park_pending_command(
+                        state,
+                        ctx,
+                        crate::state::PendingCommand::ClearScratchpad,
+                    ) {
+                        return;
                     }
                     crate::hotkey::set_confirm_pending(Some(ctx.id));
                     let _ = app_handle.emit(
                         "command-confirm",
                         &CommandConfirmPayload {
+                            generation: ctx.generation,
                             id: ctx.id,
                             summary: "Clear everything in the scratchpad?".to_string(),
                             editable_text: None,
@@ -2447,13 +4244,13 @@ async fn run_intent(
         other => {
             let target = ctx.target();
             let undoable = undoable_from_intent(&other, target);
-            let res =
-                execute_intent_now(&state.command_cancel_floor, ctx.id, target, other).await;
+            let res = execute_intent_now(&state.command_cancel_floor, ctx.id, target, other).await;
             if res.ok {
                 record_undoable(state, undoable);
             }
             emit_command_result(
                 app_handle,
+                ctx.generation,
                 if res.ok { "done" } else { "error" },
                 res.summary,
             );
@@ -2633,9 +4430,7 @@ async fn execute_intent_now(
                 if command_superseded(floor.load(Ordering::Acquire), ctx_id) {
                     return Err("stopped".to_string());
                 }
-                let t = target.ok_or_else(|| {
-                    "No target window for this command".to_string()
-                })?;
+                let t = target.ok_or_else(|| "No target window for this command".to_string())?;
                 if !crate::focus::restore_foreground_window(t.hwnd, t.pid)
                     || !crate::focus::verify_foreground_target(t.hwnd, t.pid)
                 {
@@ -2722,14 +4517,11 @@ async fn execute_intent_now(
             let label = if submit { "Sent message" } else { "Typed text" };
             let floor = std::sync::Arc::clone(cancel_floor);
             run_blocking(label, move || {
-                let t = target.ok_or_else(|| {
-                    "No target window for this message".to_string()
-                })?;
+                let t = target.ok_or_else(|| "No target window for this message".to_string())?;
                 // `run_type_text` polls this before the paste and between the
                 // paste and the submitting Enter — a "stop" spoken during the
                 // focus restore / post-paste guard aborts before Enter (B2-13).
-                let should_cancel =
-                    || command_superseded(floor.load(Ordering::Acquire), ctx_id);
+                let should_cancel = || command_superseded(floor.load(Ordering::Acquire), ctx_id);
                 crate::actions::executor::run_type_text(&text, submit, t, should_cancel)
             })
             .await
@@ -2780,7 +4572,10 @@ fn confirm_chain_summary(
                 crate::actions::ScratchpadAction::Clear => "clear the scratchpad".to_string(),
             },
             TypeText { text, submit: true } => format!("send \u{201c}{text}\u{201d}"),
-            TypeText { text, submit: false } => format!("type \u{201c}{text}\u{201d}"),
+            TypeText {
+                text,
+                submit: false,
+            } => format!("type \u{201c}{text}\u{201d}"),
         })
         .collect();
     let mut s = parts.join(", then ");
@@ -2847,9 +4642,7 @@ async fn run_chain(
         // are exempt and keep going.
         let needs_focus = matches!(
             intent,
-            CommandIntent::KeyChord(_)
-                | CommandIntent::Window(_)
-                | CommandIntent::TypeText { .. }
+            CommandIntent::KeyChord(_) | CommandIntent::Window(_) | CommandIntent::TypeText { .. }
         );
         if target_unverified && needs_focus {
             summaries.push("couldn't confirm the launched app's window".to_string());
@@ -2887,9 +4680,7 @@ async fn run_chain(
             // target but flag it so a following focus-dependent step won't fire
             // blind.
             let settled = match &launched {
-                Some(identity) => {
-                    settle_after_launch(target.map(|t| t.hwnd), &own, identity).await
-                }
+                Some(identity) => settle_after_launch(target.map(|t| t.hwnd), &own, identity).await,
                 None => None,
             };
             match settled {
@@ -2919,6 +4710,7 @@ async fn run_chain(
 
     emit_command_result(
         app_handle,
+        ctx.generation,
         if all_ok { "done" } else { "error" },
         summaries.join(" \u{00b7} "),
     );
@@ -3076,7 +4868,12 @@ pub async fn confirm_pending_command(
     // per-primitive identity re-verify below is the second line of defense.
     if ctx.captured_at.elapsed() > CONFIRM_MAX_AGE {
         crate::llm::diaglog::log("pipeline: confirm rejected — command context too old");
-        emit_command_result(app_handle, "error", "That command expired — say it again");
+        emit_command_result(
+            app_handle,
+            ctx.generation,
+            "error",
+            "That command expired — say it again",
+        );
         return;
     }
 
@@ -3088,7 +4885,7 @@ pub async fn confirm_pending_command(
             .load(std::sync::atomic::Ordering::Acquire),
         ctx.id,
     ) {
-        emit_command_result(app_handle, "done", "Stopped");
+        emit_command_result(app_handle, ctx.generation, "done", "Stopped");
         return;
     }
 
@@ -3097,9 +4894,14 @@ pub async fn confirm_pending_command(
             match crate::actions::app_index::launch(&app_id) {
                 Ok(identity) => {
                     record_launch_for_undo(app_handle, name.clone(), ctx.target_hwnd, identity);
-                    emit_command_result(app_handle, "done", format!("Opened {name}"))
+                    emit_command_result(
+                        app_handle,
+                        ctx.generation,
+                        "done",
+                        format!("Opened {name}"),
+                    )
                 }
-                Err(e) => emit_command_result(app_handle, "error", e),
+                Err(e) => emit_command_result(app_handle, ctx.generation, "error", e),
             }
         }
         crate::state::PendingCommand::CloseWindow { hwnd, pid, title } => {
@@ -3112,18 +4914,28 @@ pub async fn confirm_pending_command(
             // WM_CLOSE (M8: the handle may have been recycled since the confirm
             // was shown — the mouse path is unbounded in time).
             if !crate::focus::window_identity_ok(hwnd, pid) {
-                emit_command_result(app_handle, "error", "That window is no longer open");
+                emit_command_result(
+                    app_handle,
+                    ctx.generation,
+                    "error",
+                    "That window is no longer open",
+                );
                 return;
             }
             match crate::actions::executor::run_close_window(Some(hwnd)) {
-                Ok(()) => emit_command_result(app_handle, "done", label),
-                Err(e) => emit_command_result(app_handle, "error", e),
+                Ok(()) => emit_command_result(app_handle, ctx.generation, "done", label),
+                Err(e) => emit_command_result(app_handle, ctx.generation, "error", e),
             }
         }
         crate::state::PendingCommand::ClearScratchpad => {
             match crate::commands::scratchpad::clear_scratchpad_impl(app_handle) {
-                Ok(()) => emit_command_result(app_handle, "done", "Cleared the scratchpad"),
-                Err(e) => emit_command_result(app_handle, "error", e),
+                Ok(()) => emit_command_result(
+                    app_handle,
+                    ctx.generation,
+                    "done",
+                    "Cleared the scratchpad",
+                ),
+                Err(e) => emit_command_result(app_handle, ctx.generation, "error", e),
             }
         }
         crate::state::PendingCommand::Chain { mut intents } => {
@@ -3158,19 +4970,20 @@ pub fn cancel_pending_command(
     state: &AppState,
     confirm_id: Option<u64>,
 ) {
-    let cleared = match state.pending_command.lock() {
+    let cleared_generation = match state.pending_command.lock() {
         Ok(mut g) => match g.as_ref() {
             Some((c, _)) if confirm_id_matches(c.id, confirm_id) => {
+                let generation = c.generation;
                 *g = None;
-                true
+                Some(generation)
             }
-            _ => false,
+            _ => None,
         },
-        Err(_) => false,
+        Err(_) => None,
     };
-    if cleared {
+    if let Some(generation) = cleared_generation {
         crate::hotkey::set_confirm_pending(None);
-        let _ = app_handle.emit("command-state-change", "idle");
+        emit_command_state(app_handle, generation, "idle");
     } else {
         // Nothing parked, or a stale id — no-op, gated idle so we don't clobber a
         // newer command.
@@ -3208,7 +5021,10 @@ fn describe_intent(intent: &crate::actions::CommandIntent) -> String {
                 "Clear the scratchpad (will ask to confirm)".to_string()
             }
         },
-        TypeText { text, submit: false } => format!("Type: \u{201c}{text}\u{201d}"),
+        TypeText {
+            text,
+            submit: false,
+        } => format!("Type: \u{201c}{text}\u{201d}"),
         TypeText { text, submit: true } => {
             format!("Send message: \u{201c}{text}\u{201d} (will ask to confirm)")
         }
@@ -3234,6 +5050,20 @@ pub async fn test_command(
         };
     }
     // Tier 1 — deterministic matcher (microseconds, no model load).
+    if let Some(intents) = crate::actions::matcher::match_command_sequence(utt) {
+        if intents.len() > 1 {
+            return CommandTestResult {
+                tier: "matcher",
+                recognized: true,
+                summary: intents
+                    .iter()
+                    .map(describe_intent)
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+                duration_ms: t0.elapsed().as_millis() as u64,
+            };
+        }
+    }
     if let Some(intent) = crate::actions::match_command(utt) {
         return CommandTestResult {
             tier: "matcher",
@@ -3244,7 +5074,12 @@ pub async fn test_command(
     }
     // Tier 2 — Qwen fallback (lazy-loads the active LLM on first use).  The LLM
     // may return a multi-step chain; describe each step joined for the preview.
-    let intents = classify_command_via_llm(app_handle, state, utt).await;
+    let settings = state
+        .settings
+        .read()
+        .map(|s| s.values().clone())
+        .unwrap_or_default();
+    let intents = classify_command_via_llm(app_handle, state, &settings, utt).await;
     if !intents.is_empty() {
         let summary = intents
             .iter()

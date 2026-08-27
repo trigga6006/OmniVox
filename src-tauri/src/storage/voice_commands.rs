@@ -67,7 +67,9 @@ fn row_to_command(row: &rusqlite::Row) -> rusqlite::Result<CustomVoiceCommand> {
 /// reset).  Idempotent: a no-op once rows exist.
 pub fn seed_defaults(db: &Database) -> AppResult<()> {
     let conn = db.conn()?;
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM custom_voice_commands", [], |r| r.get(0))?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM custom_voice_commands", [], |r| {
+        r.get(0)
+    })?;
     if count > 0 {
         return Ok(());
     }
@@ -288,7 +290,10 @@ pub fn update(
 /// Delete a command by ID.
 pub fn delete(db: &Database, id: &str) -> AppResult<()> {
     let conn = db.conn()?;
-    conn.execute("DELETE FROM custom_voice_commands WHERE id = ?1", params![id])?;
+    conn.execute(
+        "DELETE FROM custom_voice_commands WHERE id = ?1",
+        params![id],
+    )?;
     Ok(())
 }
 
@@ -375,7 +380,10 @@ mod tests {
             command_to_action(&VoiceCommand::MouseDoubleClick),
             "mouse:double_click"
         );
-        assert_eq!(command_to_action(&VoiceCommand::ScrollUp), "mouse:scroll_up");
+        assert_eq!(
+            command_to_action(&VoiceCommand::ScrollUp),
+            "mouse:scroll_up"
+        );
         assert_eq!(
             command_to_action(&VoiceCommand::ScrollDown),
             "mouse:scroll_down"

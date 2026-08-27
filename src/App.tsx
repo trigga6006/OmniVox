@@ -9,7 +9,16 @@ import { ToastContainer } from "@/components/ToastContainer";
 import { ClickPulse } from "@/components/ClickPulse";
 import { Spinner } from "@/components/ui";
 import { useToastStore } from "@/stores/toastStore";
-import { recentHistory, onTranscriptionResult, onRecordingError, openMicSettings } from "@/lib/tauri";
+import {
+  recentHistory,
+  onTranscriptionResult,
+  onRecordingError,
+  onHistoryCleanupError,
+  onMeetingError,
+  onMeetingSummaryReady,
+  openMeetingDrawer,
+  openMicSettings,
+} from "@/lib/tauri";
 import { useInAppDictation } from "@/hooks/useInAppDictation";
 import { useWindowHotkeyBridge } from "@/hooks/useWindowHotkeyBridge";
 
@@ -17,6 +26,9 @@ import { useWindowHotkeyBridge } from "@/hooks/useWindowHotkeyBridge";
 // saving ~20-50 MB of JS heap in the main WebView window.
 const HistoryPage = lazy(() =>
   import("@/features/history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
+);
+const MeetingsPage = lazy(() =>
+  import("@/features/meetings/MeetingsPage").then((m) => ({ default: m.MeetingsPage }))
 );
 const UserAnalyticsPage = lazy(() =>
   import("@/features/analytics/UserAnalyticsPage").then((m) => ({
@@ -52,6 +64,7 @@ const SettingsPage = lazy(() =>
 function useGlobalTranscriptionSync() {
   const setLastTranscription = useRecordingStore((s) => s.setLastTranscription);
   const addToast = useToastStore((s) => s.addToast);
+  const setPage = useAppStore((s) => s.setPage);
 
   // Seed from DB on mount
   useEffect(() => {
@@ -97,6 +110,61 @@ function useGlobalTranscriptionSync() {
       unlisten.then((fn) => fn());
     };
   }, [addToast]);
+
+  // Retention runs off the dictation critical path, so a disk/SQLite failure
+  // arrives asynchronously. Keep the warning visible until dismissed: when a
+  // privacy purge fails, the user must not be left believing local transcript
+  // data was removed successfully.
+  useEffect(() => {
+    const unlisten = onHistoryCleanupError((reason) => {
+      console.error("Transcript history cleanup failed:", reason);
+      addToast({
+        message:
+          "Could not finish deleting transcription history. Some local history may remain. Restart OmniVox or change the history setting again to retry.",
+        code: "history_cleanup_failed",
+        level: "error",
+        duration: 0,
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [addToast]);
+
+  useEffect(() => {
+    const unlisten = onMeetingSummaryReady((meetingId) => {
+      addToast({
+        message: "Meeting notes are ready.",
+        code: `meeting_summary_ready:${meetingId}`,
+        level: "info",
+        action: {
+          label: "Open notes",
+          onClick: () => openMeetingDrawer(meetingId).catch(console.error),
+        },
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [addToast]);
+
+  useEffect(() => {
+    const unlisten = onMeetingError((reason) => {
+      addToast({
+        message: `Meeting processing needs attention: ${reason}`,
+        code: "meeting_processing_error",
+        level: "error",
+        action: {
+          label: "Review meetings",
+          onClick: () => setPage("meetings"),
+        },
+        duration: 15000,
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [addToast, setPage]);
 }
 
 function PageRouter() {
@@ -114,6 +182,8 @@ function PageRouter() {
         switch (currentPage) {
           case "dictation":
             return <DictationPanel />;
+          case "meetings":
+            return <MeetingsPage />;
           case "history":
             return <HistoryPage />;
           case "analytics":
@@ -146,13 +216,11 @@ function MainApp() {
   return (
     <div className="flex h-screen w-screen bg-surface-0 text-text-primary">
       <Sidebar />
+      {/* Flat surface-0 ground — the corner radial gradient it replaces read as
+          a vignette on the dictation stage and fought the hairline chrome. */}
       <main
         data-pulse-root
-        className="relative flex-1 overflow-x-hidden overflow-y-auto"
-        style={{
-          background:
-            "radial-gradient(ellipse 90% 70% at 50% 100%, var(--color-gradient-from) 0%, var(--color-gradient-to) 70%)",
-        }}
+        className="relative flex-1 overflow-x-hidden overflow-y-auto bg-surface-0"
       >
         <PageRouter />
       </main>

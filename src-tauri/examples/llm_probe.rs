@@ -24,7 +24,7 @@ fn main() {
     let config = LlmConfig {
         model_path,
         n_threads: std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(2).max(2).min(8) as i32)
+            .map(|n| n.get().saturating_sub(2).clamp(2, 8) as i32)
             .unwrap_or(4),
         use_gpu: false,
         n_ctx: 2048,

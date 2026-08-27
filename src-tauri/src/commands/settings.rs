@@ -2,8 +2,11 @@ use crate::hotkey::HotkeyConfig;
 use crate::output::types::OutputMode;
 use crate::postprocess::types::WritingStyle;
 use crate::state::AppState;
-use crate::storage::types::AppSettings;
+use crate::storage::settings::{RuntimeSettings, SettingsSnapshot};
+use crate::storage::types::{AppSettings, SettingsPatch};
 use tauri::{Emitter, Manager, State};
+
+use super::auth::{require_caller, WindowPolicy};
 
 // Gap between the pill and the bottom of the monitor's WORK AREA (the
 // screen minus taskbar/appbars, from the OS) — no taskbar-height guessing.
@@ -77,7 +80,13 @@ fn cursor_monitor(_app: &tauri::AppHandle) -> Option<tauri::Monitor> {
 /// size, so the pill appeared to jump toward the top-left before
 /// settling.  A single `SetWindowPos` skips that intermediate state.
 #[tauri::command]
-pub async fn resize_overlay(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+pub async fn resize_overlay(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Overlay)?;
     let window = app
         .get_webview_window("overlay")
         .ok_or("overlay window not found")?;
@@ -147,29 +156,238 @@ pub async fn resize_overlay(app: tauri::AppHandle, width: f64, height: f64) -> R
 }
 
 #[tauri::command]
-pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
-    crate::storage::settings::get_settings(&state.db).map_err(|e| e.to_string())
+pub async fn get_settings(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    state
+        .settings
+        .read()
+        .map(|settings| settings.values().clone())
+        .map_err(|_| "settings snapshot lock poisoned".to_string())
+}
+
+/// Current settings plus the monotonic revision used for safe, field-level
+/// updates from independent WebViews.
+#[tauri::command]
+pub async fn get_settings_snapshot(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<SettingsSnapshot, String> {
+    require_caller(&caller, WindowPolicy::MainOverlay)?;
+    state
+        .settings
+        .read()
+        .map(|settings| settings.snapshot())
+        .map_err(|_| "settings snapshot lock poisoned".to_string())
+}
+
+/// Durable internal mutation API for backend commands that change one settings
+/// field (model activation/download flows, tray actions). Prefer this over a
+/// direct SQLite write so the recording hot path observes the same value.
+pub fn commit_runtime_patch(
+    state: &AppState,
+    patch: SettingsPatch,
+    expected_revision: Option<u64>,
+) -> Result<(AppSettings, SettingsSnapshot, bool), String> {
+    patch.validate()?;
+    let mut runtime = state
+        .settings
+        .write()
+        .map_err(|_| "settings snapshot lock poisoned".to_string())?;
+    let before: RuntimeSettings = runtime.clone();
+    let previous = before.values().clone();
+    let (snapshot, changed) = runtime.apply_patch(patch, expected_revision);
+    if changed {
+        if let Err(error) = crate::storage::settings::update_settings(&state.db, &snapshot.settings)
+        {
+            *runtime = before;
+            return Err(error.to_string());
+        }
+    }
+    Ok((previous, snapshot, changed))
+}
+
+fn apply_runtime_settings(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    previous: &AppSettings,
+    settings: &AppSettings,
+) {
+    let was_needed = previous.structured_mode || previous.command_mode;
+    let is_needed = settings.structured_mode || settings.command_mode;
+    if was_needed && !is_needed {
+        state
+            .llm_load_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let runner = state
+            .llm_runner
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take().map(|(_, runner)| runner));
+        // Dropping the state slot alone is insufficient while an extraction
+        // holds another Arc. Signal native inference immediately, then join on
+        // the blocking pool so disabling both LLM-backed modes really releases
+        // the model/KV cache without stalling the Tauri command thread.
+        if let Some(runner) = runner {
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                runner.shutdown_and_join();
+            }));
+        }
+        if let Ok(mut guard) = state.active_llm_model_id.lock() {
+            *guard = None;
+        }
+    }
+    if !was_needed && is_needed {
+        if let Some(model_id) = settings.active_llm_model_id.clone() {
+            if let Ok(mut guard) = state.active_llm_model_id.lock() {
+                *guard = Some(model_id.clone());
+            }
+            let runner_loaded = state.llm_runner.lock().ok().is_some_and(|g| g.is_some());
+            if !runner_loaded {
+                let load_epoch = state
+                    .llm_load_epoch
+                    .load(std::sync::atomic::Ordering::Acquire);
+                let app_for_load = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let st = app_for_load.state::<AppState>();
+                    if let Err(e) = crate::commands::llm::load_and_activate_llm_with_status_at_epoch(
+                        &model_id,
+                        &st,
+                        Some(&app_for_load),
+                        load_epoch,
+                    ) {
+                        eprintln!("Eager LLM load on settings change failed: {e}");
+                    }
+                });
+            }
+        }
+    }
+
+    // Cleanup Mode off → release the normalizer worker and its model memory.
+    // The next enable lazily reloads on the first dictation.
+    if previous.cleanup_mode && !settings.cleanup_mode {
+        crate::commands::llm::drop_cleanup_runner(state);
+    }
+
+    // Cleanup Mode off → on: eager-load the normalizer now so the first
+    // dictation after enabling isn't stuck behind a cold GGUF load.
+    if !previous.cleanup_mode && settings.cleanup_mode {
+        if let Some(model_id) = settings.active_cleanup_model_id.clone() {
+            let app_for_load = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let st = app_for_load.state::<AppState>();
+                if let Err(e) = crate::commands::llm::ensure_cleanup_runner_loaded(&model_id, &st) {
+                    eprintln!("Eager cleanup load on settings change failed: {e}");
+                }
+            });
+        }
+    }
+
+    let mode = match settings.output_mode.as_str() {
+        "type_simulation" => OutputMode::TypeSimulation,
+        "both" => OutputMode::Both,
+        _ => OutputMode::Clipboard,
+    };
+    if let Ok(mut cfg) = state.output_config.lock() {
+        cfg.mode = mode;
+        cfg.ship_mode = settings.ship_mode;
+    }
+    if let Ok(mut proc) = state.processor.lock() {
+        proc.set_style(WritingStyle::parse(&settings.writing_style));
+        proc.set_filler_removal(settings.filler_removal);
+    }
+    if previous.hotkey != settings.hotkey {
+        if let Some(hk) = &settings.hotkey {
+            crate::hotkey::update_hotkey_keys(
+                hk.keys.first().copied().unwrap_or(0),
+                hk.keys.get(1).copied().unwrap_or(0),
+            );
+        }
+    }
+    if settings.auto_start != previous.auto_start {
+        use tauri_plugin_autostart::ManagerExt;
+        let result = if settings.auto_start {
+            app.autolaunch().enable()
+        } else {
+            app.autolaunch().disable()
+        };
+        if let Err(e) = result {
+            eprintln!("Failed to update launch-at-startup: {e}");
+        }
+    }
+    if settings.command_mode != previous.command_mode {
+        crate::hotkey::set_command_mode_enabled(settings.command_mode);
+        if settings.command_mode {
+            drop(tokio::task::spawn_blocking(
+                crate::actions::app_index::refresh,
+            ));
+        }
+    }
+    if settings.history_enabled != previous.history_enabled
+        || settings.history_retention_days != previous.history_retention_days
+    {
+        crate::storage::privacy::schedule_retention_cleanup(app, true);
+    }
+}
+
+/// Atomically patch only the changed fields. A stale revision is rebased onto
+/// the current snapshot instead of allowing a whole-object overwrite.
+#[tauri::command]
+pub async fn patch_settings(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    mut patch: SettingsPatch,
+    expected_revision: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<SettingsSnapshot, String> {
+    require_caller(&caller, WindowPolicy::MainOverlay)?;
+    if caller.label() == "overlay" {
+        patch.validate_overlay_scope()?;
+    }
+    if (patch.structured_mode == Some(true) || patch.command_mode == Some(true))
+        && patch.active_llm_model_id.is_none()
+        && state
+            .settings
+            .read()
+            .ok()
+            .and_then(|s| s.values().active_llm_model_id.clone())
+            .is_none()
+    {
+        patch.active_llm_model_id =
+            crate::commands::llm::preferred_downloaded_llm_id(state.inner());
+    }
+    let (previous, snapshot, changed) =
+        commit_runtime_patch(state.inner(), patch, expected_revision)?;
+    if changed {
+        apply_runtime_settings(&app, state.inner(), &previous, &snapshot.settings);
+        let _ = app.emit("settings-changed", &snapshot.settings);
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
 pub async fn update_settings(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     mut settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    settings.validate()?;
     // Snapshot previous structured_mode before we overwrite so we can tell
     // if the user just turned it off.  Structured Mode off → drop the loaded
     // LLM to reclaim ~180 MB cleanly (the plan's "users who disable should
     // reclaim RAM cleanly" rule).
-    let prev_structured = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.structured_mode)
-        .unwrap_or(false);
-    let prev_command_mode = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.command_mode)
-        .unwrap_or(false);
-    let prev_auto_start = crate::storage::settings::get_settings(&state.db)
-        .map(|s| s.auto_start)
-        .unwrap_or(false);
+    let previous = state
+        .settings
+        .read()
+        .map(|runtime| runtime.values().clone())
+        .map_err(|_| "settings snapshot lock poisoned".to_string())?;
+    let prev_structured = previous.structured_mode;
+    let prev_command_mode = previous.command_mode;
+    let prev_auto_start = previous.auto_start;
 
     // If Structured Mode is being enabled without an explicit active model,
     // auto-pick the best downloaded one so the app never enters a misleading
@@ -187,10 +405,28 @@ pub async fn update_settings(
 
     // Persist to SQLite
     crate::storage::settings::update_settings(&state.db, &settings).map_err(|e| e.to_string())?;
+    // Compatibility callers still send a complete object. Keep the runtime
+    // authority coherent, but new code should use `patch_settings` to avoid
+    // stale-object clobbers between WebViews.
+    if let Ok(mut runtime) = state.settings.write() {
+        runtime.replace_legacy(settings.clone());
+    }
 
-    if prev_structured && !settings.structured_mode {
-        if let Ok(mut guard) = state.llm_runner.lock() {
-            *guard = None;
+    if (prev_structured || prev_command_mode)
+        && !(settings.structured_mode || settings.command_mode)
+    {
+        state
+            .llm_load_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let runner = state
+            .llm_runner
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take().map(|(_, runner)| runner));
+        if let Some(runner) = runner {
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                runner.shutdown_and_join();
+            }));
         }
         if let Ok(mut guard) = state.active_llm_model_id.lock() {
             *guard = None;
@@ -201,7 +437,9 @@ pub async fn update_settings(
     // load it eagerly so the first dictation doesn't eat the load time.
     // The multi-second GGUF load runs on a blocking thread so the settings
     // command (and the toggle in the UI) returns immediately.
-    if !prev_structured && settings.structured_mode {
+    if !(prev_structured || prev_command_mode)
+        && (settings.structured_mode || settings.command_mode)
+    {
         if let Some(model_id) = settings.active_llm_model_id.clone() {
             if let Ok(mut guard) = state.active_llm_model_id.lock() {
                 *guard = Some(model_id.clone());
@@ -213,13 +451,17 @@ pub async fn update_settings(
                 .map(|g| g.is_some())
                 .unwrap_or(false);
             if !runner_loaded {
+                let load_epoch = state
+                    .llm_load_epoch
+                    .load(std::sync::atomic::Ordering::Acquire);
                 let app_for_load = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let st = app_for_load.state::<AppState>();
-                    if let Err(e) = crate::commands::llm::load_and_activate_llm_with_status(
+                    if let Err(e) = crate::commands::llm::load_and_activate_llm_with_status_at_epoch(
                         &model_id,
                         &st,
                         Some(&app_for_load),
+                        load_epoch,
                     ) {
                         eprintln!("Eager LLM load on toggle failed: {e}");
                     }
@@ -241,15 +483,17 @@ pub async fn update_settings(
 
     // Sync writing style + filler removal to the processor chain
     if let Ok(mut proc) = state.processor.lock() {
-        proc.set_style(WritingStyle::from_str(&settings.writing_style));
+        proc.set_style(WritingStyle::parse(&settings.writing_style));
         proc.set_filler_removal(settings.filler_removal);
     }
 
-    // Sync hotkey to the live hook
-    if let Some(ref hk) = settings.hotkey {
-        let key1 = hk.keys.first().copied().unwrap_or(0);
-        let key2 = hk.keys.get(1).copied().unwrap_or(0);
-        crate::hotkey::update_hotkey_keys(key1, key2);
+    // Sync hotkey only when it changed; reapplying it can disturb a live hook.
+    if previous.hotkey != settings.hotkey {
+        if let Some(ref hk) = settings.hotkey {
+            let key1 = hk.keys.first().copied().unwrap_or(0);
+            let key2 = hk.keys.get(1).copied().unwrap_or(0);
+            crate::hotkey::update_hotkey_keys(key1, key2);
+        }
     }
 
     // Sync launch-at-startup with the OS (registry Run key on Windows).
@@ -270,9 +514,19 @@ pub async fn update_settings(
     // Sync Command-Mode hotkey activation; warm the app index the first time
     // Command Mode is switched on so the first command isn't slowed by the
     // PowerShell enumeration.
-    crate::hotkey::set_command_mode_enabled(settings.command_mode);
+    if settings.command_mode != prev_command_mode {
+        crate::hotkey::set_command_mode_enabled(settings.command_mode);
+    }
     if settings.command_mode && !prev_command_mode {
-        let _ = tokio::task::spawn_blocking(crate::actions::app_index::refresh);
+        drop(tokio::task::spawn_blocking(
+            crate::actions::app_index::refresh,
+        ));
+    }
+
+    if settings.history_enabled != previous.history_enabled
+        || settings.history_retention_days != previous.history_retention_days
+    {
+        crate::storage::privacy::schedule_retention_cleanup(&app, true);
     }
 
     // Broadcast to all windows so the overlay and main window stay in sync
@@ -293,9 +547,26 @@ pub fn launch_app_voice_command_enabled(db: &crate::storage::database::Database)
 }
 
 /// Suspend or resume the hotkey hook.
-/// Called by the frontend before entering "listening" mode for key recording.
+///
+/// Entering remap mode cancels any capture first-class through the generation
+/// coordinator. Clearing hook latches alone would swallow the only release
+/// edge and leave a dictation or Command Mode microphone session running.
 #[tauri::command]
-pub async fn suspend_hotkey(suspended: bool) -> Result<(), String> {
+pub async fn suspend_hotkey(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    suspended: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    // Close the start-vs-remap race before resetting hook latches. A starting
+    // capture records a deferred Cancel and its worker stops itself once the
+    // stream becomes live; an already-live capture is cancelled immediately.
+    if suspended {
+        crate::hotkey::set_suspended(true);
+        crate::pipeline::cancel_active_capture(&app, state.inner());
+        return Ok(());
+    }
     crate::hotkey::set_suspended(suspended);
     Ok(())
 }
@@ -304,14 +575,23 @@ pub async fn suspend_hotkey(suspended: bool) -> Result<(), String> {
 /// state machine.  The global OS keyboard hook gets nothing while our own
 /// WebView has focus, so the frontend bridges key down/up events here.
 #[tauri::command]
-pub async fn feed_hotkey_event(vk: u16, down: bool) -> Result<(), String> {
+pub async fn feed_hotkey_event(
+    caller: tauri::WebviewWindow,
+    vk: u16,
+    down: bool,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::MainScratchpad)?;
     crate::hotkey::feed_key_event(vk, down);
     Ok(())
 }
 
 /// Show and focus the main application window (used by the overlay pill).
 #[tauri::command]
-pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_main_window(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Overlay)?;
     let window = app
         .get_webview_window("main")
         .ok_or("main window not found")?;
@@ -337,19 +617,22 @@ pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 /// the app.  Rebuilding a Tauri window from an AppHandle mid-runtime is
 /// possible but pulls in enough complexity that it's not worth it for the
 /// once-in-a-blue-moon case.
-#[tauri::command]
 pub async fn recover_overlay(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // 1. Force ghost mode off so the pill isn't invisible after we show it.
-    let mut settings =
-        crate::storage::settings::get_settings(&state.db).map_err(|e| e.to_string())?;
-    if settings.ghost_mode {
-        settings.ghost_mode = false;
-        crate::storage::settings::update_settings(&state.db, &settings)
-            .map_err(|e| e.to_string())?;
-        let _ = app.emit("settings-changed", &settings);
+    // 1. Force ghost mode off through the same runtime authority used by the
+    // two WebViews; this cannot overwrite an unrelated setting.
+    let (_, snapshot, changed) = commit_runtime_patch(
+        state.inner(),
+        SettingsPatch {
+            ghost_mode: Some(false),
+            ..SettingsPatch::default()
+        },
+        None,
+    )?;
+    if changed {
+        let _ = app.emit("settings-changed", &snapshot.settings);
     }
 
     let window = app
@@ -430,16 +713,24 @@ pub async fn recover_overlay(
 
 /// Persist a new hotkey config and activate it immediately.
 #[tauri::command]
-pub async fn update_hotkey(config: HotkeyConfig, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn update_hotkey(
+    caller: tauri::WebviewWindow,
+    config: HotkeyConfig,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     if config.keys.is_empty() || config.keys.len() > 2 {
         return Err("Hotkey must be 1 or 2 keys".into());
     }
 
-    // Persist to SQLite
-    let mut settings =
-        crate::storage::settings::get_settings(&state.db).map_err(|e| e.to_string())?;
-    settings.hotkey = Some(config.clone());
-    crate::storage::settings::update_settings(&state.db, &settings).map_err(|e| e.to_string())?;
+    let (_, _, _changed) = commit_runtime_patch(
+        state.inner(),
+        SettingsPatch {
+            hotkey: Some(config.clone()),
+            ..SettingsPatch::default()
+        },
+        None,
+    )?;
 
     // Live-update the hook
     let key1 = config.keys[0];

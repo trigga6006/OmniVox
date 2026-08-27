@@ -1,7 +1,9 @@
+use std::borrow::Cow;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arboard::Clipboard;
+use arboard::{Clipboard, ImageData};
 use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
 /// The modifier key used for paste (Ctrl+V on Windows/Linux, Cmd+V on macOS).
@@ -27,6 +29,10 @@ const CLIPBOARD_VERIFY_INTERVAL_MS: u64 = 10;
 // it per-segment without testing slow targets (Word, browser textareas).
 const POST_PASTE_GUARD_MS: u64 = 250;
 
+/// Process-wide serialization for clipboard and synthetic-input transactions.
+/// This must be static because Command Mode constructs short-lived routers.
+static OUTPUT_TRANSACTION: Mutex<()> = Mutex::new(());
+
 use crate::error::{AppError, AppResult};
 use crate::output::types::{OutputConfig, OutputMode};
 use crate::postprocess::voice_commands::{
@@ -46,6 +52,27 @@ use crate::postprocess::voice_commands::{
 ///   pasting. The explicit "I want a copy too" mode.
 pub struct OutputRouter;
 
+impl Default for OutputRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+enum ClipboardSnapshot {
+    Text(String),
+    Image {
+        width: usize,
+        height: usize,
+        bytes: Vec<u8>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum TargetPolicy {
+    CallerVerified,
+    Verify(Option<crate::focus::WindowTarget>),
+}
+
 impl OutputRouter {
     pub fn new() -> Self {
         Self
@@ -56,15 +83,61 @@ impl OutputRouter {
             return Ok(());
         }
 
+        Self::with_transaction(|| self.send_unlocked(text, config, TargetPolicy::CallerVerified))
+    }
+
+    /// Target-bound variant for the dictation pipeline. Verification happens
+    /// inside the serialized transaction immediately before Ctrl+V.
+    pub fn send_to_target(
+        &self,
+        text: &str,
+        config: &OutputConfig,
+        target: Option<crate::focus::WindowTarget>,
+    ) -> AppResult<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        Self::with_transaction(|| self.send_unlocked(text, config, TargetPolicy::Verify(target)))
+    }
+
+    /// Atomically paste a plain dictation and submit it with Enter after the
+    /// caller-selected settle interval. A concrete target is required: Ship
+    /// Mode is consequential and never falls back to firing into an unknown
+    /// foreground window. The process-wide transaction remains held from the
+    /// clipboard write through the final Enter, so no Command Mode or dictation
+    /// output can interleave between them.
+    pub fn send_to_target_with_submit(
+        &self,
+        text: &str,
+        config: &OutputConfig,
+        target: crate::focus::WindowTarget,
+        submit_settle: Duration,
+    ) -> AppResult<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        Self::require_submit_capable_mode(config)?;
+        Self::with_transaction(|| {
+            self.send_unlocked(text, config, TargetPolicy::Verify(Some(target)))?;
+            Self::submit_to_target_unlocked(target, submit_settle)
+        })
+    }
+
+    fn send_unlocked(
+        &self,
+        text: &str,
+        config: &OutputConfig,
+        target_policy: TargetPolicy,
+    ) -> AppResult<()> {
         match config.mode {
             OutputMode::Clipboard => {
                 self.set_clipboard(text)?;
             }
             OutputMode::TypeSimulation => {
-                self.paste_text(text, true)?;
+                self.paste_text_unlocked(text, true, target_policy)?;
             }
             OutputMode::Both => {
-                self.paste_text(text, false)?;
+                self.paste_text_unlocked(text, false, target_policy)?;
             }
         }
 
@@ -96,6 +169,39 @@ impl OutputRouter {
             return Ok(());
         }
 
+        Self::with_transaction(|| {
+            self.send_segments_unlocked(segments, config, target, allow_launch)
+        })
+    }
+
+    /// Atomic Ship Mode variant for a dictation containing inline voice
+    /// command segments. See [`send_to_target_with_submit`] for the ordering
+    /// and target-identity guarantees.
+    pub fn send_segments_to_target_with_submit(
+        &self,
+        segments: &[OutputSegment],
+        config: &OutputConfig,
+        target: crate::focus::WindowTarget,
+        allow_launch: bool,
+        submit_settle: Duration,
+    ) -> AppResult<()> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+        Self::require_submit_capable_mode(config)?;
+        Self::with_transaction(|| {
+            self.send_segments_unlocked(segments, config, Some(target), allow_launch)?;
+            Self::submit_to_target_unlocked(target, submit_settle)
+        })
+    }
+
+    fn send_segments_unlocked(
+        &self,
+        segments: &[OutputSegment],
+        config: &OutputConfig,
+        target: Option<crate::focus::WindowTarget>,
+        allow_launch: bool,
+    ) -> AppResult<()> {
         match config.mode {
             OutputMode::Clipboard => {
                 let text = segments_to_string(segments);
@@ -137,63 +243,148 @@ impl OutputRouter {
         // TypeSimulation mode; captured eagerly so it's still the *prior*
         // contents (not a half-written dictation) by the time we restore.
         let saved_clipboard = if restore_prior_clipboard {
-            Self::capture_clipboard_text(&mut clipboard)
+            Self::capture_clipboard(&mut clipboard)
         } else {
             None
         };
 
-        for seg in segments {
-            match seg {
-                OutputSegment::Text(s) => {
-                    if !s.is_empty() {
-                        // Paste the entire text block at once, including
-                        // newlines. This keeps terminal/editor paste handling
-                        // atomic and avoids per-line command execution.
-                        Self::set_clipboard_verified(&mut clipboard, s)?;
-                        Self::paste_keystroke(&mut enigo)?;
-                        thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+        let mut last_router_clipboard: Option<String> = None;
+        let mut command_owns_clipboard = false;
+        let mut last_paste_at: Option<Instant> = None;
+        let operation_result = (|| {
+            for seg in segments {
+                match seg {
+                    OutputSegment::Text(s) => {
+                        if !s.is_empty() {
+                            Self::require_foreground_target(target, "paste")?;
+                            Self::set_clipboard_verified(&mut clipboard, s)?;
+                            last_router_clipboard = Some(s.clone());
+                            command_owns_clipboard = false;
+                            Self::require_foreground_target(target, "paste")?;
+                            Self::paste_keystroke(&mut enigo)?;
+                            last_paste_at = Some(Instant::now());
+                            thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+                        }
+                    }
+                    OutputSegment::Command(cmd) => {
+                        Self::run_command(&mut enigo, cmd, target, allow_launch, last_paste_at)?;
+                        if Self::command_transfers_clipboard(cmd) {
+                            command_owns_clipboard = true;
+                            last_router_clipboard = None;
+                        }
                     }
                 }
-                OutputSegment::Command(cmd) => {
-                    Self::run_command(&mut enigo, cmd, target, allow_launch)?;
-                }
             }
-        }
+            Ok(())
+        })();
 
-        if restore_prior_clipboard {
+        let cleanup_result = if !command_owns_clipboard && restore_prior_clipboard {
             // TypeSimulation: return the clipboard to whatever the user had
             // before dictating. If we couldn't read text (image, empty, error)
             // we leave the last-pasted segment in place — safer than clearing
             // their (possibly non-text) clipboard.
-            if let Some(prior) = saved_clipboard {
-                let _ = Self::set_clipboard_verified(&mut clipboard, &prior);
+            match (saved_clipboard, last_router_clipboard.as_deref()) {
+                (Some(prior), Some(owned)) => {
+                    Self::restore_clipboard_if_owned(&mut clipboard, prior, owned)
+                }
+                _ => Ok(()),
             }
-        } else {
+        } else if !command_owns_clipboard {
             // Both: write the full concatenated dictation so the user can
             // re-paste it. Also defends deferred-read apps from seeing only
             // the trailing segment.
             let final_text = segments_to_string(segments);
-            if !final_text.is_empty() {
-                Self::set_clipboard_verified(&mut clipboard, &final_text)?;
+            if let Some(owned) = last_router_clipboard.as_deref() {
+                if !final_text.is_empty()
+                    && Self::clipboard_contains_owned_text(&mut clipboard, owned)
+                {
+                    Self::set_clipboard_verified(&mut clipboard, &final_text)
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
             }
-        }
+        } else {
+            Ok(())
+        };
 
-        Ok(())
+        // Cleanup always runs, but an execution failure remains the primary
+        // error if restoration also fails.
+        operation_result.and(cleanup_result)
     }
 
-    /// Paste text into the focused app via Ctrl+V.
-    ///
-    /// When `restore_prior_clipboard` is true (TypeSimulation), the user's
-    /// prior clipboard text is captured first and restored after the
-    /// deferred-read guard so pre-copied snippets survive dictation.
-    /// `pub(crate)` so Command Mode's `type_text` reuses the exact same
-    /// clipboard-verified paste instead of growing a second injection path.
-    pub(crate) fn paste_text(&self, text: &str, restore_prior_clipboard: bool) -> AppResult<()> {
+    /// Command Mode's atomic "type, then optionally submit" operation. The
+    /// paste, clipboard restoration, cancellation gate, final target check,
+    /// and Enter all run under the same process-wide output transaction so a
+    /// second dictation cannot interleave between paste and submit.
+    pub(crate) fn paste_text_to_target_with_submit(
+        &self,
+        text: &str,
+        restore_prior_clipboard: bool,
+        target: crate::focus::WindowTarget,
+        submit: bool,
+        should_cancel: impl Fn() -> bool,
+    ) -> AppResult<()> {
+        Self::with_transaction(|| {
+            // The caller's pre-check happened before it could wait on this
+            // transaction. Re-check after acquisition so a queued cancellation
+            // prevents even a non-submitting paste.
+            if should_cancel() {
+                return Err(AppError::Output("stopped".into()));
+            }
+            self.paste_text_unlocked(
+                text,
+                restore_prior_clipboard,
+                TargetPolicy::Verify(Some(target)),
+            )?;
+            if submit {
+                // This intentionally runs after the paste guard and before the
+                // consequential Enter, while the transaction is still held.
+                if should_cancel() {
+                    return Err(AppError::Output("stopped".into()));
+                }
+                let mut enigo = Enigo::new(&Settings::default()).map_err(|e| {
+                    AppError::Output(format!("Failed to init keystroke engine: {e}"))
+                })?;
+                Self::require_foreground_target(Some(target), "submit pasted text")?;
+                enigo
+                    .key(Key::Return, Direction::Click)
+                    .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Collapse a selection after restoring a window without letting these
+    /// synthetic arrows overlap a clipboard paste or another command.
+    pub(crate) fn deselect_target(&self, target: crate::focus::WindowTarget) -> AppResult<()> {
+        Self::with_transaction(|| {
+            let mut enigo = Enigo::new(&Settings::default())
+                .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+            Self::require_foreground_target(Some(target), "collapse selection")?;
+            enigo
+                .key(Key::RightArrow, Direction::Click)
+                .map_err(|e| AppError::Output(format!("Selection collapse failed: {e}")))?;
+            thread::sleep(Duration::from_millis(2));
+            Self::require_foreground_target(Some(target), "finish collapsing selection")?;
+            enigo
+                .key(Key::LeftArrow, Direction::Click)
+                .map_err(|e| AppError::Output(format!("Selection collapse failed: {e}")))
+        })
+    }
+
+    fn paste_text_unlocked(
+        &self,
+        text: &str,
+        restore_prior_clipboard: bool,
+        target_policy: TargetPolicy,
+    ) -> AppResult<()> {
         let mut clipboard = Clipboard::new()
             .map_err(|e| AppError::Output(format!("Failed to access clipboard: {e}")))?;
 
         let saved_clipboard = if restore_prior_clipboard {
-            Self::capture_clipboard_text(&mut clipboard)
+            Self::capture_clipboard(&mut clipboard)
         } else {
             None
         };
@@ -203,27 +394,84 @@ impl OutputRouter {
         // previous clipboard into the target app.
         Self::set_clipboard_verified(&mut clipboard, text)?;
 
-        self.send_paste_keystroke()?;
+        let operation_result = (|| {
+            self.send_paste_keystroke(target_policy)?;
 
-        // Keep the clipboard stable long enough for target apps that read it
-        // on a deferred tick after Ctrl+V.
-        thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+            // Keep the clipboard stable long enough for target apps that read it
+            // on a deferred tick after Ctrl+V.
+            thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+            Ok(())
+        })();
 
-        if restore_prior_clipboard {
-            if let Some(prior) = saved_clipboard {
-                let _ = Self::set_clipboard_verified(&mut clipboard, &prior);
+        let cleanup_result = if restore_prior_clipboard {
+            match saved_clipboard {
+                Some(prior) => Self::restore_clipboard_if_owned(&mut clipboard, prior, text),
+                None => Ok(()),
             }
-        }
+        } else {
+            Ok(())
+        };
 
-        Ok(())
+        operation_result.and(cleanup_result)
     }
 
-    /// Best-effort snapshot of the clipboard's text contents prior to a paste.
-    /// Returns None for non-text clipboards (images, files, errors) — in that
-    /// case the caller should leave the post-paste clipboard alone rather than
-    /// clearing whatever non-text content was there.
-    fn capture_clipboard_text(clipboard: &mut Clipboard) -> Option<String> {
-        clipboard.get_text().ok()
+    fn submit_to_target_unlocked(
+        target: crate::focus::WindowTarget,
+        settle: Duration,
+    ) -> AppResult<()> {
+        thread::sleep(settle);
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+        // Verify after both the settle and Enigo initialization, immediately
+        // before the consequential Enter primitive.
+        Self::require_foreground_target(Some(target), "submit pasted text")?;
+        enigo
+            .key(Key::Return, Direction::Click)
+            .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))
+    }
+
+    fn require_submit_capable_mode(config: &OutputConfig) -> AppResult<()> {
+        if matches!(config.mode, OutputMode::Clipboard) {
+            Err(AppError::Output(
+                "Ship Mode requires Type Simulation or Both output mode".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Best-effort snapshot of supported clipboard contents prior to a paste.
+    /// Text and RGBA images are restorable. Returns `None` for unsupported
+    /// formats (such as file lists) or read errors, in which case the caller
+    /// leaves the router-written text in place rather than clearing data it
+    /// cannot faithfully restore.
+    fn with_transaction<T>(operation: impl FnOnce() -> AppResult<T>) -> AppResult<T> {
+        Self::with_output_transaction(operation)
+    }
+
+    /// Serialize a non-router synthetic-input implementation (currently the
+    /// Command Mode executor) with every clipboard/paste transaction.
+    pub(crate) fn with_output_transaction<T, E>(
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _guard = OUTPUT_TRANSACTION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        operation()
+    }
+
+    fn capture_clipboard(clipboard: &mut Clipboard) -> Option<ClipboardSnapshot> {
+        if let Ok(text) = clipboard.get_text() {
+            return Some(ClipboardSnapshot::Text(text));
+        }
+        clipboard
+            .get_image()
+            .ok()
+            .map(|image| ClipboardSnapshot::Image {
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes.into_owned(),
+            })
     }
 
     fn set_clipboard(&self, text: &str) -> AppResult<()> {
@@ -281,10 +529,57 @@ impl OutputRouter {
         actual == expected || normalize(actual) == normalize(expected)
     }
 
+    fn clipboard_contains_owned_text(clipboard: &mut Clipboard, owned: &str) -> bool {
+        clipboard
+            .get_text()
+            .map(|current| Self::clipboard_text_matches(&current, owned))
+            .unwrap_or(false)
+    }
+
+    fn restore_clipboard_if_owned(
+        clipboard: &mut Clipboard,
+        prior: ClipboardSnapshot,
+        owned: &str,
+    ) -> AppResult<()> {
+        if !Self::clipboard_contains_owned_text(clipboard, owned) {
+            crate::llm::diaglog::log("router: clipboard restore skipped because ownership changed");
+            return Ok(());
+        }
+
+        match prior {
+            ClipboardSnapshot::Text(text) => Self::set_clipboard_verified(clipboard, &text),
+            ClipboardSnapshot::Image {
+                width,
+                height,
+                bytes,
+            } => clipboard
+                .set_image(ImageData {
+                    width,
+                    height,
+                    bytes: Cow::Owned(bytes),
+                })
+                .map_err(|e| AppError::Output(format!("Failed to restore clipboard image: {e}"))),
+        }
+    }
+
+    fn command_transfers_clipboard(cmd: &VoiceCommand) -> bool {
+        matches!(cmd, VoiceCommand::Copy | VoiceCommand::Cut)
+    }
+
+    fn remaining_paste_guard(elapsed: Option<Duration>) -> Duration {
+        let full = Duration::from_millis(POST_PASTE_GUARD_MS);
+        elapsed
+            .map(|elapsed| full.saturating_sub(elapsed))
+            .unwrap_or(full)
+    }
+
     /// Simulates Ctrl+V.
-    fn send_paste_keystroke(&self) -> AppResult<()> {
+    fn send_paste_keystroke(&self, target_policy: TargetPolicy) -> AppResult<()> {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| AppError::Output(format!("Failed to init keystroke engine: {e}")))?;
+        if let TargetPolicy::Verify(target) = target_policy {
+            Self::require_foreground_target(target, "paste")?;
+        }
         Self::paste_keystroke(&mut enigo)
     }
 
@@ -375,28 +670,40 @@ impl OutputRouter {
         }
     }
 
+    fn require_foreground_target(
+        target: Option<crate::focus::WindowTarget>,
+        primitive: &str,
+    ) -> AppResult<()> {
+        if Self::foreground_is_target(target) {
+            Ok(())
+        } else {
+            Err(AppError::Output(format!(
+                "Target window is not in focus; refusing to {primitive}"
+            )))
+        }
+    }
+
     /// Whether a command fires OS input at (and so depends on) the foreground
     /// window, and must therefore only run when the bound dictation target is
     /// still that foreground window (B2-12).
     ///
     /// Every keystroke/pointer/edit that lands in the focused control is
-    /// focus-dependent: the submit/Enter, pointer clicks + scrolls, arbitrary
-    /// key combos, AND the Ctrl-chord edits (select-all, copy, cut, undo, redo,
-    /// delete-word) plus bare Tab/Escape — a mishearing must not fire any of
-    /// these into whatever window grabbed focus.  Exempt: `NewLine`/`NewParagraph`
-    /// (Shift+Enter inserts interleaved into the already-targeted paste stream),
-    /// the list markers (resolved to text earlier, no keystroke), and `LaunchApp`
-    /// (spawns a process, not a focus-dependent keystroke — gated separately by
+    /// focus-dependent: line breaks, the submit/Enter, pointer clicks + scrolls,
+    /// arbitrary key combos, AND the Ctrl-chord edits (select-all, copy, cut,
+    /// undo, redo, delete-word) plus bare Tab/Escape — a mishearing must not
+    /// fire any of these into whatever window grabbed focus. Exempt: list
+    /// markers (resolved to text earlier, no keystroke), and `LaunchApp` (spawns
+    /// a process, not a focus-dependent keystroke — gated separately by
     /// `allow_launch`).
     fn command_needs_foreground(cmd: &VoiceCommand) -> bool {
         match cmd {
-            VoiceCommand::NewLine
-            | VoiceCommand::NewParagraph
-            | VoiceCommand::LaunchApp(_)
+            VoiceCommand::LaunchApp(_)
             | VoiceCommand::BulletItem
             | VoiceCommand::NumberedItem
             | VoiceCommand::EndList => false,
-            VoiceCommand::DeleteLastWord
+            VoiceCommand::NewLine
+            | VoiceCommand::NewParagraph
+            | VoiceCommand::DeleteLastWord
             | VoiceCommand::Send
             | VoiceCommand::SelectAll
             | VoiceCommand::Copy
@@ -421,7 +728,7 @@ impl OutputRouter {
     ///
     /// `target` is the window the dictation was aimed at: a consequential command
     /// (Send/Enter, mouse, key combo) re-verifies via [`foreground_is_target`]
-    /// immediately before each primitive and is SKIPPED when the target is absent
+    /// immediately before each primitive and is refused when the target is absent
     /// or no longer foreground, so a mishearing can't fire into an unverified
     /// window (B2-3).  `allow_launch` gates the disruptive `LaunchApp` (default
     /// governed by the `launch_app_voice_commands_enabled` setting).
@@ -430,14 +737,15 @@ impl OutputRouter {
         cmd: &VoiceCommand,
         target: Option<crate::focus::WindowTarget>,
         allow_launch: bool,
+        last_paste_at: Option<Instant>,
     ) -> AppResult<()> {
         // Identity gate for EVERY focus-dependent primitive (B2-12): the bound
         // dictation target must still be the live foreground before we fire OS
         // input at it.  `Send` re-checks AGAIN after its own paste-guard sleep
         // (below), since that 250 ms is an extra window for focus to change.
         // A `None`/mismatched target is refused (logged) — never fire blind.
-        if Self::command_needs_foreground(cmd) && !Self::foreground_is_target(target) {
-            return Ok(());
+        if Self::command_needs_foreground(cmd) {
+            Self::require_foreground_target(target, "execute inline command")?;
         }
         match cmd {
             VoiceCommand::NewLine => {
@@ -445,6 +753,7 @@ impl OutputRouter {
             }
             VoiceCommand::NewParagraph => {
                 Self::shift_enter(enigo)?;
+                Self::require_foreground_target(target, "insert paragraph break")?;
                 Self::shift_enter(enigo)?;
             }
             VoiceCommand::DeleteLastWord => {
@@ -455,15 +764,15 @@ impl OutputRouter {
                 })?;
             }
             VoiceCommand::Send => {
-                // Keep the paste-guard so trailing "send" doesn't fire before the
-                // dictation text has landed in the target app.
-                thread::sleep(Duration::from_millis(POST_PASTE_GUARD_MS));
+                // Wait only for the unelapsed portion of the paste guard. Text
+                // segments already paid this interval, so trailing Send no
+                // longer adds a redundant fixed 250 ms.
+                let elapsed = last_paste_at.map(|at| at.elapsed());
+                thread::sleep(Self::remaining_paste_guard(elapsed));
                 // Re-verify AFTER the guard — the 250 ms sleep is a window in
                 // which focus could change; the Enter must only fire while the
                 // bound target is still foreground (B2-3).
-                if !Self::foreground_is_target(target) {
-                    return Ok(());
-                }
+                Self::require_foreground_target(target, "send")?;
                 enigo
                     .key(Key::Return, Direction::Click)
                     .map_err(|e| AppError::Output(format!("Send (Enter) failed: {e}")))?;
@@ -537,6 +846,7 @@ impl OutputRouter {
                 enigo
                     .button(Button::Left, Direction::Click)
                     .map_err(|e| AppError::Output(format!("Mouse double click failed: {e}")))?;
+                Self::require_foreground_target(target, "double-click")?;
                 enigo
                     .button(Button::Left, Direction::Click)
                     .map_err(|e| AppError::Output(format!("Mouse double click failed: {e}")))?;
@@ -559,9 +869,7 @@ impl OutputRouter {
                 if allow_launch {
                     Self::launch_app(command_line);
                 } else {
-                    crate::llm::diaglog::log(
-                        "router: inline LaunchApp skipped — setting disabled",
-                    );
+                    crate::llm::diaglog::log("router: inline LaunchApp skipped — setting disabled");
                 }
             }
             // List markers are resolved into literal text segments by
@@ -645,13 +953,20 @@ impl OutputRouter {
 #[cfg(test)]
 mod tests {
     use super::OutputRouter;
+    use crate::output::types::OutputConfig;
     use crate::postprocess::voice_commands::{ComboKey, KeyModifier, VoiceCommand};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
 
     /// Every focus-dependent inline primitive must be gated on the bound target
     /// (B2-12): the Ctrl-chord edits + bare Tab/Escape used to fire unverified.
     #[test]
     fn all_focus_dependent_primitives_require_foreground() {
         let gated = [
+            VoiceCommand::NewLine,
+            VoiceCommand::NewParagraph,
             VoiceCommand::DeleteLastWord,
             VoiceCommand::Send,
             VoiceCommand::SelectAll,
@@ -680,13 +995,11 @@ mod tests {
         }
     }
 
-    /// Paste-stream inserts / process launches are exempt — they don't fire a
-    /// focus-dependent keystroke at the target control.
+    /// Process launches and list-marker placeholders do not send input to the
+    /// currently focused control, so they are exempt from target verification.
     #[test]
-    fn paste_stream_and_launch_commands_are_exempt() {
+    fn launch_and_list_marker_commands_are_exempt() {
         let exempt = [
-            VoiceCommand::NewLine,
-            VoiceCommand::NewParagraph,
             VoiceCommand::LaunchApp("notepad".into()),
             VoiceCommand::BulletItem,
             VoiceCommand::NumberedItem,
@@ -705,5 +1018,111 @@ mod tests {
     #[test]
     fn absent_target_is_refused() {
         assert!(!OutputRouter::foreground_is_target(None));
+    }
+
+    #[test]
+    fn trailing_send_only_waits_for_unelapsed_paste_guard() {
+        assert_eq!(
+            OutputRouter::remaining_paste_guard(None),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            OutputRouter::remaining_paste_guard(Some(Duration::from_millis(100))),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            OutputRouter::remaining_paste_guard(Some(Duration::from_millis(250))),
+            Duration::ZERO
+        );
+        assert_eq!(
+            OutputRouter::remaining_paste_guard(Some(Duration::from_secs(1))),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn copy_and_cut_transfer_clipboard_ownership_to_the_target() {
+        assert!(OutputRouter::command_transfers_clipboard(
+            &VoiceCommand::Copy
+        ));
+        assert!(OutputRouter::command_transfers_clipboard(
+            &VoiceCommand::Cut
+        ));
+        assert!(!OutputRouter::command_transfers_clipboard(
+            &VoiceCommand::SelectAll
+        ));
+    }
+
+    #[test]
+    fn clipboard_ownership_matching_accepts_only_router_text() {
+        assert!(OutputRouter::clipboard_text_matches(
+            "router text\r\nnext",
+            "router text\nnext"
+        ));
+        assert!(!OutputRouter::clipboard_text_matches(
+            "new copy from the user",
+            "router text"
+        ));
+    }
+
+    #[test]
+    fn output_transactions_are_process_wide_and_serialized() {
+        let start = Arc::new(Barrier::new(3));
+        let in_transaction = Arc::new(AtomicBool::new(false));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let start = Arc::clone(&start);
+            let in_transaction = Arc::clone(&in_transaction);
+            workers.push(thread::spawn(move || {
+                start.wait();
+                OutputRouter::with_transaction(|| {
+                    assert!(
+                        !in_transaction.swap(true, Ordering::SeqCst),
+                        "two output transactions overlapped"
+                    );
+                    thread::sleep(Duration::from_millis(20));
+                    in_transaction.store(false, Ordering::SeqCst);
+                    Ok(())
+                })
+                .unwrap();
+            }));
+        }
+
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(!in_transaction.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn queued_type_text_cancellation_happens_before_clipboard_access() {
+        let result = OutputRouter::new().paste_text_to_target_with_submit(
+            "must not be written",
+            true,
+            crate::focus::WindowTarget { hwnd: 0, pid: None },
+            true,
+            || true,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Output(message)) if message == "stopped"
+        ));
+    }
+
+    #[test]
+    fn ship_mode_rejects_clipboard_only_output_before_os_access() {
+        let result = OutputRouter::new().send_to_target_with_submit(
+            "must not be written",
+            &OutputConfig::default(),
+            crate::focus::WindowTarget { hwnd: 0, pid: None },
+            Duration::ZERO,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Output(message))
+                if message == "Ship Mode requires Type Simulation or Both output mode"
+        ));
     }
 }

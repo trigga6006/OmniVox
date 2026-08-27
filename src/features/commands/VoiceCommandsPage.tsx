@@ -145,7 +145,7 @@ function CommandRow({
       ) : (
         <>
           <Kbd className="shrink-0">{cmd.phrase}</Kbd>
-          <span className="flex-1 truncate text-[13px] text-text-secondary">
+          <span className="flex-1 truncate text-sm text-text-secondary">
             {actionLabel(cmd.action)}
           </span>
         </>
@@ -380,7 +380,7 @@ export function VoiceCommandsPage() {
               <CardTitle>Mouse &amp; window</CardTitle>
               <Badge tone="neutral">{groups.pointer.length}</Badge>
             </div>
-            <span className="text-[11.5px] text-text-muted">Off by default</span>
+            <span className="text-xs text-text-muted">Off by default</span>
           </CardHeader>
           <CardBody className="divide-y divide-border pt-0">
             {groups.pointer.map(renderRow)}
@@ -477,7 +477,7 @@ export function VoiceCommandsPage() {
                   </div>
                 </div>
                 {newActionType === "launch" && (
-                  <p className="mt-2 text-[11.5px] leading-snug text-text-muted">
+                  <p className="mt-2 text-xs leading-snug text-text-muted">
                     Runs this program directly with its arguments — no shell, so variables and
                     metacharacters are not interpreted.
                   </p>

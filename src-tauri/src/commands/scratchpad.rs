@@ -9,6 +9,20 @@ const SCRATCHPAD_W: f64 = 340.0;
 const SCRATCHPAD_H: f64 = 440.0;
 const SCRATCHPAD_MARGIN: f64 = 16.0;
 
+fn require_caller_label(actual: &str, expected: &str) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "Scratchpad command is not available to the '{actual}' window"
+        ))
+    }
+}
+
+fn require_caller(window: &tauri::WebviewWindow, expected: &str) -> Result<(), String> {
+    require_caller_label(window.label(), expected)
+}
+
 /// Bottom-right of the primary monitor's work area (above the taskbar), for a
 /// window of the given logical size.
 fn scratchpad_position(app: &AppHandle, w: f64, h: f64) -> (f64, f64) {
@@ -57,23 +71,27 @@ pub async fn open_scratchpad_impl(app: &AppHandle) -> Result<(), String> {
         }
         _ => (SCRATCHPAD_W, SCRATCHPAD_H),
     };
-    let (x, y) = scratchpad_position(&app, w, h);
+    let (x, y) = scratchpad_position(app, w, h);
 
-    let win = WebviewWindowBuilder::new(app, "scratchpad", WebviewUrl::App("/scratchpad.html".into()))
-        .title("Scratchpad")
-        .inner_size(w, h)
-        .min_inner_size(260.0, 300.0)
-        .position(x, y)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(true)
-        .focused(true)
-        .visible(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let win = WebviewWindowBuilder::new(
+        app,
+        "scratchpad",
+        WebviewUrl::App("/scratchpad.html".into()),
+    )
+    .title("Scratchpad")
+    .inner_size(w, h)
+    .min_inner_size(260.0, 300.0)
+    .position(x, y)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(true)
+    .focused(true)
+    .visible(true)
+    .build()
+    .map_err(|e| e.to_string())?;
 
     // Restore the saved position (physical px) so it reopens where you left it,
     // not back in the default corner.
@@ -98,7 +116,8 @@ pub async fn open_scratchpad_impl(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn open_scratchpad(app: AppHandle) -> Result<(), String> {
+pub async fn open_scratchpad(caller: tauri::WebviewWindow, app: AppHandle) -> Result<(), String> {
+    require_caller(&caller, "overlay")?;
     open_scratchpad_impl(&app).await
 }
 
@@ -144,23 +163,41 @@ fn save_scratchpad_geometry(app: &AppHandle, win: &tauri::WebviewWindow) {
 }
 
 #[tauri::command]
-pub async fn close_scratchpad(app: AppHandle) -> Result<(), String> {
+pub async fn close_scratchpad(caller: tauri::WebviewWindow, app: AppHandle) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     close_scratchpad_impl(&app);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn save_scratchpad_position(x: f64, y: f64, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn save_scratchpad_position(
+    caller: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     crate::storage::scratchpad::set_position(&state.db, x, y).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn save_scratchpad_size(w: f64, h: f64, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn save_scratchpad_size(
+    caller: tauri::WebviewWindow,
+    w: f64,
+    h: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     crate::storage::scratchpad::set_size(&state.db, w, h).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn set_scratchpad_capture(on: bool, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn set_scratchpad_capture(
+    caller: tauri::WebviewWindow,
+    on: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     state
         .scratchpad_capture
         .store(on, std::sync::atomic::Ordering::Release);
@@ -168,45 +205,86 @@ pub async fn set_scratchpad_capture(on: bool, state: State<'_, AppState>) -> Res
 }
 
 #[tauri::command]
-pub async fn scratchpad_get_capture(state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn scratchpad_get_capture(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    require_caller(&caller, "scratchpad")?;
     Ok(state
         .scratchpad_capture
         .load(std::sync::atomic::Ordering::Acquire))
 }
 
 #[tauri::command]
-pub async fn scratchpad_get(state: State<'_, AppState>) -> Result<ScratchpadData, String> {
+pub async fn scratchpad_get(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<ScratchpadData, String> {
+    require_caller(&caller, "scratchpad")?;
     scratchpad::get_data(&state.db).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn scratchpad_set_note(content: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn scratchpad_set_note(
+    caller: tauri::WebviewWindow,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     scratchpad::set_note(&state.db, &content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn scratchpad_add_entry(
+    caller: tauri::WebviewWindow,
     pad_id: Option<String>,
     content: String,
     state: State<'_, AppState>,
 ) -> Result<ScratchpadEntry, String> {
+    require_caller(&caller, "scratchpad")?;
     scratchpad::add_entry(&state.db, pad_id.as_deref(), &content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn scratchpad_delete_entry(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn scratchpad_delete_entry(
+    caller: tauri::WebviewWindow,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     scratchpad::delete_entry(&state.db, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn scratchpad_clear_pad(
+    caller: tauri::WebviewWindow,
     pad_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     scratchpad::clear_pad(&state.db, pad_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn scratchpad_set_variant(variant: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn scratchpad_set_variant(
+    caller: tauri::WebviewWindow,
+    variant: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, "scratchpad")?;
     scratchpad::set_variant(&state.db, &variant).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_caller_label;
+
+    #[test]
+    fn caller_policy_is_exact_and_window_specific() {
+        assert!(require_caller_label("overlay", "overlay").is_ok());
+        assert!(require_caller_label("scratchpad", "scratchpad").is_ok());
+        assert!(require_caller_label("main", "overlay").is_err());
+        assert!(require_caller_label("overlay", "scratchpad").is_err());
+        assert!(require_caller_label("scratchpad-extra", "scratchpad").is_err());
+    }
 }

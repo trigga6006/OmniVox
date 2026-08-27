@@ -5,10 +5,11 @@ import {
   searchHistory,
   deleteHistoryRecord,
   onTranscriptionResult,
+  onHistoryChanged,
   type TranscriptionRecord,
 } from "@/lib/tauri";
-import { formatDuration } from "@/lib/utils";
-import { Button, Card, Input, EmptyState, PageHeader } from "@/components/ui";
+import { cn, formatDuration } from "@/lib/utils";
+import { Button, Card, Input, EmptyState, PageHeader, SkeletonRows } from "@/components/ui";
 
 const PAGE_SIZE = 50;
 
@@ -18,6 +19,10 @@ export function HistoryPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
+  // List enter/exit: the current page fades out the moment the query changes
+  // and the replacement fades in when it lands. A transition (not a keyframe)
+  // so fast typing retargets mid-flight instead of restarting from zero.
+  const [listShown, setListShown] = useState(false);
   const mountedRef = useRef(true);
 
   const load = useCallback(
@@ -42,6 +47,7 @@ export function HistoryPage() {
         .finally(() => {
           if (mountedRef.current) {
             setLoading(false);
+            if (!append) setListShown(true);
           }
         });
     },
@@ -59,6 +65,7 @@ export function HistoryPage() {
   useEffect(() => {
     if (!mountedRef.current) return;
     setHasMore(true);
+    setListShown(false);
     const timer = setTimeout(() => load(query, false), query ? 250 : 0);
     return () => clearTimeout(timer);
   }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -87,9 +94,11 @@ export function HistoryPage() {
   }, [refresh]);
 
   useEffect(() => {
-    const unlisten = onTranscriptionResult(() => refreshRef.current());
+    const unlistenTranscription = onTranscriptionResult(() => refreshRef.current());
+    const unlistenCleanup = onHistoryChanged(() => refreshRef.current());
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenTranscription.then((fn) => fn());
+      unlistenCleanup.then((fn) => fn());
     };
   }, []);
 
@@ -154,7 +163,9 @@ export function HistoryPage() {
       </div>
 
       {/* List */}
-      {!loading && records.length === 0 ? (
+      {loading && records.length === 0 ? (
+        <SkeletonRows count={4} variant="text" className="mt-5" />
+      ) : !loading && records.length === 0 ? (
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
             icon={<Clock />}
@@ -167,14 +178,23 @@ export function HistoryPage() {
           />
         </div>
       ) : (
-        <div className="mt-5 flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
+        <div
+          className={cn(
+            "mt-5 flex flex-1 flex-col gap-2 overflow-y-auto pr-1",
+            // `translate-y-*` compiles to the standalone `translate` property in
+            // Tailwind v4, not `transform` — naming `transform` here left the
+            // rise un-animated (it snapped while only the opacity faded).
+            "transition-[opacity,translate] duration-[var(--dur-2)] ease-out",
+            listShown ? "translate-y-0 opacity-100" : "translate-y-[3px] opacity-0"
+          )}
+        >
           {records.map((rec) => (
             <Card
               key={rec.id}
-              className="group px-4 py-3.5 transition-colors hover:border-border-hover"
+              className="group px-4 py-3.5 transition-colors duration-[var(--dur-2)] ease-out hover:border-border-hover"
             >
               <div className="flex items-start justify-between gap-3">
-                <p className="flex-1 select-text text-[14.5px] leading-[1.55] text-text-primary">
+                <p className="flex-1 select-text text-base leading-[1.55] text-text-primary">
                   {rec.text}
                 </p>
 
@@ -205,7 +225,7 @@ export function HistoryPage() {
                 </div>
               </div>
 
-              <div className="mt-2 flex items-center gap-2.5 text-[11px] tabular-nums text-text-muted">
+              <div className="mt-2 flex items-center gap-2.5 font-mono text-2xs tabular-nums text-text-muted">
                 <span>{formatDate(rec.created_at)}</span>
                 <span className="opacity-40">·</span>
                 <span>{formatDuration(rec.duration_ms)}</span>

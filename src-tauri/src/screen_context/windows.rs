@@ -68,7 +68,7 @@ unsafe fn capture_inner(hwnd: isize, abort: &AtomicBool) -> Option<String> {
     // failure as "skip this capture".
     let init_hr = CoInitializeEx(None, COINIT_MULTITHREADED);
     if init_hr.is_err() {
-        super::diaglog::log(&format!("uia: CoInitializeEx failed: {init_hr:?}"));
+        super::diaglog::log(super::diaglog::Event::ComInitializationFailed);
         return None;
     }
 
@@ -86,7 +86,7 @@ unsafe fn capture_inner(hwnd: isize, abort: &AtomicBool) -> Option<String> {
 
         while let Some((elem, depth)) = stack.pop() {
             if abort.load(Ordering::Relaxed) {
-                super::diaglog::log("uia: aborted by watchdog");
+                super::diaglog::log(super::diaglog::Event::WatchdogAborted);
                 break;
             }
             if nodes >= MAX_NODES || buf.len() >= MAX_TEXT_BYTES {

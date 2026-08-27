@@ -73,7 +73,7 @@ export function PillContent({
             className="absolute inset-0 -translate-x-full"
             style={{
               background:
-                "linear-gradient(90deg, transparent 0%, rgba(245,158,11,0.06) 50%, transparent 100%)",
+                "linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--color-amber-500) 6%, transparent) 50%, transparent 100%)",
               animation: "shimmer 2s ease-in-out infinite",
             }}
           />
@@ -137,7 +137,7 @@ export function PillContent({
             style={{
               fontFamily: "var(--font-display)",
               background:
-                "linear-gradient(90deg, rgba(245,158,11,0.45) 0%, rgba(252,195,77,0.95) 50%, rgba(245,158,11,0.45) 100%)",
+                "linear-gradient(90deg, color-mix(in srgb, var(--color-amber-500) 45%, transparent) 0%, color-mix(in srgb, var(--color-amber-300) 95%, transparent) 50%, color-mix(in srgb, var(--color-amber-500) 45%, transparent) 100%)",
               backgroundSize: "220% 100%",
               WebkitBackgroundClip: "text",
               WebkitTextFillColor: "transparent",
@@ -208,7 +208,7 @@ export function PillContent({
             <span
               className="relative h-1.5 w-1.5 rounded-full"
               style={{
-                backgroundColor: "rgb(245,158,11)",
+                backgroundColor: "var(--color-amber-500)",
                 animation: "structuring-pulse 2s ease-in-out infinite",
               }}
             />

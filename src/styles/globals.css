@@ -82,7 +82,9 @@ body {
    tracking-[0.2em] text-text-muted`. */
 .eyebrow {
   font-family: var(--font-mono);
-  font-size: 10px;
+  /* --text-2xs (11px), not a hand-typed 10px: the eyebrow was the last
+     rendered size outside the scale. */
+  font-size: var(--text-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.2em;
@@ -149,6 +151,19 @@ html.overlay-window body::after,
   background: transparent;
 }
 
+/* Opt-out for strips that must stay scrollable without painting a bar —
+   the meeting tab row overflows on narrow panes and an 8px track under it
+   reads as a broken border. */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 /* ── Selection ────────────────────────────────────────────── */
 
 ::selection {
@@ -162,15 +177,32 @@ html.overlay-window body::after,
 
 /* ── Focus ring ───────────────────────────────────────────── */
 
+/* The ring follows the control's OWN border-radius — an `outline` already
+   tracks `border-radius`, so the fallback must not impose one. The old
+   `border-radius: 4px` here squared off every round control it touched
+   (Toggle, Segmented, icon buttons) and RecordButton had to override it. */
 :focus-visible {
   outline: 2px solid var(--color-amber-500);
   outline-offset: 2px;
-  border-radius: 4px;
 }
 
 /* ── Utility: text selection allowed in transcription areas ─ */
+/* `body { user-select: none }` above keeps app chrome (nav, buttons, drag
+   regions, overlay windows) unselectable by default. Readable CONTENT opts
+   back in with `select-text` — meeting notes, transcript lines, action
+   items, answers, history entries. Nested chrome inside those regions
+   re-disables it (the Button primitive carries `select-none`). */
 
 .select-text {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Editable fields are always selectable — the inherited `none` on <body>
+   otherwise leaks in and stops you selecting your own typing. */
+input,
+textarea,
+[contenteditable="true"] {
   user-select: text;
   -webkit-user-select: text;
 }
@@ -191,17 +223,37 @@ textarea::placeholder {
   opacity: 0.7;
 }
 
-/* ── Native range slider — premium track + thumb ───────────── */
+/* ── Native range slider — premium track + thumb ─────────────
+   The accent is a variable, not a hardcoded amber: the Slider primitive
+   sets `data-accent` and re-points `--slider-accent`. Every raw <input
+   type="range"> still surviving in feature code keeps the amber default,
+   so nothing breaks while P2 migrates them onto the primitive. */
 
 input[type="range"] {
   -webkit-appearance: none;
   background: transparent;
+  --slider-accent: var(--color-amber-500);
+  --slider-pct: 0%;
 }
+
+input[type="range"][data-accent="amber"]  { --slider-accent: var(--color-amber-500); }
+input[type="range"][data-accent="violet"] { --slider-accent: var(--color-violet-500); }
+input[type="range"][data-accent="teal"]   { --slider-accent: var(--color-teal); }
 
 input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   background: var(--color-surface-3);
   border-radius: 999px;
+}
+
+/* Filled portion — only the primitive publishes `--slider-pct`, so raw
+   ranges keep the plain unfilled track they render today. */
+input[type="range"][data-accent]::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    var(--slider-accent) 0 var(--slider-pct),
+    var(--color-surface-3) var(--slider-pct) 100%
+  );
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -211,15 +263,45 @@ input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   margin-top: -5px;
   border-radius: 50%;
-  background: var(--color-amber-500);
+  background: var(--slider-accent);
   border: 2px solid var(--color-surface-0);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
-  transition: transform 120ms var(--ease-out-quint);
+  transition: transform var(--dur-1) var(--ease-out);
 }
 
 input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.15);
+}
+
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.05);
+}
+
+input[type="range"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Global interaction standard ───────────────────────────────
+   "The interface confirms it heard you." Anything pressable that
+   isn't already a kit component opts in with `pressable`; the kit's
+   own controls carry it too so there is exactly one press feel.
+   Named property, never `all` — nothing else should animate.
+
+   Deliberately in `@layer components` (below Tailwind's utilities):
+   a component that needs colour transitions as well can declare its
+   own `transition-[background-color,…,transform]` utility and win,
+   while still inheriting the pressed transform from here. */
+
+@layer components {
+  .pressable {
+    transition: transform var(--dur-1) var(--ease-out);
+  }
+
+  .pressable:active:not(:disabled):not([aria-disabled="true"]):not([data-pressable-off]) {
+    transform: scale(0.97);
+  }
 }
 
 /* ── Reduced motion ───────────────────────────────────────────
@@ -233,6 +315,11 @@ input[type="range"]::-webkit-slider-thumb:hover {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    /* Also kill the DELAY. Pages stagger their entrance with inline
+       `animationDelay` up to ~0.87s; without this the durations collapse but
+       the assembly still crawls in piece by piece — the exact drip-feed the
+       setting asks us not to perform. */
+    animation-delay: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;

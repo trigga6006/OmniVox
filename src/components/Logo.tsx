@@ -8,6 +8,12 @@ interface LogoProps {
 /**
  * OmniVox heartbeat logo — adapted from the brand SVG with
  * amber gradients for visibility on dark surfaces.
+ *
+ * The four gradient stops stay raw hex on purpose. They are the mark's own
+ * brand ramp (they happen to equal dark-mode amber-300/500/700), and a logo
+ * must render identically in both themes — wiring them to `--color-amber-*`
+ * would drag the mark through the light theme's contrast remap, which
+ * deliberately darkens amber to near-brown for text legibility.
  */
 export function Logo({ size = 28, className }: LogoProps) {
   return (

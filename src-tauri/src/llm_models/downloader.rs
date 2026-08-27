@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use reqwest::Client;
+use sha2::Digest;
 use tauri::Emitter;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -10,21 +11,20 @@ use tokio::io::AsyncWriteExt;
 use crate::error::{AppError, AppResult};
 use crate::llm_models::manager::LlmModelManager;
 use crate::llm_models::types::{LlmDownloadProgress, LlmDownloadStatus};
+use crate::models::integrity::{
+    new_hasher, safe_artifact_path, sha256_hex, verify_or_migrate_file, verify_stream_result,
+    write_verification_marker,
+};
 
-/// Streaming downloader for GGUF LLM files.  Mirrors `ModelDownloader` but:
-/// - Emits on the `llm-download-progress` channel (separate from Whisper
-///   downloads so existing listeners aren't confused by mixed events).
-/// - Resolves repo+filename dynamically from `LlmModelManager` instead of
-///   hard-coded whisper.cpp paths.
+/// Upper bound on any LLM download. Covers the supported Qwen 1.7B quant;
+/// larger files require an explicit catalog and resource-policy update.
+const MAX_LLM_DOWNLOAD_BYTES: u64 = 3_000_000_000;
+
 pub struct LlmModelDownloader {
     client: Client,
     llm_models_dir: PathBuf,
     cancel_flag: Arc<AtomicBool>,
 }
-
-/// Upper bound on any LLM download.  Covers the full Qwen3 1.7B quant; bigger
-/// than that and we want the user to be explicit about memory pressure.
-const MAX_LLM_DOWNLOAD_BYTES: u64 = 3_000_000_000;
 
 impl LlmModelDownloader {
     pub fn new(llm_models_dir: PathBuf) -> Self {
@@ -35,8 +35,6 @@ impl LlmModelDownloader {
         }
     }
 
-    /// Download a catalog model, emitting `llm-download-progress` events.
-    /// Returns the final path on disk (after atomic `.part` → final rename).
     pub async fn download(
         &self,
         manager: &LlmModelManager,
@@ -46,18 +44,29 @@ impl LlmModelDownloader {
         let info = manager
             .get_model(model_id)
             .ok_or_else(|| AppError::Llm(format!("Unknown LLM model: {model_id}")))?;
+        let spec = LlmModelManager::download_artifact(model_id)?;
+        if info.huggingface_repo != spec.repository || info.huggingface_file != spec.filename {
+            return Err(AppError::Llm(format!(
+                "LLM catalog manifest mismatch for '{}'",
+                spec.model_id
+            )));
+        }
 
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            info.huggingface_repo, info.huggingface_file
-        );
-        let target_path = self.llm_models_dir.join(&info.huggingface_file);
-        let part_path = self
-            .llm_models_dir
-            .join(format!("{}.part", info.huggingface_file));
+        let url = spec.download_url();
+        let target_path =
+            safe_artifact_path(&self.llm_models_dir, spec.filename).map_err(AppError::Llm)?;
+        let part_path = safe_artifact_path(
+            &self.llm_models_dir,
+            &format!("{}.part-{}", spec.filename, uuid::Uuid::new_v4()),
+        )
+        .map_err(AppError::Llm)?;
 
         if target_path.exists() {
-            return Ok(target_path);
+            let root = self.llm_models_dir.clone();
+            return tokio::task::spawn_blocking(move || verify_or_migrate_file(&root, spec))
+                .await
+                .map_err(|e| AppError::Llm(format!("LLM verification task failed: {e}")))?
+                .map_err(AppError::Llm);
         }
 
         fs::create_dir_all(&self.llm_models_dir)
@@ -65,7 +74,13 @@ impl LlmModelDownloader {
             .map_err(|e| AppError::Llm(format!("Failed to create LLM dir: {e}")))?;
 
         self.cancel_flag.store(false, Ordering::SeqCst);
-        self.emit_progress(app_handle, model_id, 0, 0, LlmDownloadStatus::Downloading);
+        self.emit_progress(
+            app_handle,
+            model_id,
+            0,
+            spec.size_bytes,
+            LlmDownloadStatus::Downloading,
+        );
 
         let mut response = self
             .client
@@ -73,33 +88,46 @@ impl LlmModelDownloader {
             .send()
             .await
             .map_err(|e| AppError::Llm(format!("LLM download request failed: {e}")))?;
-
         if !response.status().is_success() {
-            let status = response.status();
             return Err(AppError::Llm(format!(
-                "LLM download failed: HTTP {status} for {url}"
+                "LLM download failed: HTTP {} for immutable model artifact",
+                response.status()
             )));
         }
 
-        let total_bytes = response.content_length().unwrap_or(0);
+        let total_bytes = response.content_length().unwrap_or(spec.size_bytes);
         if total_bytes > MAX_LLM_DOWNLOAD_BYTES {
             return Err(AppError::Llm(format!(
                 "LLM size ({total_bytes} bytes) exceeds maximum ({MAX_LLM_DOWNLOAD_BYTES} bytes)"
             )));
         }
+        if total_bytes != spec.size_bytes {
+            return Err(AppError::Llm(format!(
+                "Integrity metadata mismatch for '{}': expected {} bytes, server reported {}",
+                spec.model_id, spec.size_bytes, total_bytes
+            )));
+        }
 
-        let mut file = fs::File::create(&part_path)
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part_path)
             .await
-            .map_err(|e| AppError::Llm(format!("Failed to create .part: {e}")))?;
+            .map_err(|e| AppError::Llm(format!("Failed to create temporary LLM file: {e}")))?;
+        let mut downloaded = 0_u64;
+        let mut last_emit_percent = 0_u32;
+        let mut hasher = new_hasher();
 
-        let mut downloaded: u64 = 0;
-        let mut last_emit_percent: u32 = 0;
-
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| AppError::Llm(format!("LLM download stream error: {e}")))?
-        {
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(e) => {
+                    drop(file);
+                    let _ = fs::remove_file(&part_path).await;
+                    return Err(AppError::Llm(format!("LLM download stream error: {e}")));
+                }
+            };
             if self.cancel_flag.load(Ordering::Relaxed) {
                 drop(file);
                 let _ = fs::remove_file(&part_path).await;
@@ -113,24 +141,22 @@ impl LlmModelDownloader {
                 return Err(AppError::Llm("LLM download cancelled".into()));
             }
 
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| AppError::Llm(format!("LLM write error: {e}")))?;
-
+            if let Err(e) = file.write_all(&chunk).await {
+                drop(file);
+                let _ = fs::remove_file(&part_path).await;
+                return Err(AppError::Llm(format!("LLM write error: {e}")));
+            }
+            hasher.update(&chunk);
             downloaded += chunk.len() as u64;
-            if downloaded > MAX_LLM_DOWNLOAD_BYTES {
+            if downloaded > MAX_LLM_DOWNLOAD_BYTES || downloaded > spec.size_bytes {
                 drop(file);
                 let _ = fs::remove_file(&part_path).await;
                 return Err(AppError::Llm(format!(
-                    "Downloaded LLM bytes ({downloaded}) exceed maximum ({MAX_LLM_DOWNLOAD_BYTES})"
+                    "Downloaded LLM bytes ({downloaded}) exceed the catalog manifest"
                 )));
             }
 
-            let percent = if total_bytes > 0 {
-                ((downloaded as f64 / total_bytes as f64) * 100.0) as u32
-            } else {
-                0
-            };
+            let percent = ((downloaded as f64 / total_bytes as f64) * 100.0) as u32;
             if percent > last_emit_percent {
                 last_emit_percent = percent;
                 self.emit_progress(
@@ -146,11 +172,38 @@ impl LlmModelDownloader {
         file.flush()
             .await
             .map_err(|e| AppError::Llm(format!("LLM flush error: {e}")))?;
+        file.sync_all()
+            .await
+            .map_err(|e| AppError::Llm(format!("LLM sync error: {e}")))?;
         drop(file);
 
-        fs::rename(&part_path, &target_path)
-            .await
-            .map_err(|e| AppError::Llm(format!("Failed to finalize LLM download: {e}")))?;
+        let actual_sha256 = sha256_hex(hasher);
+        if let Err(e) = verify_stream_result(spec, downloaded, &actual_sha256) {
+            let _ = fs::remove_file(&part_path).await;
+            self.emit_progress(
+                app_handle,
+                model_id,
+                downloaded,
+                total_bytes,
+                LlmDownloadStatus::Failed,
+            );
+            return Err(AppError::Llm(e));
+        }
+
+        if let Err(rename_error) = fs::rename(&part_path, &target_path).await {
+            let _ = fs::remove_file(&part_path).await;
+            let root = self.llm_models_dir.clone();
+            if target_path.exists() {
+                return tokio::task::spawn_blocking(move || verify_or_migrate_file(&root, spec))
+                    .await
+                    .map_err(|e| AppError::Llm(format!("LLM verification task failed: {e}")))?
+                    .map_err(AppError::Llm);
+            }
+            return Err(AppError::Llm(format!(
+                "Failed to finalize LLM download: {rename_error}"
+            )));
+        }
+        write_verification_marker(&target_path, spec).map_err(AppError::Llm)?;
 
         self.emit_progress(
             app_handle,
@@ -159,7 +212,6 @@ impl LlmModelDownloader {
             total_bytes,
             LlmDownloadStatus::Completed,
         );
-
         Ok(target_path)
     }
 
@@ -190,5 +242,22 @@ impl LlmModelDownloader {
                 status,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_rejects_unknown_and_traversal_ids() {
+        for id in [
+            "unknown",
+            "../settings.db",
+            "..\\settings.db",
+            "C:\\temp\\x",
+        ] {
+            assert!(LlmModelManager::download_artifact(id).is_err());
+        }
     }
 }

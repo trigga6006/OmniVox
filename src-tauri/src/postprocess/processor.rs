@@ -427,7 +427,7 @@ fn remove_contextual_fillers(text: &str) -> String {
                     && remainder[idx + c.len_utf8()..]
                         .chars()
                         .next()
-                        .map_or(true, |n| n.is_whitespace())
+                        .is_none_or(|n| n.is_whitespace())
             })
             .map(|(idx, c)| idx + c.len_utf8())
             .unwrap_or(remainder.len());
@@ -505,9 +505,7 @@ fn dedup_phrases(text: &str) -> String {
 
                 if phrase_a == phrase_b {
                     // Keep the first occurrence, skip the duplicate
-                    for j in i..i + phrase_len {
-                        result.push(words[j]);
-                    }
+                    result.extend_from_slice(&words[i..i + phrase_len]);
                     i += phrase_len * 2;
                     found_dup = true;
                     break;
@@ -723,8 +721,14 @@ mod tests {
         // boundary, so no space may be injected into the token.
         let result = remove_contextual_fillers("increase by 3.5 percent and config.json");
         assert!(result.contains("3.5"), "decimal was split: {result:?}");
-        assert!(result.contains("config.json"), "filename was split: {result:?}");
-        assert_eq!(remove_contextual_fillers("ping 10.0.0.1 now").trim(), "ping 10.0.0.1 now");
+        assert!(
+            result.contains("config.json"),
+            "filename was split: {result:?}"
+        );
+        assert_eq!(
+            remove_contextual_fillers("ping 10.0.0.1 now").trim(),
+            "ping 10.0.0.1 now"
+        );
         // Genuine sentence boundaries (period + space) still split, so leading
         // fillers on the second sentence are still removed.
         let two = remove_contextual_fillers("I left. So I came back.");

@@ -75,7 +75,7 @@ export function GpuAccelerationSection({
         </span>
       </div>
 
-      <p className="mb-1.5 text-[13.5px] font-medium text-text-primary">
+      <p className="mb-1.5 text-sm font-medium text-text-primary">
         GPU acceleration
       </p>
       <p className="mb-4 max-w-[400px] text-xs text-text-muted">

@@ -145,7 +145,7 @@ export function HotkeySection({
         </span>
       </div>
 
-      <label className="mb-2.5 block text-[13.5px] font-medium text-text-primary">
+      <label className="mb-2.5 block text-sm font-medium text-text-primary">
         Push-to-talk hotkey
       </label>
 
@@ -211,7 +211,7 @@ export function HotkeySection({
               {captured.map((k, i) => (
                 <div key={k.code} className="contents">
                   {i > 0 && <span className="text-xs text-text-muted">+</span>}
-                  <kbd className="rounded-lg border border-success/30 bg-success/[0.10] px-3 py-1.5 font-mono text-[13px] text-success shadow-sm">
+                  <kbd className="rounded-[var(--radius-m)] border border-success/30 bg-success/[0.10] px-3 py-1.5 font-mono text-sm text-success shadow-[var(--shadow-sm)]">
                     {k.label}
                   </kbd>
                 </div>

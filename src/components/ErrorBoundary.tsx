@@ -33,14 +33,14 @@ export class ErrorBoundary extends Component<Props, State> {
             <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full border border-error/30 bg-error/[0.10]">
               <span className="text-xl font-semibold text-error">!</span>
             </div>
-            <h2 className="mb-2 font-display text-xl font-semibold tracking-[-0.02em] text-text-primary">
+            <h2 className="mb-2 font-display text-xl font-semibold text-text-primary">
               Something went wrong
             </h2>
             <p className="mb-1 text-sm text-text-muted">
               The UI encountered an unexpected error. Your recordings and settings are safe.
             </p>
             {this.state.error && (
-              <p className="mb-5 break-all font-mono text-[11px] text-text-muted/70">
+              <p className="mb-5 break-all font-mono text-2xs text-text-muted/70">
                 {this.state.error.message}
               </p>
             )}

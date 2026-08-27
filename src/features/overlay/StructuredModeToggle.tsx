@@ -85,8 +85,31 @@ export function StructuredModeToggle({
   );
 }
 
+/*
+ * Palette port. This block used to hand-type 37 rgba() literals in two
+ * off-brand families: a warm salmon/brown for the off state (a survivor of the
+ * pre-graphite palette — the comments already called it "amber" while the value
+ * was #e8957e) and a dusty mauve for the on state (rgb(161,118,142), which the
+ * spec calls out by name). Both now read from tokens, so Structured Mode has
+ * exactly one violet and the hairline is actually amber.
+ *
+ * Every duration, easing curve and transform below is unchanged.
+ */
 const styles = `
 .ley-line {
+  /* Token palette for this control — declared on the root element so every
+     descendant rule below inherits it. */
+  --ll-surface-top: var(--color-surface-2);
+  --ll-surface-bottom: var(--color-surface-1);
+  --ll-accent: var(--color-amber-500);
+  --ll-glint: var(--color-cream);
+  --ll-ink: var(--color-text-primary);
+  --ll-violet: var(--color-violet-400);
+  --ll-violet-deep: var(--color-violet-500);
+  --ll-violet-deepest: var(--color-violet-600);
+  --ll-violet-light: var(--color-violet-300);
+  --ll-violet-lightest: var(--color-violet-200);
+
   /* Shape — a vertical capsule, deliberately taller than a quick-toggle
      circle so it reads as a flagship control rather than a setting. */
   position: relative;
@@ -105,11 +128,11 @@ const styles = `
   /* Off state — latent rune: mostly dark with an amber hairline.  Thin
      inner highlight hints at depth without pulling focus. */
   background: linear-gradient(180deg,
-    rgba(31,25,19,0.78) 0%,
-    rgba(21,17,13,0.82) 100%);
-  border: 1px solid rgba(232,149,126,0.16);
+    color-mix(in srgb, var(--ll-surface-top) 78%, transparent) 0%,
+    color-mix(in srgb, var(--ll-surface-bottom) 82%, transparent) 100%);
+  border: 1px solid color-mix(in srgb, var(--ll-accent) 16%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(233,220,198,0.045),
+    inset 0 1px 0 color-mix(in srgb, var(--ll-glint) 4.5%, transparent),
     0 2px 6px -2px rgba(0,0,0,0.45);
 
   transition:
@@ -119,9 +142,9 @@ const styles = `
     transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .ley-line:hover {
-  border-color: rgba(232,149,126,0.3);
+  border-color: color-mix(in srgb, var(--ll-accent) 30%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(233,220,198,0.08),
+    inset 0 1px 0 color-mix(in srgb, var(--ll-glint) 8%, transparent),
     0 3px 10px -3px rgba(0,0,0,0.55);
 }
 .ley-line:active { transform: scale(0.96); }
@@ -130,26 +153,26 @@ const styles = `
 
 .ley-line--on {
   background: linear-gradient(180deg,
-    rgba(161,118,142,0.34) 0%,
-    rgba(141,102,124,0.22) 52%,
-    rgba(122,88,107,0.28) 100%);
-  border-color: rgba(161,118,142,0.55);
+    color-mix(in srgb, var(--ll-violet) 34%, transparent) 0%,
+    color-mix(in srgb, var(--ll-violet-deep) 22%, transparent) 52%,
+    color-mix(in srgb, var(--ll-violet-deepest) 28%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--ll-violet) 55%, transparent);
   /* Static glow — deliberately no breathing animation.  The button
      already reads as "on" from the violet fill, border, and dot; a
      pulsing halo was distracting in the broader UI context. */
   box-shadow:
-    inset 0 1px 0 rgba(233,220,198,0.16),
+    inset 0 1px 0 color-mix(in srgb, var(--ll-glint) 16%, transparent),
     inset 0 -1px 0 rgba(0,0,0,0.3),
     0 2px 10px -2px rgba(0,0,0,0.5);
 }
 .ley-line--on:hover {
   background: linear-gradient(180deg,
-    rgba(174,128,153,0.44) 0%,
-    rgba(154,112,135,0.3) 52%,
-    rgba(134,98,117,0.36) 100%);
-  border-color: rgba(174,128,153,0.68);
+    color-mix(in srgb, var(--ll-violet-light) 44%, transparent) 0%,
+    color-mix(in srgb, var(--ll-violet) 30%, transparent) 52%,
+    color-mix(in srgb, var(--ll-violet-deep) 36%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--ll-violet-light) 68%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(233,220,198,0.2),
+    inset 0 1px 0 color-mix(in srgb, var(--ll-glint) 20%, transparent),
     inset 0 -1px 0 rgba(0,0,0,0.3),
     0 2px 10px -2px rgba(0,0,0,0.5);
 }
@@ -162,14 +185,14 @@ const styles = `
   transition: opacity 280ms ease, filter 280ms ease;
 }
 .ley-line-glyph svg {
-  fill: rgba(239,233,223,0.32);
+  fill: color-mix(in srgb, var(--ll-ink) 32%, transparent);
   transition: fill 320ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ley-line:hover .ley-line-glyph svg {
-  fill: rgba(239,233,223,0.6);
+  fill: color-mix(in srgb, var(--ll-ink) 60%, transparent);
 }
 .ley-line--on .ley-line-glyph svg {
-  fill: rgba(239,233,223,0.96);
+  fill: color-mix(in srgb, var(--ll-ink) 96%, transparent);
 }
 
 /* --- SPINE ---------------------------------------------------- */
@@ -180,21 +203,21 @@ const styles = `
   flex: 1 1 auto;
   margin: 2px 0;
   background: linear-gradient(180deg,
-    rgba(232,149,126,0) 0%,
-    rgba(232,149,126,0.12) 35%,
-    rgba(232,149,126,0.12) 65%,
-    rgba(232,149,126,0) 100%);
+    transparent 0%,
+    color-mix(in srgb, var(--ll-accent) 12%, transparent) 35%,
+    color-mix(in srgb, var(--ll-accent) 12%, transparent) 65%,
+    transparent 100%);
   z-index: 1;
   overflow: hidden;
   transition: background 320ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ley-line--on .ley-line-spine {
   background: linear-gradient(180deg,
-    rgba(161,118,142,0) 0%,
-    rgba(178,138,160,0.55) 25%,
-    rgba(193,156,176,0.7) 50%,
-    rgba(178,138,160,0.55) 75%,
-    rgba(161,118,142,0) 100%);
+    transparent 0%,
+    color-mix(in srgb, var(--ll-violet-light) 55%, transparent) 25%,
+    color-mix(in srgb, var(--ll-violet-lightest) 70%, transparent) 50%,
+    color-mix(in srgb, var(--ll-violet-light) 55%, transparent) 75%,
+    transparent 100%);
 }
 
 /* --- STATE DOT ----------------------------------------------- */
@@ -204,7 +227,7 @@ const styles = `
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(239,233,223,0.18);
+  background: color-mix(in srgb, var(--ll-ink) 18%, transparent);
   z-index: 2;
   transition:
     background 280ms ease,
@@ -213,8 +236,8 @@ const styles = `
 .ley-line--on .ley-line-dot {
   /* Static lit dot — no breathing.  The soft ring + halo is enough to
      read as "on" at a glance without any motion. */
-  background: rgb(161,118,142);
+  background: var(--ll-violet);
   box-shadow:
-    0 0 0 1.5px rgba(161,118,142,0.24);
+    0 0 0 1.5px color-mix(in srgb, var(--ll-violet) 24%, transparent);
 }
 `;

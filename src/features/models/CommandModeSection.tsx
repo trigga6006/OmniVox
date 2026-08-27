@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Zap, FlaskConical, ArrowRight, Cpu } from "lucide-react";
+import { Zap, FlaskConical, ArrowRight } from "lucide-react";
 import {
-  getSettings,
-  updateSettings,
+  getSettingsSnapshot,
+  patchSettings,
   onSettingsChanged,
   getActiveLlmModel,
   onLlmModelLoaded,
@@ -10,7 +10,7 @@ import {
   type AppSettings,
   type CommandTestResult,
 } from "@/lib/tauri";
-import { Button, Card, Toggle, Badge } from "@/components/ui";
+import { Badge, Button, Card, Input, ModelRow, Toggle } from "@/components/ui";
 
 /**
  * Command Mode manager — the third Models tab (alongside Speech & LLM).
@@ -37,6 +37,7 @@ export function CommandModeSection() {
   const [result, setResult] = useState<CommandTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const settingsRevision = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -55,9 +56,12 @@ export function CommandModeSection() {
   }, []);
 
   useEffect(() => {
-    getSettings()
-      .then((s) => {
-        if (mountedRef.current) setSettings(s);
+    getSettingsSnapshot()
+      .then((snapshot) => {
+        if (mountedRef.current) {
+          settingsRevision.current = snapshot.revision;
+          setSettings(snapshot.settings);
+        }
       })
       .catch(() => {});
     refreshModel();
@@ -78,12 +82,15 @@ export function CommandModeSection() {
       const updated: AppSettings = { ...settings, ...patch };
       setSettings(updated); // optimistic
       try {
-        await updateSettings(updated);
+        const snapshot = await patchSettings(patch, settingsRevision.current);
+        settingsRevision.current = snapshot.revision;
+        if (mountedRef.current) setSettings(snapshot.settings);
       } catch (e) {
         console.error("Update settings failed:", e);
         try {
-          const s = await getSettings();
-          if (mountedRef.current) setSettings(s);
+          const snapshot = await getSettingsSnapshot();
+          settingsRevision.current = snapshot.revision;
+          if (mountedRef.current) setSettings(snapshot.settings);
         } catch {
           /* ignore */
         }
@@ -124,8 +131,8 @@ export function CommandModeSection() {
       >
         <div className="flex items-center justify-between">
           <div className="min-w-0 flex-1 pr-3">
-            <p className="text-[14px] text-text-primary">Enable Command Mode</p>
-            <p className="mt-0.5 text-[11.5px] leading-snug text-text-muted">
+            <p className="text-sm text-text-primary">Enable Command Mode</p>
+            <p className="mt-0.5 text-xs leading-snug text-text-muted">
               Hold <span className="text-amber-300/90">Right Ctrl</span> and speak a command —
               “open Spotify”, “close this window”, “search for…”. Performs an action instead of
               typing.
@@ -144,8 +151,8 @@ export function CommandModeSection() {
             built-in "open <app>" — that always works. */}
         <div className="mt-3.5 flex items-center justify-between border-t border-border/60 pt-3">
           <div className="min-w-0 flex-1 pr-3">
-            <p className="text-[14px] text-text-primary">Allow custom Launch voice-commands</p>
-            <p className="mt-0.5 text-[11.5px] leading-snug text-text-muted">
+            <p className="text-sm text-text-primary">Allow custom Launch voice-commands</p>
+            <p className="mt-0.5 text-xs leading-snug text-text-muted">
               Lets your own “Launch” voice-commands start programs. Command Mode’s built-in
               “open …” isn’t affected. Off = your Launch commands do nothing.
             </p>
@@ -160,106 +167,122 @@ export function CommandModeSection() {
           />
         </div>
 
-        {/* Shared-model note */}
-        <div className="mt-3.5 flex items-center gap-2 border-t border-border/60 pt-3 text-[11.5px] text-text-muted">
-          <Cpu size={13} strokeWidth={2} className="shrink-0 text-text-muted/80" />
-          <span className="min-w-0">
-            Uses your active LLM
-            {modelName ? (
-              <>
-                {" "}
-                — <span className="text-text-secondary">{modelName}</span>
-              </>
-            ) : (
-              " (none active yet)"
-            )}{" "}
-            for phrasings the instant matcher doesn’t catch. It’s shared with Structured Mode —
-            change it in the <span className="text-violet-300/90">LLM Structuring</span> tab.
-          </span>
-        </div>
       </Card>
 
-      {/* Test command box */}
-      <Card
-        className="px-4 py-3.5 opacity-0 animate-slide-up"
+      {/* The shared brain, as a row. Command Mode has no catalog of its own —
+          it borrows Structured Mode's active LLM — so the one row on this tab
+          IS that model, with the dry-run box in its footer slot. */}
+      <ModelRow
+        name={modelName ?? "No model active"}
+        accent="amber"
+        rail={modelName ? "strong" : undefined}
+        className="opacity-0 animate-slide-up"
         style={{ animationDelay: "0.09s", animationFillMode: "forwards" }}
-      >
-        <div className="mb-2 flex items-center gap-1.5">
-          <FlaskConical size={12} strokeWidth={2} className="text-text-muted" />
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-            Test command
-          </span>
-        </div>
-        <p className="mb-3 text-[11.5px] leading-snug text-text-muted">
-          Type a phrase to see how the brain resolves it — nothing is executed.
-        </p>
+        badges={
+          modelName ? (
+            <Badge tone="amber">Shared</Badge>
+          ) : (
+            <Badge tone="neutral">None</Badge>
+          )
+        }
+        description={
+          modelName
+            ? "Resolves the phrasings the instant matcher doesn’t catch. Shared with Structured Mode — change it in the LLM Structuring tab."
+            : "Download and activate a model in the LLM Structuring tab; Command Mode borrows it for phrasings the instant matcher doesn’t catch."
+        }
+        meta={["instant matcher → LLM fallback", "shared with Structured Mode"]}
+        footer={
+          <>
+            <div className="mb-2 flex items-center gap-1.5">
+              <FlaskConical size={12} strokeWidth={2} className="text-text-muted" />
+              <span className="eyebrow">Test command</span>
+            </div>
+            <p className="mb-3 text-xs leading-snug text-text-muted">
+              Type a phrase to see how the brain resolves it — nothing is executed.
+            </p>
 
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={utterance}
-            onChange={(e) => setUtterance(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleTest();
-            }}
-            placeholder="e.g. close this window"
-            className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted/60 focus:border-amber-500/50 focus:outline-none"
-          />
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={() => handleTest()}
-            disabled={!utterance.trim() || testing}
-            loading={testing}
-            icon={<ArrowRight strokeWidth={2} />}
-          >
-            Test
-          </Button>
-        </div>
+            <div className="flex items-center gap-2">
+              <Input
+                type="text"
+                value={utterance}
+                onChange={(e) => setUtterance(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleTest();
+                }}
+                placeholder="e.g. close this window"
+                aria-label="Phrase to resolve"
+                className="min-w-0 flex-1"
+              />
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => handleTest()}
+                disabled={!utterance.trim()}
+                loading={testing}
+                icon={<ArrowRight strokeWidth={2} />}
+              >
+                Test
+              </Button>
+            </div>
 
-        {/* Example chips */}
-        <div className="mt-2.5 flex flex-wrap gap-1.5">
-          {EXAMPLES.map((ex) => (
-            <button
-              key={ex}
-              onClick={() => handleTest(ex)}
-              disabled={testing}
-              className="rounded-full border border-border bg-surface-2/60 px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:border-amber-500/40 hover:text-text-secondary disabled:opacity-50"
-            >
-              {ex}
-            </button>
-          ))}
-        </div>
+            {/* Example chips */}
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              {EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  onClick={() => handleTest(ex)}
+                  disabled={testing}
+                  className="pressable rounded-full border border-border bg-surface-2/60 px-2.5 py-1 text-xs text-text-muted transition-[color,border-color] duration-[var(--dur-2)] ease-out hover:border-amber-500/40 hover:text-text-secondary disabled:opacity-45"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
 
-        {/* Result */}
-        {result && (
-          <div className="mt-3 flex items-center gap-2.5 rounded-lg border border-border bg-surface-2/40 px-3 py-2.5">
-            {result.recognized ? (
-              <Zap size={14} strokeWidth={2} className="shrink-0 text-amber-400" fill="currentColor" />
-            ) : (
-              <span className="shrink-0 text-[13px] font-bold text-text-muted">∅</span>
+            {/* Result */}
+            {result && (
+              <div className="mt-3 flex items-center gap-2.5 rounded-[var(--radius-m)] border border-border bg-surface-2/40 px-3 py-2.5">
+                {result.recognized ? (
+                  <Zap
+                    size={14}
+                    strokeWidth={2}
+                    className="shrink-0 text-amber-400"
+                    fill="currentColor"
+                  />
+                ) : (
+                  <span className="shrink-0 text-sm font-bold text-text-muted">∅</span>
+                )}
+                <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+                  {result.summary}
+                </span>
+                <Badge
+                  tone={
+                    result.tier === "matcher"
+                      ? "green"
+                      : result.tier === "llm"
+                        ? "violet"
+                        : "neutral"
+                  }
+                >
+                  {result.tier === "matcher"
+                    ? "instant"
+                    : result.tier === "llm"
+                      ? "LLM"
+                      : "no match"}
+                </Badge>
+                <span className="shrink-0 font-mono text-2xs tabular-nums text-text-muted">
+                  {result.duration_ms}ms
+                </span>
+              </div>
             )}
-            <span className="min-w-0 flex-1 truncate text-[13px] text-text-primary">
-              {result.summary}
-            </span>
-            <Badge tone={result.tier === "matcher" ? "green" : result.tier === "llm" ? "violet" : "neutral"}>
-              {result.tier === "matcher"
-                ? "instant"
-                : result.tier === "llm"
-                  ? "LLM"
-                  : "no match"}
-            </Badge>
-            <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">
-              {result.duration_ms}ms
-            </span>
-          </div>
-        )}
-        {error && (
-          <div className="mt-3 rounded-lg border border-error/25 bg-error/[0.08] px-3 py-2 text-[11.5px] text-error">
-            {error}
-          </div>
-        )}
-      </Card>
+            {error && (
+              <div className="mt-3 rounded-[var(--radius-m)] border border-error/25 bg-error/[0.08] px-3 py-2 text-xs text-error">
+                {error}
+              </div>
+            )}
+          </>
+        }
+      />
     </section>
   );
 }

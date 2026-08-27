@@ -76,8 +76,7 @@ pub fn refresh() {
         // rescan fired from the "no app found" path could lock out EVERY "open
         // app" for the TTL. Caching an empty result is only acceptable when we
         // have nothing yet (keeps snapshot() from reloading synchronously).
-        let keep_old =
-            !got_apps && guard.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
+        let keep_old = !got_apps && guard.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
         if !keep_old {
             *guard = Some(entries);
         }
@@ -172,11 +171,7 @@ fn score(query_norm: &str, name_norm: &str) -> f32 {
 
     // Every query token is a whole token of the name ("code" in "visual studio
     // code", "word" in "microsoft word").  Ranks ABOVE prefix.
-    if !q_tokens.is_empty()
-        && q_tokens
-            .iter()
-            .all(|qt| n_tokens.iter().any(|nt| nt == qt))
-    {
+    if !q_tokens.is_empty() && q_tokens.iter().all(|qt| n_tokens.iter().any(|nt| nt == qt)) {
         return 0.95;
     }
     // Prefix ("photosh" → "photoshop").  Kept far enough below the exact-token
@@ -338,13 +333,19 @@ mod tests {
     use super::*;
 
     fn idx() -> Vec<AppEntry> {
-        ["Spotify", "Google Chrome", "Visual Studio Code", "Discord", "Microsoft Word"]
-            .iter()
-            .map(|n| AppEntry {
-                name: (*n).to_string(),
-                app_id: format!("{n}.aumid"),
-            })
-            .collect()
+        [
+            "Spotify",
+            "Google Chrome",
+            "Visual Studio Code",
+            "Discord",
+            "Microsoft Word",
+        ]
+        .iter()
+        .map(|n| AppEntry {
+            name: (*n).to_string(),
+            app_id: format!("{n}.aumid"),
+        })
+        .collect()
     }
 
     #[test]
@@ -357,7 +358,10 @@ mod tests {
     #[test]
     fn token_containment_handles_vendor_prefixes() {
         assert_eq!(best_match("chrome", &idx()).unwrap().name, "Google Chrome");
-        assert_eq!(best_match("code", &idx()).unwrap().name, "Visual Studio Code");
+        assert_eq!(
+            best_match("code", &idx()).unwrap().name,
+            "Visual Studio Code"
+        );
         assert_eq!(best_match("word", &idx()).unwrap().name, "Microsoft Word");
     }
 
@@ -380,20 +384,35 @@ mod tests {
         // "word" must resolve to "Microsoft Word" (exact token), not "WordPad"
         // (mere prefix) — the regression Codex flagged.
         let apps = vec![
-            AppEntry { name: "WordPad".into(), app_id: "wordpad".into() },
-            AppEntry { name: "Microsoft Word".into(), app_id: "word".into() },
+            AppEntry {
+                name: "WordPad".into(),
+                app_id: "wordpad".into(),
+            },
+            AppEntry {
+                name: "Microsoft Word".into(),
+                app_id: "word".into(),
+            },
         ];
         let r = best_match("word", &apps).unwrap();
         assert_eq!(r.name, "Microsoft Word");
-        assert!(r.score >= AUTO && !r.ambiguous, "exact token should auto-launch");
+        assert!(
+            r.score >= AUTO && !r.ambiguous,
+            "exact token should auto-launch"
+        );
     }
 
     #[test]
     fn close_candidates_are_flagged_ambiguous() {
         // "teams" is an exact token of both → near-tie → confirm, don't guess.
         let apps = vec![
-            AppEntry { name: "Microsoft Teams".into(), app_id: "a".into() },
-            AppEntry { name: "Teams Machine-Wide Installer".into(), app_id: "b".into() },
+            AppEntry {
+                name: "Microsoft Teams".into(),
+                app_id: "a".into(),
+            },
+            AppEntry {
+                name: "Teams Machine-Wide Installer".into(),
+                app_id: "b".into(),
+            },
         ];
         let r = best_match("teams", &apps).unwrap();
         assert!(r.ambiguous, "two equal token matches must be ambiguous");
@@ -404,8 +423,14 @@ mod tests {
         // Exact full-name match is definitive even when a longer app shares the
         // token — "spotify" → Spotify, auto-launch, not ambiguous.
         let apps = vec![
-            AppEntry { name: "Spotify".into(), app_id: "a".into() },
-            AppEntry { name: "Spotify Lite".into(), app_id: "b".into() },
+            AppEntry {
+                name: "Spotify".into(),
+                app_id: "a".into(),
+            },
+            AppEntry {
+                name: "Spotify Lite".into(),
+                app_id: "b".into(),
+            },
         ];
         let r = best_match("spotify", &apps).unwrap();
         assert_eq!(r.name, "Spotify");

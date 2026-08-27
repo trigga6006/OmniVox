@@ -13,5 +13,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
+    // This file takes precedence over vite.config.ts's `test` block, so the
+    // shared jsdom shims have to be declared HERE or they never load.
+    setupFiles: ["./src/test/setup.ts"],
   },
 });

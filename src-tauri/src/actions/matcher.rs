@@ -7,7 +7,9 @@
 //! `<verb> <app>` open-app prefixes.  No match → `None` (a later phase can route
 //! that to the LLM; for now the pill reports "didn't catch a command").
 
-use crate::actions::intent::{CommandIntent, KeyChord, MediaAction, ScratchpadAction, WindowAction};
+use crate::actions::intent::{
+    CommandIntent, KeyChord, MediaAction, ScratchpadAction, WindowAction,
+};
 
 /// Verbs/phrases that introduce an "open app" command; the remainder is the app
 /// name.  Multi-word verbs ("switch to") are matched whole.  Kept generous so
@@ -45,7 +47,12 @@ pub fn normalize(s: &str) -> String {
 /// Politeness prefixes peeled off the front before the zero-arg lookup
 /// ("can you skip the song" → "skip the song").  Multi-word entries match whole.
 const LEADING_FILLERS: &[&str] = &[
-    "please", "hey", "can you", "could you", "would you", "will you",
+    "please",
+    "hey",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
 ];
 
 /// Politeness suffixes peeled off the end ("skip the song please" → "skip the
@@ -84,6 +91,40 @@ pub(crate) fn peel_politeness(s: &str) -> String {
         break;
     }
     cur.to_string()
+}
+
+/// Safety-critical utterances routed before the deterministic matcher and LLM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Tier0Command {
+    Cancel,
+    Undo,
+}
+
+/// Classify the exact tier-0 phrases used by the production Command pipeline.
+///
+/// Keeping this pure and colocated with normalization lets diagnostics exercise
+/// the real decision without copying a safety-critical phrase list.
+pub fn match_tier0_command(utterance: &str) -> Option<Tier0Command> {
+    let normalized = normalize(utterance);
+    let peeled = peel_politeness(&normalized);
+    let candidates = [normalized.as_str(), peeled.as_str()];
+    if candidates.iter().any(|candidate| {
+        matches!(
+            *candidate,
+            "stop" | "stop it" | "cancel" | "cancel that" | "never mind" | "nevermind" | "abort"
+        )
+    }) {
+        return Some(Tier0Command::Cancel);
+    }
+    if candidates.iter().any(|candidate| {
+        matches!(
+            *candidate,
+            "undo that" | "undo it" | "undo last command" | "undo the last command"
+        )
+    }) {
+        return Some(Tier0Command::Undo);
+    }
+    None
 }
 
 /// Canonicalize a normalized utterance for the zero-arg lookup: strip leading
@@ -173,8 +214,12 @@ fn zero_arg(norm: &str) -> Option<CommandIntent> {
         }
         "maximize" | "maximise" | "maximize window" | "full screen" | "make full screen"
         | "go full screen" | "fullscreen" => Window(WindowAction::Maximize),
-        "show desktop" | "show me desktop" | "minimize everything" | "minimise everything"
-        | "minimize all" | "hide everything" => Kc(KeyChord::ShowDesktop),
+        "show desktop"
+        | "show me desktop"
+        | "minimize everything"
+        | "minimise everything"
+        | "minimize all"
+        | "hide everything" => Kc(KeyChord::ShowDesktop),
         "close window" | "close current window" => CommandIntent::CloseWindow,
         // OmniVox's own scratchpad pad.  Both "scratchpad" and the ASR's usual
         // two-word "scratch pad" spelling are listed; filler stripping folds
@@ -210,11 +255,218 @@ fn is_scratchpad_name(target: &str) -> bool {
     squashed == "scratchpad" || squashed == "scratchpads"
 }
 
-/// Parse a Command-Mode utterance into a [`CommandIntent`].
+/// Return the literal tail of an explicit command prefix without normalizing it.
+///
+/// `normalize` is intentionally lossy (it lowercases and discards punctuation),
+/// which is exactly right for fixed chords but wrong for a command such as
+/// `type Hello, Sam!`. Keep the text the recognizer supplied for parameterized
+/// commands; the executor's clipboard path will paste this value verbatim.
+fn raw_after_prefix<'a>(utterance: &'a str, prefixes: &[&str]) -> Option<&'a str> {
+    let input = utterance.trim();
+    for prefix in prefixes {
+        // Prefixes are ASCII. `get` keeps this safe when the input begins with a
+        // multi-byte character, and `eq_ignore_ascii_case` avoids altering the
+        // literal target's casing.
+        let Some(head) = input.get(..prefix.len()) else {
+            continue;
+        };
+        if !head.eq_ignore_ascii_case(prefix) {
+            continue;
+        }
+        let Some(tail) = input.get(prefix.len()..) else {
+            continue;
+        };
+        // Do not turn "typewriter" or "googleable" into commands. A colon is
+        // accepted because speech recognizers commonly render "type: hello".
+        let Some(first) = tail.chars().next() else {
+            continue;
+        };
+        if !first.is_whitespace() && first != ':' {
+            continue;
+        }
+        let value = tail
+            .trim_start_matches(|c: char| c.is_whitespace() || c == ':')
+            .trim();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Recognize a literal typing command. This deliberately has no `send` form:
+/// a deterministic matcher must never infer a consequential Enter press from
+/// arbitrary text. The existing `TypeText { submit: false }` intent keeps the
+/// pipeline's focus binding and undo semantics intact.
+fn parse_type_text(utterance: &str) -> Option<CommandIntent> {
+    let text = raw_after_prefix(utterance, &["type", "write"])?;
+    Some(CommandIntent::TypeText {
+        text: text.to_string(),
+        submit: false,
+    })
+}
+
+/// Whether a literal target is an explicit, safe-to-validate web URL/domain.
+/// The executor performs the authoritative validation immediately before
+/// opening it; this stricter recognition check merely prevents ordinary app
+/// names (or prose) from taking the browser fast path.
+fn explicit_web_target(target: &str) -> Option<String> {
+    let target = target.trim_end_matches(['.', ',', '!', '?']);
+    if target.is_empty() || target.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let candidate = if target.starts_with("http://") || target.starts_with("https://") {
+        target.to_string()
+    } else {
+        format!("https://{target}")
+    };
+    let parsed = url::Url::parse(&candidate).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none_or(str::is_empty)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+
+    // A scheme, localhost, an IP literal, or a dotted host is explicit enough.
+    // `open spotify` must remain an app command rather than becoming a browser
+    // navigation merely because URL parsing can accept a bare hostname.
+    let host = parsed.host_str()?;
+    let explicit = target.contains("://")
+        || host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok()
+        || host.contains('.');
+    explicit.then(|| target.to_string())
+}
+
+/// Match a direct browser-navigation phrase while preserving URL punctuation.
+fn parse_open_url(utterance: &str) -> Option<CommandIntent> {
+    let target = raw_after_prefix(
+        utterance,
+        &["navigate to", "open up", "open", "go to", "visit"],
+    )?;
+    explicit_web_target(target).map(CommandIntent::OpenUrl)
+}
+
+/// Match only unambiguous explicit search phrases. In particular, bare
+/// `google cats` stays out of the fast path: it can plausibly mean an app/site
+/// name (for example Google Chrome or Google Maps), not a web search.
+fn parse_web_search(utterance: &str) -> Option<CommandIntent> {
+    const SEARCH_PREFIXES: &[&str] = &[
+        "search the web for",
+        "search the web",
+        "search web for",
+        "web search for",
+        "web search",
+        "search google for",
+        "search on google for",
+        "google search for",
+        "google search",
+        "search for",
+        "look up",
+    ];
+    // Do not reinterpret an incomplete long form such as "search the web for"
+    // as the shorter "search the web" with a query of just "for".
+    let raw = utterance.trim();
+    if [
+        "search the web for",
+        "search web for",
+        "web search for",
+        "search google for",
+        "search on google for",
+        "google search for",
+    ]
+    .iter()
+    .any(|prefix| raw.eq_ignore_ascii_case(prefix))
+    {
+        return None;
+    }
+    raw_after_prefix(raw, SEARCH_PREFIXES).map(|query| CommandIntent::WebSearch(query.to_string()))
+}
+
+/// Match a browser search page with no query. Kept separate from
+/// `raw_after_prefix`, which deliberately requires a non-empty tail.
+fn parse_empty_web_search(utterance: &str) -> Option<CommandIntent> {
+    let raw = utterance.trim();
+    [
+        "search the web",
+        "search web",
+        "web search",
+        "google search",
+    ]
+    .iter()
+    .any(|phrase| raw.eq_ignore_ascii_case(phrase))
+    .then_some(CommandIntent::WebSearch(String::new()))
+}
+
+/// Multi-step commands are intentionally bounded and conservative. Splitting
+/// a literal typing/search target on "and" would be surprising, so only the
+/// action kinds that are already immediate, non-confirmed deterministic actions
+/// can participate. App launch, window close, scratchpad mutation, and typing
+/// therefore stay single-command paths with their existing safeguards.
+fn safe_chain_intent(intent: &CommandIntent) -> bool {
+    matches!(
+        intent,
+        CommandIntent::KeyChord(_)
+            | CommandIntent::Media(_)
+            | CommandIntent::Window(_)
+            | CommandIntent::WebSearch(_)
+            | CommandIntent::OpenUrl(_)
+    )
+}
+
+/// Split at explicit spoken conjunctions while retaining each segment's
+/// original spelling for literal text, URLs, and search queries. The three-step
+/// ceiling prevents a long dictation fragment from turning into an accidental
+/// batch of OS actions.
+fn conjunction_segments(utterance: &str) -> Option<Vec<&str>> {
+    const SEPARATORS: &[&str] = &[" and then ", ", then ", " then ", " and ", ", and "];
+    let lower = utterance.to_ascii_lowercase();
+    let mut segments = Vec::new();
+    let mut start = 0;
+
+    loop {
+        let next = SEPARATORS
+            .iter()
+            .filter_map(|separator| {
+                lower[start..]
+                    .find(separator)
+                    .map(|offset| (start + offset, *separator))
+            })
+            .min_by_key(|(index, _)| *index);
+        let Some((index, separator)) = next else {
+            break;
+        };
+        let segment = utterance[start..index].trim();
+        if segment.is_empty() {
+            return None;
+        }
+        segments.push(segment);
+        start = index + separator.len();
+        if segments.len() == 3 {
+            // More than three segments is deliberately not a deterministic
+            // batch; the LLM (or a future explicit batch UI) can interpret it.
+            return None;
+        }
+    }
+
+    if segments.is_empty() {
+        return None;
+    }
+    let last = utterance[start..].trim();
+    if last.is_empty() {
+        return None;
+    }
+    segments.push(last);
+    Some(segments)
+}
+
+/// Parse a single Command-Mode utterance into a [`CommandIntent`].
 ///
 /// Zero-arg commands are tried first so fixed phrases ("new tab") win over the
-/// open-verb prefixes ("open …").
-pub fn match_command(utterance: &str) -> Option<CommandIntent> {
+/// parameterized paths and open-verb prefixes ("open …").
+fn match_single_command(utterance: &str) -> Option<CommandIntent> {
     let norm = normalize(utterance);
     if norm.is_empty() {
         return None;
@@ -228,6 +480,21 @@ pub fn match_command(utterance: &str) -> Option<CommandIntent> {
         return Some(intent);
     }
     if let Some(intent) = zero_arg(&strip_fillers(&norm)) {
+        return Some(intent);
+    }
+
+    // Parameterized forms must preserve capitalization and punctuation. Parse
+    // them from the raw utterance before the normalized fallbacks below.
+    if let Some(intent) = parse_type_text(utterance) {
+        return Some(intent);
+    }
+    if let Some(intent) = parse_open_url(utterance) {
+        return Some(intent);
+    }
+    if let Some(intent) = parse_web_search(utterance) {
+        return Some(intent);
+    }
+    if let Some(intent) = parse_empty_web_search(utterance) {
         return Some(intent);
     }
 
@@ -290,9 +557,53 @@ pub fn match_command(utterance: &str) -> Option<CommandIntent> {
     None
 }
 
+/// Parse a command into an ordered, all-or-nothing deterministic sequence.
+///
+/// The sequence fast path is intentionally narrow: only up to three explicit
+/// conjunction-separated segments are accepted, and every segment must be an
+/// independently recognized safe deterministic action. Returning `None` for a
+/// partially understood sequence ensures the caller never silently performs a
+/// prefix of what the user said.
+pub fn match_command_sequence(utterance: &str) -> Option<Vec<CommandIntent>> {
+    if let Some(segments) = conjunction_segments(utterance) {
+        let intents: Option<Vec<_>> = segments.into_iter().map(match_single_command).collect();
+        if let Some(intents) = intents.filter(|intents| intents.iter().all(safe_chain_intent)) {
+            return Some(intents);
+        }
+    }
+    match_single_command(utterance).map(|intent| vec![intent])
+}
+
+/// Source-compatible single-command matcher. Multi-step callers should use
+/// [`match_command_sequence`] and preserve the pipeline's existing chain
+/// confirmation/target-binding behavior.
+pub fn match_command(utterance: &str) -> Option<CommandIntent> {
+    let mut intents = match_command_sequence(utterance)?;
+    (intents.len() == 1).then(|| intents.remove(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tier_zero_routes_cancel_and_undo_before_matching() {
+        for utterance in [
+            "stop",
+            "please stop",
+            "cancel that please",
+            "never mind",
+            "abort",
+        ] {
+            assert_eq!(match_tier0_command(utterance), Some(Tier0Command::Cancel));
+        }
+        for utterance in ["undo that", "could you undo the last command please"] {
+            assert_eq!(match_tier0_command(utterance), Some(Tier0Command::Undo));
+        }
+        for utterance in ["stop music", "cancel my subscription", "undo"] {
+            assert_eq!(match_tier0_command(utterance), None);
+        }
+    }
 
     #[test]
     fn open_app_strips_verb_and_punctuation() {
@@ -341,12 +652,18 @@ mod tests {
 
     #[test]
     fn zero_arg_chords() {
-        assert_eq!(match_command("copy"), Some(CommandIntent::KeyChord(KeyChord::Copy)));
+        assert_eq!(
+            match_command("copy"),
+            Some(CommandIntent::KeyChord(KeyChord::Copy))
+        );
         assert_eq!(
             match_command("Select All!"),
             Some(CommandIntent::KeyChord(KeyChord::SelectAll))
         );
-        assert_eq!(match_command("new tab"), Some(CommandIntent::KeyChord(KeyChord::NewTab)));
+        assert_eq!(
+            match_command("new tab"),
+            Some(CommandIntent::KeyChord(KeyChord::NewTab))
+        );
         assert_eq!(
             match_command("screenshot"),
             Some(CommandIntent::KeyChord(KeyChord::Screenshot))
@@ -355,8 +672,14 @@ mod tests {
 
     #[test]
     fn zero_arg_media_and_window() {
-        assert_eq!(match_command("play"), Some(CommandIntent::Media(MediaAction::PlayPause)));
-        assert_eq!(match_command("mute"), Some(CommandIntent::Media(MediaAction::Mute)));
+        assert_eq!(
+            match_command("play"),
+            Some(CommandIntent::Media(MediaAction::PlayPause))
+        );
+        assert_eq!(
+            match_command("mute"),
+            Some(CommandIntent::Media(MediaAction::Mute))
+        );
         assert_eq!(
             match_command("minimize window"),
             Some(CommandIntent::Window(WindowAction::Minimize))
@@ -373,8 +696,14 @@ mod tests {
             match_command("minimize everything"),
             Some(CommandIntent::KeyChord(KeyChord::ShowDesktop))
         );
-        assert_eq!(match_command("close this window"), Some(CommandIntent::CloseWindow));
-        assert_eq!(match_command("close window"), Some(CommandIntent::CloseWindow));
+        assert_eq!(
+            match_command("close this window"),
+            Some(CommandIntent::CloseWindow)
+        );
+        assert_eq!(
+            match_command("close window"),
+            Some(CommandIntent::CloseWindow)
+        );
         // "close tab" must stay the tab chord, never CloseWindow.
         assert_eq!(
             match_command("close tab"),
@@ -385,7 +714,10 @@ mod tests {
     #[test]
     fn zero_arg_wins_over_open_verb() {
         // "new tab" must be the chord, never OpenApp("tab").
-        assert_eq!(match_command("new tab"), Some(CommandIntent::KeyChord(KeyChord::NewTab)));
+        assert_eq!(
+            match_command("new tab"),
+            Some(CommandIntent::KeyChord(KeyChord::NewTab))
+        );
     }
 
     #[test]
@@ -432,9 +764,18 @@ mod tests {
 
     #[test]
     fn filler_stripping_keeps_chord_phrasings() {
-        assert_eq!(match_command("copy that"), Some(CommandIntent::KeyChord(KeyChord::Copy)));
-        assert_eq!(match_command("copy this"), Some(CommandIntent::KeyChord(KeyChord::Copy)));
-        assert_eq!(match_command("paste it"), Some(CommandIntent::KeyChord(KeyChord::Paste)));
+        assert_eq!(
+            match_command("copy that"),
+            Some(CommandIntent::KeyChord(KeyChord::Copy))
+        );
+        assert_eq!(
+            match_command("copy this"),
+            Some(CommandIntent::KeyChord(KeyChord::Copy))
+        );
+        assert_eq!(
+            match_command("paste it"),
+            Some(CommandIntent::KeyChord(KeyChord::Paste))
+        );
         assert_eq!(
             match_command("close this tab"),
             Some(CommandIntent::KeyChord(KeyChord::CloseTab))
@@ -449,8 +790,14 @@ mod tests {
             Some(CommandIntent::KeyChord(KeyChord::ShowDesktop))
         );
         // Legacy close-window phrasings collapse to CloseWindow.
-        assert_eq!(match_command("close the window"), Some(CommandIntent::CloseWindow));
-        assert_eq!(match_command("close this window"), Some(CommandIntent::CloseWindow));
+        assert_eq!(
+            match_command("close the window"),
+            Some(CommandIntent::CloseWindow)
+        );
+        assert_eq!(
+            match_command("close this window"),
+            Some(CommandIntent::CloseWindow)
+        );
     }
 
     #[test]
@@ -566,7 +913,10 @@ mod tests {
     fn unmute_is_distinct_from_mute() {
         // Directional un-mute must NOT collapse onto the toggle, so the executor
         // can set state deterministically instead of inverting it.
-        assert_eq!(match_command("mute"), Some(CommandIntent::Media(MediaAction::Mute)));
+        assert_eq!(
+            match_command("mute"),
+            Some(CommandIntent::Media(MediaAction::Mute))
+        );
         assert_eq!(
             match_command("unmute"),
             Some(CommandIntent::Media(MediaAction::Unmute))
@@ -633,7 +983,10 @@ mod tests {
             Some(CommandIntent::WebSearch(String::new()))
         );
         // "search page" stays the Find chord (zero-arg wins first).
-        assert_eq!(match_command("search page"), Some(CommandIntent::KeyChord(KeyChord::Find)));
+        assert_eq!(
+            match_command("search page"),
+            Some(CommandIntent::KeyChord(KeyChord::Find))
+        );
         // "google X" is NOT a deterministic search — it defers to the LLM so
         // "google chrome" / "google maps" can be disambiguated as app/site opens.
         assert_eq!(match_command("google cats"), None);
@@ -642,6 +995,115 @@ mod tests {
         assert_eq!(
             match_command("open google"),
             Some(CommandIntent::OpenApp("google".into()))
+        );
+    }
+
+    #[test]
+    fn literal_type_and_write_preserve_the_recognized_text() {
+        assert_eq!(
+            match_command("Type Hello, Sam!"),
+            Some(CommandIntent::TypeText {
+                text: "Hello, Sam!".into(),
+                submit: false,
+            })
+        );
+        assert_eq!(
+            match_command("write: Keep the API key in a vault."),
+            Some(CommandIntent::TypeText {
+                text: "Keep the API key in a vault.".into(),
+                submit: false,
+            })
+        );
+        // The word must be a command prefix, never a substring in ordinary
+        // dictation/prose. Deterministic typing also never implies Enter.
+        assert_eq!(match_command("typewriter repair is expensive"), None);
+        assert_eq!(match_command("I need to write a report tomorrow"), None);
+        assert_eq!(match_command("write"), None);
+    }
+
+    #[test]
+    fn explicit_google_forms_preserve_the_search_query() {
+        assert_eq!(
+            match_command("Search Google for Rust async cancellation"),
+            Some(CommandIntent::WebSearch("Rust async cancellation".into()))
+        );
+        assert_eq!(
+            match_command("google search: local speech recognition"),
+            Some(CommandIntent::WebSearch("local speech recognition".into()))
+        );
+        assert_eq!(
+            match_command("web search for cafés near me"),
+            Some(CommandIntent::WebSearch("cafés near me".into()))
+        );
+        // Bare Google phrases remain ambiguous with app/site names.
+        assert_eq!(match_command("google chrome"), None);
+        assert_eq!(match_command("google cats"), None);
+        assert_eq!(match_command("search google for"), None);
+    }
+
+    #[test]
+    fn explicit_urls_bypass_app_resolution_but_reject_url_like_tricks() {
+        assert_eq!(
+            match_command("open GitHub.com/OmniVox?tab=readme"),
+            Some(CommandIntent::OpenUrl(
+                "GitHub.com/OmniVox?tab=readme".into()
+            ))
+        );
+        assert_eq!(
+            match_command("visit https://example.com/docs."),
+            Some(CommandIntent::OpenUrl("https://example.com/docs".into()))
+        );
+        assert_eq!(
+            match_command("navigate to localhost:3000"),
+            Some(CommandIntent::OpenUrl("localhost:3000".into()))
+        );
+        // Credentials must never be treated as a grounded deterministic URL.
+        assert_ne!(
+            match_command("open https://trusted.example@evil.example"),
+            Some(CommandIntent::OpenUrl(
+                "https://trusted.example@evil.example".into()
+            ))
+        );
+        // Ordinary app names stay on the app-resolution path.
+        assert_eq!(
+            match_command("open spotify"),
+            Some(CommandIntent::OpenApp("spotify".into()))
+        );
+    }
+
+    #[test]
+    fn bounded_conjunctions_are_all_or_nothing_and_source_compatible() {
+        assert_eq!(
+            match_command_sequence("copy and then paste and save"),
+            Some(vec![
+                CommandIntent::KeyChord(KeyChord::Copy),
+                CommandIntent::KeyChord(KeyChord::Paste),
+                CommandIntent::KeyChord(KeyChord::Save),
+            ])
+        );
+        // Existing single-command callers never accidentally run only the first
+        // part of a chain.
+        assert_eq!(match_command("copy and then paste"), None);
+        // An unsafe/unknown segment invalidates the entire deterministic chain.
+        assert_eq!(match_command_sequence("copy and close window"), None);
+        assert_eq!(match_command_sequence("open spotify and play"), None);
+        assert_eq!(
+            match_command_sequence("copy and paste and save and undo"),
+            None
+        );
+        // Do not split literal typing/search content on ordinary conjunctions.
+        assert_eq!(
+            match_command_sequence("type copy and paste"),
+            Some(vec![CommandIntent::TypeText {
+                text: "copy and paste".into(),
+                submit: false,
+            }])
+        );
+        assert_eq!(
+            match_command_sequence("search for peanut butter and jelly"),
+            Some(vec![CommandIntent::WebSearch(
+                "peanut butter and jelly".into()
+            )])
         );
     }
 }

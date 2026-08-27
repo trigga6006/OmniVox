@@ -10,8 +10,9 @@ import { CommandDither } from "./CommandDither";
  * Command mode is told apart from dictation by its ⚡ glyph + "Command" label
  * rather than by colour. Defined once as an RGB triple so the solid colour and
  * the dither field can't drift apart. */
-const ACCENT_RGB = "245,158,11";
-const ACCENT = `rgb(${ACCENT_RGB})`;
+// Command-pill accent, read from the token rather than retyped.
+const ACCENT = "var(--color-amber-500)";
+const ACCENT_TINT = "color-mix(in srgb, var(--color-amber-500) 15%, transparent)";
 
 /**
  * The Command-Mode pill.  Mutually exclusive with the dictation pill — only
@@ -88,7 +89,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
            textarea owns the keyboard (Ctrl+Enter sends, Esc dismisses). */
         <div className="relative z-[1] flex w-full flex-col gap-1.5 py-2">
           <div className="flex items-center gap-2">
-            <Zap size={12} style={{ color: ACCENT }} strokeWidth={2} fill={ACCENT} />
+            <Zap size={12} style={{ color: ACCENT }} strokeWidth={2} fill="currentColor" />
             <span
               className="text-[9px] font-semibold uppercase tracking-[0.16em]"
               style={{ color: ACCENT, opacity: 0.85, fontFamily: "var(--font-display)" }}
@@ -161,7 +162,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
         ) : isError ? (
           <span className="text-recording-400/85 text-[12px] font-bold">!</span>
         ) : (
-          <Zap size={13} style={{ color: ACCENT }} strokeWidth={2} fill={ACCENT} />
+          <Zap size={13} style={{ color: ACCENT }} strokeWidth={2} fill="currentColor" />
         )}
       </div>
 
@@ -230,7 +231,7 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
           <div className="relative flex items-center justify-center">
             <span
               className="absolute h-3.5 w-3.5 rounded-full animate-recording-pulse"
-              style={{ backgroundColor: `rgba(${ACCENT_RGB},0.15)` }}
+              style={{ backgroundColor: ACCENT_TINT }}
             />
             <span
               className="relative h-1.5 w-1.5 rounded-full"

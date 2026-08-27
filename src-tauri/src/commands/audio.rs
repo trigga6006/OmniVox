@@ -1,5 +1,6 @@
 use tauri::{Manager, State};
 
+use super::auth::{require_caller, WindowPolicy};
 use crate::audio::capture::AudioCapture;
 use crate::audio::types::AudioDevice;
 use crate::state::AppState;
@@ -8,7 +9,8 @@ use crate::state::AppState;
 /// On macOS this opens System Settings → Privacy & Security → Microphone.
 /// On Windows/Linux this is a no-op (permissions are granted at the OS level).
 #[tauri::command]
-pub async fn open_mic_settings() -> Result<(), String> {
+pub async fn open_mic_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -30,7 +32,8 @@ pub async fn open_mic_settings() -> Result<(), String> {
 /// Open the OS-specific Accessibility settings.
 /// On macOS the global hotkey requires Accessibility permission via rdev.
 #[tauri::command]
-pub async fn open_accessibility_settings() -> Result<(), String> {
+pub async fn open_accessibility_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -44,7 +47,8 @@ pub async fn open_accessibility_settings() -> Result<(), String> {
 
 /// Check the current platform and return permission guidance.
 #[tauri::command]
-pub async fn get_platform_info() -> Result<PlatformInfo, String> {
+pub async fn get_platform_info(caller: tauri::WebviewWindow) -> Result<PlatformInfo, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     Ok(PlatformInfo {
         os: std::env::consts::OS.to_string(),
         needs_mic_permission: cfg!(target_os = "macos"),
@@ -60,7 +64,19 @@ pub struct PlatformInfo {
 }
 
 #[tauri::command]
-pub async fn start_recording(app_handle: tauri::AppHandle) -> Result<(), String> {
+pub async fn get_pipeline_traces(
+    caller: tauri::WebviewWindow,
+) -> Result<Vec<crate::perf::PipelineTrace>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    Ok(crate::perf::recent())
+}
+
+#[tauri::command]
+pub async fn start_recording(
+    caller: tauri::WebviewWindow,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::AllAppWindows)?;
     // pipeline::start_recording is fully synchronous — a SQLite settings read,
     // auto-switch queries, cross-process COM ducking, and opening the mic device.
     // Run it on the blocking pool so it never stalls this tokio worker.
@@ -79,29 +95,62 @@ pub async fn start_recording(app_handle: tauri::AppHandle) -> Result<(), String>
 
 #[tauri::command]
 pub async fn stop_recording(
+    caller: tauri::WebviewWindow,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    crate::pipeline::stop_and_transcribe(&app_handle, &state).await;
+    require_caller(&caller, WindowPolicy::AllAppWindows)?;
+    crate::pipeline::stop_recording(&app_handle, &state).await;
     Ok("ok".into())
 }
 
 #[tauri::command]
 pub async fn cancel_recording(
+    caller: tauri::WebviewWindow,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
     crate::pipeline::cancel_recording(&app_handle, &state);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
-    AudioCapture::enumerate_devices().map_err(|e| e.to_string())
+pub async fn get_audio_devices(caller: tauri::WebviewWindow) -> Result<Vec<AudioDevice>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    tokio::task::spawn_blocking(AudioCapture::enumerate_devices)
+        .await
+        .map_err(|e| format!("Audio device enumeration failed: {e}"))?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn set_audio_device(device_id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn get_selected_audio_device(
+    caller: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    let audio = state
+        .audio
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(audio.config().device_id.clone())
+}
+
+#[tauri::command]
+pub async fn set_audio_device(
+    caller: tauri::WebviewWindow,
+    device_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Main)?;
+    if device_id.trim().is_empty() || device_id.chars().count() > 1_000 {
+        return Err("Invalid microphone identifier".into());
+    }
+    let capture_guard = state.capture.lock().unwrap_or_else(|p| p.into_inner());
+    if capture_guard.is_some() {
+        return Err("Cannot change microphones while recording or processing a stop".into());
+    }
     // Skip pre-validation: the UI only lets users pick devices that came from
     // a fresh `get_audio_devices()` call, and the cpal backend will return a
     // clear error at `start()` time if the device is gone (e.g. unplugged).
@@ -109,19 +158,17 @@ pub async fn set_audio_device(device_id: String, state: State<'_, AppState>) -> 
     // enumeration timeout) every time the user selected a mic — on Windows
     // enumerating WASAPI devices can hang briefly, which made the Settings
     // dropdown feel laggy.
+    let config = crate::audio::types::AudioConfig {
+        device_id: Some(device_id.clone()),
+        ..Default::default()
+    };
+    crate::storage::settings::set_audio_device_id(&state.db, &device_id)
+        .map_err(|error| error.to_string())?;
     let mut audio = match state.audio.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-
-    if audio.is_recording() {
-        let _ = audio.stop();
-    }
-
-    let config = crate::audio::types::AudioConfig {
-        device_id: Some(device_id),
-        ..Default::default()
-    };
     *audio = AudioCapture::new(config);
+    drop(capture_guard);
     Ok(())
 }

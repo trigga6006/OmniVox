@@ -17,15 +17,35 @@ import {
   onLlmModelLoaded,
   llmTestExtract,
   getLlmDiagnostics,
-  getSettings,
-  updateSettings,
+  getSettingsSnapshot,
+  patchSettings,
   onSettingsChanged,
   type LlmModelInfo,
   type LlmExtractionRecord,
   type AppSettings,
 } from "@/lib/tauri";
 import { formatBytes, cn } from "@/lib/utils";
-import { Button, Card, Toggle, Badge } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  ModelRow,
+  SkeletonRows,
+  Slider,
+  Toggle,
+} from "@/components/ui";
+
+/** Runtime memory reads as GB once it clears 1 GB — same rule in every tab. */
+function memoryLabel(mb: number) {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
+
+/** Parameter counts read as billions past 1 000 M. */
+function paramLabel(millions: number) {
+  return millions >= 1000
+    ? `${(millions / 1000).toFixed(1)}B params`
+    : `${millions}M params`;
+}
 
 /**
  * Structured-Mode LLM manager — lives on the Models page alongside the
@@ -45,6 +65,8 @@ import { Button, Card, Toggle, Badge } from "@/components/ui";
 export function LlmModelsSection() {
   const [models, setModels] = useState<LlmModelInfo[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<Record<string, number>>({});
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -52,6 +74,7 @@ export function LlmModelsSection() {
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const settingsRevision = useRef<number | undefined>(undefined);
 
   // StrictMode fires this effect's cleanup between mount and remount,
   // which flips the ref to false.  Without the explicit reset on
@@ -73,19 +96,27 @@ export function LlmModelsSection() {
         getActiveLlmModel(),
       ]);
       if (!mountedRef.current) return;
-      setModels(m);
+      // AI Transcript Cleanup uses its own purpose-"cleanup" model and its
+      // own activation slot (active_cleanup_model_id) — keep it out of the
+      // Structured Mode activation list entirely.
+      setModels(m.filter((model) => model.purpose === "structured"));
       setActiveId(active?.id ?? null);
     } catch (err) {
       console.error("Failed to load LLM models:", err);
+    } finally {
+      if (mountedRef.current) setLoading(false);
     }
   }, []);
 
   // Initial load + subscribe to settings / download progress / model-loaded.
   useEffect(() => {
     refresh();
-    getSettings()
-      .then((s) => {
-        if (mountedRef.current) setSettings(s);
+    getSettingsSnapshot()
+      .then((snapshot) => {
+        if (mountedRef.current) {
+          settingsRevision.current = snapshot.revision;
+          setSettings(snapshot.settings);
+        }
       })
       .catch(() => {});
 
@@ -129,13 +160,16 @@ export function LlmModelsSection() {
       const updated: AppSettings = { ...settings, ...patch };
       setSettings(updated); // optimistic so sliders feel instant
       try {
-        await updateSettings(updated);
+        const snapshot = await patchSettings(patch, settingsRevision.current);
+        settingsRevision.current = snapshot.revision;
+        if (mountedRef.current) setSettings(snapshot.settings);
       } catch (e) {
         console.error("Update settings failed:", e);
         // Revert on failure — re-fetch rather than trust our optimistic copy.
         try {
-          const s = await getSettings();
-          if (mountedRef.current) setSettings(s);
+          const snapshot = await getSettingsSnapshot();
+          settingsRevision.current = snapshot.revision;
+          if (mountedRef.current) setSettings(snapshot.settings);
         } catch {
           /* ignore */
         }
@@ -147,6 +181,10 @@ export function LlmModelsSection() {
   const downloadedModels = models.filter((m) => m.is_downloaded);
   const hasDownloaded = downloadedModels.length > 0;
   const structuredMode = settings?.structured_mode ?? false;
+  // `onLlmDownloadProgress` is a process-wide event, so the map also collects
+  // Cleanup-tab downloads. Mirror the purpose filter applied to `models` above
+  // before consulting it, or a cleanup download dead-disables this toggle.
+  const downloadingHere = models.some((m) => downloading[m.id] !== undefined);
 
   // Toggle flow mirrors the old StructuredModeSection: if the user flips
   // it on with nothing downloaded, auto-download the default and make it
@@ -168,7 +206,20 @@ export function LlmModelsSection() {
           active_llm_model_id: defaultModel.id,
         });
       } catch (e) {
+        // Clear the optimistic `downloading` entry and surface the reason —
+        // otherwise the row spins on a phantom 0% forever and the toggle stays
+        // disabled with nothing to explain it.  Same shape as `handleDownload`.
         console.error("Inline LLM download failed:", e);
+        const message = e instanceof Error ? e.message : String(e);
+        setDownloadErrors((prev) => ({
+          ...prev,
+          [defaultModel.id]: message || "Download failed",
+        }));
+        setDownloading((prev) => {
+          const next = { ...prev };
+          delete next[defaultModel.id];
+          return next;
+        });
       }
       return;
     }
@@ -219,13 +270,18 @@ export function LlmModelsSection() {
     }
   };
 
+  // Loading a GGUF takes seconds; the button owns the wait so the swap reads
+  // as owned rather than frozen.
   const handleActivate = async (id: string) => {
+    setActivatingId(id);
     try {
       await setActiveLlmModel(id);
       setActiveId(id);
       await applyPatch({ active_llm_model_id: id });
     } catch (err) {
       console.error("Activate LLM failed:", err);
+    } finally {
+      if (mountedRef.current) setActivatingId(null);
     }
   };
 
@@ -279,18 +335,18 @@ export function LlmModelsSection() {
         {/* Row 1: Enable toggle */}
         <div className="flex items-center justify-between">
           <div className="min-w-0 flex-1 pr-3">
-            <p className="text-[14px] text-text-primary">Enable Structured Mode</p>
-            <p className="mt-0.5 text-[11.5px] leading-snug text-text-muted">
+            <p className="text-sm text-text-primary">Enable Structured Mode</p>
+            <p className="mt-0.5 text-xs leading-snug text-text-muted">
               {hasDownloaded
                 ? "Dictations become Markdown prompts in a preview panel."
-                : "First turn-on downloads the default model (~1.0 GB)."}
+                : "First turn-on downloads the default model (~1.8 GB)."}
             </p>
           </div>
           <Toggle
             accent="violet"
             checked={structuredMode}
             onChange={handleToggle}
-            disabled={Object.keys(downloading).length > 0}
+            disabled={downloadingHere}
             aria-label="Toggle Structured Mode"
           />
         </div>
@@ -340,13 +396,13 @@ export function LlmModelsSection() {
         {/* Test output / error — appears below the row only after a
             test run, so the card stays compact in the steady state. */}
         {testResult && (
-          <pre className="mt-3 max-h-[180px] overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-surface-2 p-3 font-mono text-[10.5px] leading-relaxed text-text-primary/90">
+          <pre className="mt-3 max-h-[180px] overflow-y-auto whitespace-pre-wrap rounded-[var(--radius-s)] border border-border bg-surface-2 p-3 font-mono text-xs leading-relaxed text-text-primary/90">
             {testResult}
           </pre>
         )}
         {testError && (
-          <div className="mt-3 flex items-start gap-1.5 rounded-md border border-error/25 bg-error/[0.08] p-2 text-[10.5px] text-error">
-            <AlertCircle size={11} className="mt-0.5 shrink-0" />
+          <div className="mt-3 flex items-start gap-1.5 rounded-[var(--radius-s)] border border-error/25 bg-error/[0.08] p-2 text-xs text-error">
+            <AlertCircle size={12} className="mt-0.5 shrink-0" />
             <span>{testError}</span>
           </div>
         )}
@@ -358,19 +414,22 @@ export function LlmModelsSection() {
           <div className="mt-3 border-t border-border/60 pt-3">
             <button
               onClick={handleDiagToggle}
-              className="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
+              className="pressable flex items-center gap-1.5 text-xs font-medium text-text-muted transition-colors duration-[var(--dur-2)] ease-out hover:text-text-secondary"
             >
-              <Activity size={11} strokeWidth={2} />
+              <Activity size={12} strokeWidth={2} />
               Recent extractions
               <ChevronDown
-                size={11}
+                size={12}
                 strokeWidth={2}
-                className={cn("transition-transform", diagOpen && "rotate-180")}
+                className={cn(
+                  "transition-transform duration-[var(--dur-2)] ease-out",
+                  diagOpen && "rotate-180"
+                )}
               />
             </button>
             {diagOpen &&
               (diagRecords.length === 0 ? (
-                <p className="mt-2 text-[10.5px] text-text-muted">
+                <p className="mt-2 text-xs text-text-muted">
                   No structured extractions this session yet.
                 </p>
               ) : (
@@ -378,7 +437,7 @@ export function LlmModelsSection() {
                   {diagRecords.map((r, i) => (
                     <div
                       key={`${r.timestamp}-${i}`}
-                      className="flex items-center gap-2.5 rounded-md border border-border/50 bg-surface-2/50 px-2.5 py-1.5 text-[10.5px] tabular-nums"
+                      className="flex items-center gap-2.5 rounded-[var(--radius-s)] border border-border/50 bg-surface-2/50 px-2.5 py-1.5 font-mono text-2xs tabular-nums"
                     >
                       <span className="shrink-0 text-text-muted">
                         {new Date(r.timestamp).toLocaleTimeString()}
@@ -409,105 +468,85 @@ export function LlmModelsSection() {
           thing.  Violet accent stripe on the active row keeps it
           distinct from the Whisper "success-green" active stripe. */}
       <div className="mt-3 flex flex-col gap-2">
+        {loading && models.length === 0 && <SkeletonRows count={2} />}
+
         {models.map((m, i) => {
           const progress = downloading[m.id];
           const isDownloading = progress !== undefined;
           const isActive = activeId === m.id;
+          const isActivating = activatingId === m.id;
           const downloadError = downloadErrors[m.id];
 
           return (
-            <Card
+            <ModelRow
               key={m.id}
-              className={cn(
-                "flex items-center gap-4 px-5 py-3.5 opacity-0 transition-colors duration-200 hover:border-border-hover animate-slide-up",
-                isActive && "border-l-[3px] border-l-violet-400/80",
-                m.is_default && !isActive && "border-l-[3px] border-l-violet-500/45"
-              )}
+              name={m.name}
+              accent="violet"
+              rail={isActive ? "strong" : m.is_default ? "soft" : undefined}
+              className="opacity-0 animate-slide-up"
               style={{
                 animationDelay: `${0.09 + i * 0.04}s`,
                 animationFillMode: "forwards",
               }}
-            >
-              {/* Left: name + badges + description + meta line */}
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[14px] font-medium text-text-primary">
-                    {m.name}
-                  </span>
+              badges={
+                <>
                   {m.is_default && <Badge tone="violet">Default</Badge>}
                   {isActive && <Badge tone="green">Active</Badge>}
-                </div>
-                <p className="mt-0.5 line-clamp-1 text-xs leading-relaxed text-text-muted">
-                  {m.description}
-                </p>
-                {isDownloading && (
-                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-3">
-                    <div
-                      className="h-full bg-violet-400 transition-[width] duration-150"
-                      style={{ width: `${progress ?? 0}%` }}
-                    />
-                  </div>
-                )}
-                {downloadError && (
-                  <p className="mt-2 line-clamp-2 text-[11px] leading-snug text-error">
-                    {downloadError}
-                  </p>
-                )}
-              </div>
-
-              {/* Center: size + quant + context */}
-              <div className="flex shrink-0 items-center gap-3">
-                <span className="w-[70px] text-right font-mono text-xs tabular-nums text-text-muted">
-                  {formatBytes(m.size_bytes)}
-                </span>
-                <span className="w-[54px] rounded-full bg-surface-2 px-1.5 py-0.5 text-center text-[10px] text-text-muted">
-                  {m.quantization}
-                </span>
-                <span className="w-[44px] text-right font-mono text-[10px] tabular-nums text-text-muted/80">
-                  {(m.context_length / 1024).toFixed(0)}k ctx
-                </span>
-              </div>
-
-              {/* Right: action button(s) */}
-              <div className="flex w-[110px] shrink-0 items-center justify-end gap-1.5">
-                {!m.is_downloaded && !isDownloading && (
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    icon={<Download strokeWidth={2} />}
-                    onClick={() => handleDownload(m.id)}
-                  >
-                    Download
-                  </Button>
-                )}
-                {isDownloading && (
-                  <div className="inline-flex items-center gap-1.5 text-xs tabular-nums text-violet-300">
-                    <Loader2 size={12} className="animate-spin" />
-                    {Math.round(progress ?? 0)}%
-                  </div>
-                )}
-                {m.is_downloaded && !isActive && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleActivate(m.id)}
-                  >
-                    Activate
-                  </Button>
-                )}
-                {m.is_downloaded && isActive && (
-                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
-                    <Check size={13} strokeWidth={2} />
-                    In use
-                  </span>
-                )}
-              </div>
-            </Card>
+                </>
+              }
+              description={m.description}
+              meta={[
+                formatBytes(m.size_bytes),
+                m.quantization,
+                `${(m.context_length / 1024).toFixed(0)}k ctx`,
+                paramLabel(m.parameter_count_millions),
+                `${m.capability_tier} tier`,
+                `~${memoryLabel(m.estimated_memory_mb)} RAM`,
+              ]}
+              progress={isDownloading ? (progress ?? 0) : undefined}
+              error={downloadError}
+              action={
+                <>
+                  {!m.is_downloaded && !isDownloading && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      icon={<Download strokeWidth={2} />}
+                      onClick={() => handleDownload(m.id)}
+                    >
+                      Download
+                    </Button>
+                  )}
+                  {isDownloading && (
+                    <div className="inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-violet-300">
+                      <Loader2 size={12} className="animate-spin" />
+                      {Math.round(progress ?? 0)}%
+                    </div>
+                  )}
+                  {m.is_downloaded && !isActive && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      loading={isActivating}
+                      onClick={() => handleActivate(m.id)}
+                    >
+                      {isActivating ? "Loading…" : "Activate"}
+                    </Button>
+                  )}
+                  {m.is_downloaded && isActive && (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
+                      <Check size={13} strokeWidth={2} />
+                      In use
+                    </span>
+                  )}
+                </>
+              }
+            />
           );
         })}
 
-        {models.length === 0 && (
-          <div className="rounded-2xl border border-border bg-surface-1 px-5 py-6 text-center text-xs text-text-muted">
+        {!loading && models.length === 0 && (
+          <div className="rounded-[var(--radius-l)] border border-border bg-surface-1 px-5 py-6 text-center text-xs text-text-muted">
             No Structured Mode models in the catalog yet.
           </div>
         )}
@@ -543,26 +582,25 @@ function CompactSlider({
 }) {
   return (
     <div className="min-w-0">
-      <div className="flex items-baseline justify-between gap-2 mb-1">
-        <span className="text-[11px] text-text-primary truncate">{label}</span>
-        <span className="text-[11px] text-text-muted tabular-nums shrink-0">
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="truncate text-xs text-text-primary">{label}</span>
+        <span className="shrink-0 font-mono text-xs tabular-nums text-text-muted">
           {value}
           {suffix}
         </span>
       </div>
-      <input
-        type="range"
+      {/* Slider primitive, not a raw range: `accent-violet-500` never worked —
+          the global webkit-thumb override hardcoded amber and won. */}
+      <Slider
+        accent="violet"
         min={min}
         max={max}
         step={step}
         value={value}
-        onChange={(e) => onChange(parseInt(e.target.value, 10))}
-        className="w-full accent-violet-500 h-1 cursor-pointer"
+        onChange={onChange}
         aria-label={label}
       />
-      {hint && (
-        <p className="text-[10px] text-text-muted/75 mt-0.5 truncate">{hint}</p>
-      )}
+      {hint && <p className="mt-0.5 truncate text-xs text-text-muted/75">{hint}</p>}
     </div>
   );
 }

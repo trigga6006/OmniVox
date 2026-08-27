@@ -5,10 +5,50 @@ import type { CommandUiState } from "@/stores/commandStore";
 
 type PillState = RecordingStatus | "success";
 
-// ─── Pill geometry: single source of truth (TS side) ───
-// The Rust side mirrors the idle *window* size for window creation and
-// recovery — keep OVERLAY_IDLE_WIN_W/H in src-tauri/src/lib.rs in sync
-// with IDLE_WIN_W/H below.
+/* ══════════════════════════════════════════════════════════════
+   OVERLAY GEOMETRY SYSTEM
+   ══════════════════════════════════════════════════════════════
+
+   These constants are a deliberate second measurement system, separate
+   from the design system's `--control-h-s/m/l` control metrics, and
+   they are meant to stay that way.
+
+   Why they are not tokens
+   -----------------------
+   `--control-h-m: 32px` sizes an element *inside* a page. Every number
+   here sizes an OS WINDOW: they are passed to `resizeOverlay()`, which
+   calls into Tauri to resize the always-on-top overlay window itself.
+   A window has no CSS box, no cascade and no theme; it is device
+   pixels on a desktop. Expressing it in a CSS custom property would
+   mean reading computed style back out just to hand a number to Rust.
+
+   Two of them are also a cross-language contract: the Rust side mirrors
+   the idle window size for window creation and crash recovery, so
+   OVERLAY_IDLE_WIN_W/H in `src-tauri/src/lib.rs` must stay in sync with
+   IDLE_WIN_W/H below.
+
+   How the system is laid out
+   --------------------------
+   · WINDOW vs PILL. The window is always at least as large as the pill
+     drawn inside it. The slack is transparent and load-bearing: it
+     gives the amber locator glow room to bleed, reserves space for the
+     scratchpad bud, and stops the window bounds from clipping the pill
+     mid-transition.
+   · ONE ROW HEIGHT. `ACTIVE_H` (34) is the height of every "one line of
+     pill" state — recording, command listening, command result. States
+     that need more room add to it (`ACTIVE_H + 80` for the degraded
+     banner) rather than inventing a new row height.
+   · WIDTH GROWS WITH THE SENTENCE. 156 → 260 → 300/320 → 340 → 420/440
+     tracks how much text each state has to hold without clipping
+     mid-word, not an arbitrary scale. The one-off widths in the effect
+     below are each commented with the content that sets them.
+   · THE UNION RESIZE. On every state change the window is first sized
+     to the union of the old and new box, then settled to the exact
+     target 320ms later — long enough for the pill's own CSS size
+     transition to finish. That 320ms and the 80ms content-reveal delay
+     are part of the choreography, not spacing.
+
+   ── Pill geometry: single source of truth (TS side) ── */
 export const ACTIVE_W = 156; // active window width; pill is ACTIVE_PILL_W inside
 export const ACTIVE_H = 34;
 export const ACTIVE_PILL_W = 148; // pill CSS width — 8px slack inside ACTIVE_W
