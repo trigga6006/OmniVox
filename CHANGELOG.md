@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.1
+
+### Bug Fixes
+
+- **Fresh installs of v0.6.0 could not launch.** The installer placed the sherpa-onnx/ONNX Runtime DLLs in a literal `_root_` folder instead of next to the app — Tauri renders a `/` resource destination as a `_root_` directory — so on any machine without a previous install, OmniVox failed at startup with a missing-DLL error. The DLLs now install beside the executable. If you installed v0.6.0, installing v0.6.1 over it fixes the layout; nothing else changed.
+
 ## v0.6.0
 
 ### Features
