@@ -119,6 +119,16 @@ jobs:
           }
           "OMNIVOX_CERTIFICATE_THUMBPRINT=$($signers[0].Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Remove stale bundle output from restored cache
+        shell: pwsh
+        run: |
+          # The C:\b rust-cache legitimately carries compiled artifacts, but
+          # bundle output from previous runs must never survive into this one —
+          # the packaging step would otherwise be choosing among multiple
+          # installers.
+          Remove-Item -LiteralPath 'C:\b\release\bundle' -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Output "bundle output cleared"
+
       - name: Build Tauri app
         shell: pwsh
         env:
@@ -147,11 +157,36 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          INSTALLER=$(find /c/b/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
-          if [ -z "$INSTALLER" ]; then
-            echo "ERROR: No NSIS installer found."
+          # Pin the EXACT installer this build produced. The restored C:\b
+          # cache can carry installers from earlier runs (that is how v0.6.1
+          # shipped a stale v0.6.0-named bundle), so a wildcard glob here is
+          # forbidden: Tauri names the bundle after the version in
+          # tauri.conf.json, which the tag-validation step already proved
+          # equals this tag.
+          INSTALLER="/c/b/release/bundle/nsis/OmniVox_${VERSION#v}_x64-setup.exe"
+          if [ ! -f "$INSTALLER" ]; then
+            echo "ERROR: expected installer not found: $INSTALLER"
+            ls -la /c/b/release/bundle/nsis/ || true
             exit 1
           fi
+          # Layout assertion: the four runtime DLLs must sit at the install
+          # root beside omnivoice.exe, and no path-traversal marker directory
+          # (_root_/_up_) may exist anywhere in the archive. A failure here
+          # means the installer would produce an app that cannot launch.
+          LISTING=$(7z l "$INSTALLER")
+          if echo "$LISTING" | grep -qE '_root_|_up_'; then
+            echo "ERROR: installer contains a _root_/_up_ path marker:"
+            echo "$LISTING" | grep -E '_root_|_up_'
+            exit 1
+          fi
+          for dll in sherpa-onnx-c-api.dll sherpa-onnx-cxx-api.dll onnxruntime.dll onnxruntime_providers_shared.dll; do
+            if ! echo "$LISTING" | grep -qE "[[:space:]]${dll}\$"; then
+              echo "ERROR: ${dll} is not at the installer root."
+              echo "$LISTING"
+              exit 1
+            fi
+          done
+          echo "Installer layout verified: 4 runtime DLLs at root, no traversal markers."
           INSTALLER_NAME="OmniVox-${VERSION}-x86_64-windows-setup.exe"
           CHECKSUM_NAME="OmniVox-${VERSION}-SHA256SUMS.txt"
           cp "$INSTALLER" "$INSTALLER_NAME"

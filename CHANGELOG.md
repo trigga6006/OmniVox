@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.2
+
+### Bug Fixes
+
+- **The v0.6.1 installer was the wrong file.** v0.6.1's DLL-placement fix was correct, but the release pipeline's packaging step selected the installer with a wildcard — and the build cache had carried an installer from an earlier run into the same directory, so the stale, still-broken bundle got published under the v0.6.1 name. Packaging now pins the exact filename for the version being released, clears any cached bundle output before building, and refuses to publish an installer whose archive doesn't show all four runtime DLLs at the install root. This release's installer is the first one machine-verified before upload; fresh installs launch correctly.
+
 ## v0.6.1
 
 ### Bug Fixes
