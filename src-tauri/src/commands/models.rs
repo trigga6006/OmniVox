@@ -141,6 +141,11 @@ impl ModelLoadOutcome {
                 "whisper-gpu-fallback",
                 "GPU unavailable — Whisper is running on CPU (slower). Re-select your model in Models to retry.",
             );
+        } else {
+            // Load stayed on its requested backend; if that backend is an
+            // integrated-only Vulkan, say so (once) — every successful load
+            // funnels through here with an AppHandle.
+            crate::gpu_env::maybe_warn_integrated_only(app_handle);
         }
     }
 }
@@ -654,6 +659,9 @@ pub fn load_and_activate_model(
             "cpu (by setting)"
         }
     ));
+    if matches!(family, ModelFamily::Whisper) && use_gpu && !gpu_fallback {
+        crate::gpu_env::note_gpu_load("asr");
+    }
 
     // Persist and update the authoritative runtime snapshot atomically.
     if let Err(commit_error) = crate::commands::settings::commit_runtime_patch(

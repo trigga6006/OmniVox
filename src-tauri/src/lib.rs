@@ -5,6 +5,7 @@ pub mod commands;
 pub mod diag;
 pub mod error;
 pub mod focus;
+pub mod gpu_env;
 pub mod hotkey;
 pub mod llm;
 pub mod llm_models;
@@ -569,6 +570,9 @@ pub fn run() {
     builder
         .manage(state::AppState::new())
         .setup(|app| {
+            // Tee whisper/llama library logs into the Vulkan-device registry
+            // (and stderr) before any model load can emit them.
+            gpu_env::install_log_capture();
             setup_tray(app)?;
 
             // Ensure data directories exist

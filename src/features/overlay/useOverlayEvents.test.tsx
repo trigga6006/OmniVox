@@ -20,6 +20,7 @@ vi.mock("@/lib/tauri", () => {
     onStructuredModeDegraded: subscribe("structured-mode-degraded"),
     onWhisperGpuFallback: subscribe("whisper-gpu-fallback"),
     onLlmGpuFallback: subscribe("llm-gpu-fallback"),
+    onGpuEnvironmentWarning: subscribe("gpu-environment-warning"),
     onLlmStatus: subscribe("llm-status"),
     onCommandStateChange: subscribe("command-state-change"),
     onCommandConfirm: subscribe("command-confirm"),
@@ -140,6 +141,29 @@ describe("useOverlayEvents backend event path", () => {
     act(() => vi.advanceTimersByTime(19_999));
     expect(result.current.structuredDegraded).not.toBeNull();
     act(() => vi.advanceTimersByTime(1));
+    expect(result.current.structuredDegraded).toBeNull();
+  });
+
+  it("surfaces an integrated-only GPU environment warning in the banner", () => {
+    const { result } = renderHook(() =>
+      useOverlayEvents({
+        status: "idle",
+        dictatingInPanelRef: { current: false },
+        settingsRef: { current: null },
+        setShowModeSelector: vi.fn(),
+        setShowShipPopup: vi.fn(),
+        setShowLeyLinePopup: vi.fn(),
+      })
+    );
+
+    act(() =>
+      listeners["gpu-environment-warning"](
+        "GPU acceleration is running on the integrated GPU (AMD Radeon(TM) Graphics)"
+      )
+    );
+    expect(result.current.structuredDegraded).toContain("integrated GPU");
+
+    act(() => vi.advanceTimersByTime(20_000));
     expect(result.current.structuredDegraded).toBeNull();
   });
 

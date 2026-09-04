@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.3
+
+### Bug Fixes
+
+- **OmniVox now notices when GPU acceleration has quietly landed on the wrong GPU.** A graphics-driver update can leave a dedicated GPU unregistered with Vulkan while the machine's integrated GPU stays visible. When that happens every model load still reports success — but an integrated GPU's "video memory" is ordinary system RAM, so Whisper and the local language model silently move into RAM (the app idled at 2.6 GB instead of under 1 GB) and load and run several times slower. OmniVox now records every Vulkan device it can see, and which one it used, in `model-load.log` after each GPU-backed load, and when the only device available is an integrated GPU it shows a one-time banner explaining what happened and that reinstalling the graphics driver normally brings the dedicated GPU back. Nothing changes on machines where the dedicated GPU is healthy.
+
 ## v0.6.2
 
 ### Bug Fixes

@@ -1117,6 +1117,15 @@ export const onLlmGpuFallback = (
 ): Promise<UnlistenFn> =>
   listenSafe<LlmBackendFallback>("llm-gpu-fallback", (e) => callback(e.payload));
 
+// Fired at most once per session when GPU acceleration is active but the only
+// Vulkan device is an integrated GPU — model memory then sits in system RAM.
+// Seen when a dedicated GPU loses its Vulkan driver registration after a
+// graphics driver update.
+export const onGpuEnvironmentWarning = (
+  callback: (message: string) => void
+): Promise<UnlistenFn> =>
+  listenSafe<string>("gpu-environment-warning", (e) => callback(e.payload));
+
 // ── Scratchpad ──────────────────────────────────────────────────────────────
 export interface ScratchpadEntry {
   id: string;

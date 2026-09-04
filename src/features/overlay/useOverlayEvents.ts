@@ -17,6 +17,7 @@ import {
   onStructuredModeDegraded,
   onWhisperGpuFallback,
   onLlmGpuFallback,
+  onGpuEnvironmentWarning,
   onLlmStatus,
   onCommandStateChange,
   onCommandConfirm,
@@ -243,6 +244,21 @@ export function useOverlayEvents({
       }, 20000);
     });
 
+    // Backend fires this at most once per session: GPU acceleration is on but
+    // the only Vulkan device is an integrated GPU (dedicated GPU invisible,
+    // e.g. after a driver update) — models are silently in system RAM.
+    const unlistenGpuEnvironment = onGpuEnvironmentWarning((message) => {
+      console.warn("[gpu-env]", message);
+      setStructuredDegraded(message);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 20000);
+    });
+
     const unlistenLlmStatus = onLlmStatus((status) => {
       setLlmStatus(status);
     });
@@ -254,6 +270,7 @@ export function useOverlayEvents({
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
       unlistenLlmGpuFallback.then((fn) => fn());
+      unlistenGpuEnvironment.then((fn) => fn());
       unlistenLlmStatus.then((fn) => fn());
     };
   }, [

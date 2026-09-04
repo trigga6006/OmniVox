@@ -1,6 +1,6 @@
 [package]
 name = "omnivoice"
-version = "0.6.2"
+version = "0.6.3"
 description = "OmniVox - Local AI Dictation"
 authors = ["you"]
 edition = "2021"
@@ -27,7 +27,9 @@ sha2 = "0.10"
 sysinfo = { version = "=0.38.4", default-features = false, features = ["system"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 cpal = "0.17.3"
-whisper-rs = "0.16"
+# `raw-api` re-exports whisper_rs_sys so gpu_env can install
+# whisper_log_set/ggml_log_set capture callbacks.
+whisper-rs = { version = "0.16", features = ["raw-api"] }
 # Official sherpa-onnx Rust bindings — powers the Parakeet TDT (ONNX transducer)
 # ASR engine family alongside whisper.cpp. Its build script downloads prebuilt
 # libraries, so there is no cmake step.
@@ -52,6 +54,9 @@ nnnoiseless = { version = "0.5", default-features = false }
 # `default-features = false` disables openmp + android-shared-stdcxx so GPU backends
 # are added explicitly via the top-level `cuda` / `vulkan` features below.
 llama-cpp-2 = { version = "0.1.143", default-features = false }
+# Transitive of llama-cpp-2 (not re-exported by it) — pinned directly so
+# gpu_env can install llama_log_set/ggml_log_set capture callbacks.
+llama-cpp-sys-2 = { version = "0.1.143", default-features = false }
 # Transitive of llama-cpp-2 — pinned directly so `token_to_piece` can be fed a
 # stateful UTF-8 decoder (multi-byte characters can span token boundaries).
 encoding_rs = "0.8"

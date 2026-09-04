@@ -3233,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "omnivoice"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "arboard",
  "chrono",
@@ -3244,6 +3244,7 @@ dependencies = [
  "enigo",
  "libc",
  "llama-cpp-2",
+ "llama-cpp-sys-2",
  "nnnoiseless",
  "objc",
  "psl",

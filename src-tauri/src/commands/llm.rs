@@ -584,6 +584,7 @@ fn load_and_activate_llm_emit(
                 if outcome.backend.fell_back_from_gpu() {
                     let _ = app.emit("llm-gpu-fallback", outcome);
                 }
+                crate::gpu_env::maybe_warn_integrated_only(app);
                 let _ = app.emit("llm-status", "ready");
             }
             Ok(None) => {
@@ -872,6 +873,12 @@ fn load_and_activate_llm_outcome(
         outcome.backend.label(),
         outcome.duration_ms
     ));
+    if matches!(
+        outcome.backend,
+        LlmBackendOutcome::GpuFull | LlmBackendOutcome::GpuPartial { .. }
+    ) {
+        crate::gpu_env::note_gpu_load("llm");
+    }
     Ok(Some(outcome))
 }
 
