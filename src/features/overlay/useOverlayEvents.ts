@@ -18,6 +18,7 @@ import {
   onWhisperGpuFallback,
   onLlmGpuFallback,
   onGpuEnvironmentWarning,
+  onRecordingError,
   onLlmStatus,
   onCommandStateChange,
   onCommandConfirm,
@@ -263,7 +264,25 @@ export function useOverlayEvents({
       setLlmStatus(status);
     });
 
+    // Output failures ("Target window is not in focus; refusing to paste",
+    // clipboard refusals, …) otherwise surface only as a toast in the main
+    // window, which is usually behind the app being dictated into — the
+    // user just sees nothing arrive.  Show the reason where they are looking.
+    const unlistenRecordingError = onRecordingError((err) => {
+      if (!err.message.startsWith("Output failed")) return;
+      console.warn("[output]", err.message);
+      setStructuredDegraded(err.message);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 20000);
+    });
+
     return () => {
+      unlistenRecordingError.then((fn) => fn());
       unlistenPreview.then((fn) => fn());
       unlistenResult.then((fn) => fn());
       unlistenStructured.then((fn) => fn());

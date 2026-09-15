@@ -290,6 +290,9 @@ pub async fn set_structured_panel_active(
     state
         .structured_panel_active
         .store(active, std::sync::atomic::Ordering::Release);
+    // The overlay is created non-activatable (see `setup_overlay_window`); the
+    // panel's editor is one of two surfaces that need real keyboard focus.
+    let _ = window.set_focusable(active);
     Ok(())
 }
 

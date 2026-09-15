@@ -1043,6 +1043,11 @@ export const discardStructuredOutput = (bindingId: string, generation: number) =
   invoke<void>("discard_structured_output", { bindingId, generation });
 export const setStructuredPanelActive = (active: boolean) =>
   invoke<void>("set_structured_panel_active", { active });
+// The overlay is non-activatable by default (it must never steal the
+// foreground from the dictation target); surfaces that need typing flip this
+// on while mounted.
+export const setOverlayFocusable = (focusable: boolean) =>
+  invoke<void>("set_overlay_focusable", { focusable });
 
 /** Mirrors Rust `llm::diaglog::ExtractionRecord`. */
 export interface LlmExtractionRecord {
