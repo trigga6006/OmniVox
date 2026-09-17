@@ -583,7 +583,109 @@ impl OutputRouter {
         Self::paste_keystroke(&mut enigo)
     }
 
+    /// Modifier keys that silently corrupt an injected Ctrl+V, paired with the
+    /// label used in diagnostics.  Ctrl is absent on purpose: Ctrl+V needs it,
+    /// and `with_modifier` presses and releases its own.
+    #[cfg(target_os = "windows")]
+    const CONFLICTING_MODIFIERS: [(u16, &str); 6] = {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RMENU, VK_RSHIFT, VK_RWIN,
+        };
+        [
+            (VK_LMENU, "LAlt"),
+            (VK_RMENU, "RAlt"),
+            (VK_LWIN, "LWin"),
+            (VK_RWIN, "RWin"),
+            (VK_LSHIFT, "LShift"),
+            (VK_RSHIFT, "RShift"),
+        ]
+    };
+
+    /// Which conflicting modifiers are physically down right now.
+    ///
+    /// A key-down the hotkey hook SWALLOWED never reaches the async key-state
+    /// table, so this only ever reports modifiers the rest of the system —
+    /// including `SendInput`'s composition and the target app — also believes
+    /// are held.  That is exactly the set that can corrupt our paste.
+    #[cfg(target_os = "windows")]
+    fn held_conflicting_modifiers() -> Vec<&'static str> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+        Self::CONFLICTING_MODIFIERS
+            .iter()
+            .filter(|(vk, _)| (unsafe { GetAsyncKeyState(*vk as i32) } as u16) & 0x8000 != 0)
+            .map(|(_, label)| *label)
+            .collect()
+    }
+
+    /// Give a still-held modifier a brief moment to come up before we inject
+    /// Ctrl+V, and record what we saw either way.
+    ///
+    /// WHY THIS EXISTS.  The dictation hotkey is itself a modifier chord
+    /// (default LCtrl+LAlt) and the hook only swallows the key-DOWN of the key
+    /// that COMPLETED the chord — the first key is deliberately passed through
+    /// so a real Ctrl+C / Alt+Tab keeps working.  Releasing EITHER key ends a
+    /// hold-mode dictation, so with an Alt-first chord the user can release
+    /// Ctrl (firing the stop) while Alt stays down.  `SendInput` composes with
+    /// live keyboard state, so the Ctrl+V we inject a second later arrives at
+    /// the target as Ctrl+Alt+V, which Chromium/Electron do not treat as a
+    /// paste.  Nothing errors: the injection succeeds, the clipboard holds the
+    /// dictation, and nothing lands in the composer.
+    ///
+    /// WHY WE ONLY WAIT, NEVER INJECT A RELEASE.  Synthesizing the key-up is
+    /// unsafe here in two separate ways.  (1) In the Alt-first case this
+    /// targets, Alt is NOT in the hook's `swallowed_down` set, so a synthetic
+    /// Alt-up reaches the app and completes a standalone Alt gesture — popping
+    /// the Windows/Electron menu bar, which takes keyboard focus while leaving
+    /// the foreground HWND unchanged: the very silent failure we are trying to
+    /// fix (`hotkey.rs` already documents being bitten by a leaked Alt-up).
+    /// (2) Capture ownership is released before transcription finishes, so a
+    /// second dictation can be recording while this one pastes; the hook does
+    /// not distinguish injected events, so our synthetic up would clear that
+    /// recording's latch and stop it early.
+    ///
+    /// Waiting costs nothing in the common case (one key-state sweep) and
+    /// rescues the realistic case where the user is mid-release.  If the
+    /// modifier is still held when the budget expires we paste anyway — never
+    /// worse than today's behaviour — and the log says exactly what was held.
+    #[cfg(target_os = "windows")]
+    fn settle_conflicting_modifiers() {
+        const BUDGET: Duration = Duration::from_millis(400);
+        const POLL: Duration = Duration::from_millis(20);
+
+        let initial = Self::held_conflicting_modifiers();
+        if initial.is_empty() {
+            return;
+        }
+
+        let start = Instant::now();
+        while start.elapsed() < BUDGET {
+            thread::sleep(POLL);
+            if Self::held_conflicting_modifiers().is_empty() {
+                crate::diag::log(&format!(
+                    "output: modifier(s) [{}] released after {}ms; pasting clean",
+                    initial.join("+"),
+                    start.elapsed().as_millis()
+                ));
+                return;
+            }
+        }
+
+        // Still held.  Paste regardless (refusing would lose the dictation), but
+        // say so — a Ctrl+V that arrives as Ctrl+Alt+V is silently ignored by
+        // Chromium/Electron targets and is otherwise indistinguishable from a
+        // successful paste.
+        crate::diag::log(&format!(
+            "output: modifier(s) [{}] STILL HELD at paste — target may ignore Ctrl+V",
+            Self::held_conflicting_modifiers().join("+")
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn settle_conflicting_modifiers() {}
+
     fn paste_keystroke(enigo: &mut Enigo) -> AppResult<()> {
+        Self::settle_conflicting_modifiers();
         Self::with_modifier(enigo, PASTE_MODIFIER, |enigo| {
             enigo
                 .key(Key::Unicode('v'), Direction::Click)

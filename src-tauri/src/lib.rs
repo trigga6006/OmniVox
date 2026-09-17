@@ -5,6 +5,7 @@ pub mod commands;
 pub mod diag;
 pub mod error;
 pub mod focus;
+pub mod gpu_env;
 pub mod hotkey;
 pub mod llm;
 pub mod llm_models;
@@ -116,6 +117,13 @@ fn setup_overlay_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     .skip_taskbar(true)
     .resizable(true)
     .focused(false)
+    // WS_EX_NOACTIVATE: clicking the pill must never make it the foreground
+    // window.  The paste path refuses to fire Ctrl+V unless the window that
+    // was foreground at hotkey press still is, so a pill that can take focus
+    // silently breaks every dictation whose output raced its activation.  The
+    // two surfaces that need real keyboard focus (StructuredPanel editor,
+    // CommandPill draft editor) flip this on only while they are mounted.
+    .focusable(false)
     .visible(true)
     .build()?;
 
@@ -569,6 +577,9 @@ pub fn run() {
     builder
         .manage(state::AppState::new())
         .setup(|app| {
+            // Tee whisper/llama library logs into the Vulkan-device registry
+            // (and stderr) before any model load can emit them.
+            gpu_env::install_log_capture();
             setup_tray(app)?;
 
             // Ensure data directories exist
@@ -786,6 +797,7 @@ pub fn run() {
             commands::feed_hotkey_event,
             commands::update_hotkey,
             commands::resize_overlay,
+            commands::set_overlay_focusable,
             commands::show_main_window,
             // Notes commands (4)
             commands::add_note,

@@ -69,6 +69,23 @@ fn cursor_monitor(_app: &tauri::AppHandle) -> Option<tauri::Monitor> {
 }
 
 /// Resize and reposition the overlay pill window from the frontend.
+/// Let the overlay take keyboard focus only while a surface that needs typing
+/// (the CommandPill draft editor) is mounted.  The window is created
+/// non-activatable so the pill can never become the foreground window and
+/// break the paste path's target verification — see `setup_overlay_window`.
+#[tauri::command]
+pub async fn set_overlay_focusable(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    focusable: bool,
+) -> Result<(), String> {
+    require_caller(&caller, WindowPolicy::Overlay)?;
+    app.get_webview_window("overlay")
+        .ok_or("overlay window not found")?
+        .set_focusable(focusable)
+        .map_err(|e| e.to_string())
+}
+
 /// Automatically moves the pill to whichever monitor has the cursor,
 /// so it follows the user across multi-monitor setups.
 ///

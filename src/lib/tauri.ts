@@ -1043,6 +1043,11 @@ export const discardStructuredOutput = (bindingId: string, generation: number) =
   invoke<void>("discard_structured_output", { bindingId, generation });
 export const setStructuredPanelActive = (active: boolean) =>
   invoke<void>("set_structured_panel_active", { active });
+// The overlay is non-activatable by default (it must never steal the
+// foreground from the dictation target); surfaces that need typing flip this
+// on while mounted.
+export const setOverlayFocusable = (focusable: boolean) =>
+  invoke<void>("set_overlay_focusable", { focusable });
 
 /** Mirrors Rust `llm::diaglog::ExtractionRecord`. */
 export interface LlmExtractionRecord {
@@ -1116,6 +1121,15 @@ export const onLlmGpuFallback = (
   callback: (outcome: LlmBackendFallback) => void
 ): Promise<UnlistenFn> =>
   listenSafe<LlmBackendFallback>("llm-gpu-fallback", (e) => callback(e.payload));
+
+// Fired at most once per session when GPU acceleration is active but the only
+// Vulkan device is an integrated GPU — model memory then sits in system RAM.
+// Seen when a dedicated GPU loses its Vulkan driver registration after a
+// graphics driver update.
+export const onGpuEnvironmentWarning = (
+  callback: (message: string) => void
+): Promise<UnlistenFn> =>
+  listenSafe<string>("gpu-environment-warning", (e) => callback(e.payload));
 
 // ── Scratchpad ──────────────────────────────────────────────────────────────
 export interface ScratchpadEntry {

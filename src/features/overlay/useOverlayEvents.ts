@@ -17,6 +17,8 @@ import {
   onStructuredModeDegraded,
   onWhisperGpuFallback,
   onLlmGpuFallback,
+  onGpuEnvironmentWarning,
+  onRecordingError,
   onLlmStatus,
   onCommandStateChange,
   onCommandConfirm,
@@ -243,17 +245,51 @@ export function useOverlayEvents({
       }, 20000);
     });
 
+    // Backend fires this at most once per session: GPU acceleration is on but
+    // the only Vulkan device is an integrated GPU (dedicated GPU invisible,
+    // e.g. after a driver update) — models are silently in system RAM.
+    const unlistenGpuEnvironment = onGpuEnvironmentWarning((message) => {
+      console.warn("[gpu-env]", message);
+      setStructuredDegraded(message);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 20000);
+    });
+
     const unlistenLlmStatus = onLlmStatus((status) => {
       setLlmStatus(status);
     });
 
+    // Output failures ("Target window is not in focus; refusing to paste",
+    // clipboard refusals, …) otherwise surface only as a toast in the main
+    // window, which is usually behind the app being dictated into — the
+    // user just sees nothing arrive.  Show the reason where they are looking.
+    const unlistenRecordingError = onRecordingError((err) => {
+      if (!err.message.startsWith("Output failed")) return;
+      console.warn("[output]", err.message);
+      setStructuredDegraded(err.message);
+      if (degradedTimerRef.current !== null) {
+        window.clearTimeout(degradedTimerRef.current);
+      }
+      degradedTimerRef.current = window.setTimeout(() => {
+        setStructuredDegraded(null);
+        degradedTimerRef.current = null;
+      }, 20000);
+    });
+
     return () => {
+      unlistenRecordingError.then((fn) => fn());
       unlistenPreview.then((fn) => fn());
       unlistenResult.then((fn) => fn());
       unlistenStructured.then((fn) => fn());
       unlistenDegraded.then((fn) => fn());
       unlistenGpuFallback.then((fn) => fn());
       unlistenLlmGpuFallback.then((fn) => fn());
+      unlistenGpuEnvironment.then((fn) => fn());
       unlistenLlmStatus.then((fn) => fn());
     };
   }, [

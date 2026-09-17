@@ -2501,6 +2501,29 @@ pub(crate) async fn stop_and_transcribe_generation(
         );
     if structured.is_none() {
         trace.mark("output_started");
+        // Always-on breadcrumb: which delivery branch this dictation took, and
+        // with what identity.  The router only ever logs on its ERROR path, so
+        // a paste that was injected but never consumed by the target app used
+        // to leave no trace whatsoever on a normal launch — the single reason
+        // "it just doesn't paste" survived several debugging sessions.  One
+        // line per dictation, into the same rotating, size-capped log.  No
+        // transcript content, only its length.
+        crate::diag::log(&format!(
+            "output: generation={} route={} mode={:?} ship={} segments={} chars={} target={:?}",
+            generation,
+            if route_to_scratchpad {
+                "scratchpad"
+            } else if target_is_self {
+                "in_app"
+            } else {
+                "os_paste"
+            },
+            output_config.mode,
+            ship_mode_active,
+            voice_segments.as_ref().map(|s| s.len()).unwrap_or(0),
+            final_text.chars().count(),
+            dictation_target.map(|t| (t.hwnd, t.pid)),
+        ));
         if route_to_scratchpad {
             // The scratchpad is the target (its window was foreground at record
             // start, OR it's open with capture on). Route the plain transcript
@@ -2617,8 +2640,16 @@ pub(crate) async fn stop_and_transcribe_generation(
                 }
             };
             match output_result {
-                Ok(()) => trace.mark_visible_delivery("os_output_completed"),
+                Ok(()) => {
+                    trace.mark_visible_delivery("os_output_completed");
+                    // "Returned success", not "pasted": Clipboard mode and
+                    // empty/command-only segments also land here.
+                    crate::diag::log(&format!(
+                        "output: router returned success (generation={generation})"
+                    ));
+                }
                 Err(e) => {
+                    crate::diag::log(&format!("output: FAILED (generation={generation}) {e}"));
                     eprintln!("Output failed: {e}");
                     emit_error(
                         app_handle,

@@ -86,7 +86,7 @@ mod state_machine {
     pub static HOTKEY_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
     /// Which capture path a hotkey drives.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Action {
         Dictation,
         Command,
@@ -256,6 +256,93 @@ mod state_machine {
                 Action::Command => crate::pipeline::stop_and_run_command(&h, &st, generation).await,
             }
         });
+    }
+
+    /// Modifiers whose *bare* press+release Windows reads as the menu
+    /// activation gesture: Alt (unsided + both sides) moves keyboard focus to
+    /// the menu bar / KeyTips, Win pops Start.  Chromium/Electron follow the
+    /// same rule, and the focus move is invisible to `GetForegroundWindow`.
+    const MENU_MODIFIERS: [u16; 5] = [0x12, 0xA4, 0xA5, 0x5B, 0x5C];
+
+    /// The combo key whose key-DOWN we passed through to the foreground app.
+    /// Only the key that *completes* the chord is swallowed (`completing_bit`
+    /// is its bit), so the other one reached the app.  `0` for a single-key
+    /// combo, where the only key is the completing one.
+    fn passed_through_key(key1: u16, key2: u16, completing_bit: u8) -> u16 {
+        if completing_bit == 0x01 {
+            key2
+        } else {
+            key1
+        }
+    }
+
+    /// `Some(vk)` when the passed-through combo key is a menu-activating
+    /// modifier — i.e. the app is mid-way through what looks to it like a bare
+    /// Alt/Win tap and needs the masking keystroke below.
+    fn passed_through_menu_modifier(key1: u16, key2: u16, completing_bit: u8) -> Option<u16> {
+        let passed = passed_through_key(key1, key2, completing_bit);
+        MENU_MODIFIERS.contains(&passed).then_some(passed)
+    }
+
+    /// What a chord activation / toggle-off needs reported, so the reporting
+    /// (logging, masking) can happen off the hook thread.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ChordFired {
+        phase: &'static str,
+        action: Action,
+        /// The key that completed the chord (this event's VK).
+        completed_vk: u16,
+        /// The combo key whose down passed through to the app (`0` if none).
+        passed_vk: u16,
+        /// `Some` when `passed_vk` is a menu modifier and must be masked.
+        mask_vk: Option<u16>,
+    }
+
+    /// Signature stamped into `dwExtraInfo` of the keystroke we inject, so the
+    /// hook can recognise it and pass it straight through.  ASCII "OMNI_MSK".
+    #[cfg(target_os = "windows")]
+    pub const MASK_EXTRA_INFO: usize = 0x4F4D_4E49_5F4D_534B;
+
+    /// Emit one benign keystroke while the leaked modifier is still physically
+    /// held, so its eventual release is no longer a bare Alt/Win gesture and
+    /// menu focus never moves — the AutoHotkey `#MenuMaskKey` technique.
+    #[cfg(target_os = "windows")]
+    fn send_menu_mask_key() {
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        };
+
+        /// 0xE8 is unassigned (AutoHotkey's default mask key): bound in no app,
+        /// and it matches no configurable combo key.
+        const MASK_VK: u16 = 0xE8;
+
+        let key = |dw_flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: MASK_VK,
+                    wScan: 0,
+                    dwFlags: dw_flags,
+                    time: 0,
+                    dwExtraInfo: MASK_EXTRA_INFO,
+                },
+            },
+        };
+        let inputs = [key(0), key(KEYEVENTF_KEYUP)];
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent == 0 {
+            crate::diag::log(&format!(
+                "hotkey: menu mask SendInput sent 0 events error={}",
+                unsafe { GetLastError() }
+            ));
+        }
     }
 
     fn reset(hk: &Hk) {
@@ -462,6 +549,52 @@ mod state_machine {
     }
 
     fn process_one(hk: &Hk, action: Action, vk: u16, is_down: bool, is_up: bool) -> bool {
+        process_one_with(
+            hk,
+            action,
+            vk,
+            is_down,
+            is_up,
+            fire_start,
+            fire_stop,
+            |fired: ChordFired| {
+                // Nothing here may run inline: this is the serialized
+                // WH_KEYBOARD_LL hook thread, which must return well inside
+                // `LowLevelHooksTimeout`, and both the log (a lock + possible
+                // 1 MiB rotation) and `SendInput` are too slow to risk.  The
+                // utterance lasts far longer than this hop, so the modifier is
+                // still held when the mask lands.
+                tauri::async_runtime::spawn(async move {
+                    crate::diag::log(&format!(
+                        "hotkey: chord fired phase={} action={:?} completed_vk={:#06x} passed_vk={:#06x} mask={}",
+                        fired.phase,
+                        action_mode(fired.action),
+                        fired.completed_vk,
+                        fired.passed_vk,
+                        if fired.mask_vk.is_some() { "yes" } else { "no" },
+                    ));
+                    #[cfg(target_os = "windows")]
+                    if fired.mask_vk.is_some() {
+                        send_menu_mask_key();
+                    }
+                });
+            },
+        )
+    }
+
+    /// The state machine proper, with its three side effects injected so the
+    /// swallow/mask decisions can be unit-tested off Windows.
+    #[allow(clippy::too_many_arguments)] // the event + the three injected effects
+    fn process_one_with(
+        hk: &Hk,
+        action: Action,
+        vk: u16,
+        is_down: bool,
+        is_up: bool,
+        start: impl Fn(Action) -> bool,
+        stop: impl Fn(Action),
+        fired: impl Fn(ChordFired),
+    ) -> bool {
         let packed = hk.packed.load(Ordering::Acquire);
         if packed == 0 {
             return false;
@@ -497,8 +630,30 @@ mod state_machine {
         // swallowed-down / swallowed-up bookkeeping below).
         let bit: u8 = if matches_key1 { 0x01 } else { 0x02 };
 
+        // Report a chord that just fired.  The chord's OTHER key reached the
+        // app on its way down (only the completing key is swallowed).  When
+        // that key is Alt or Win, the app is holding what looks to it like a
+        // bare menu-activation gesture: on release it moves keyboard focus to
+        // the menu bar, silently, so our paste lands in the menu instead of the
+        // composer (and the next chord toggles it back — hence every *other*
+        // dictation failing).  One benign keystroke while the key is still held
+        // makes it "Alt + something" instead.
+        let report = |phase: &'static str| {
+            fired(ChordFired {
+                phase,
+                action,
+                completed_vk: vk,
+                passed_vk: passed_through_key(key1, key2, bit),
+                mask_vk: passed_through_menu_modifier(key1, key2, bit),
+            });
+        };
+
         // ── Both/all keys just pressed ───────────────────────
-        if all_down && is_down {
+        // Only a COMBO key may drive this: while both chord keys are held,
+        // `all_down` stays true for every other key-down too (including the
+        // mask keystroke we inject), and letting those through here would
+        // toggle a capture off a key that has nothing to do with the hotkey.
+        if all_down && is_down && (matches_key1 || matches_key2) {
             if !recording {
                 let now = now_ms();
                 let last = hk.last_activate_ms.swap(now, Ordering::Relaxed);
@@ -509,7 +664,7 @@ mod state_machine {
                 // Remember we swallowed this key's press so we also swallow its
                 // release — otherwise the lone modifier-up leaks to the app.
                 hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
-                if !fire_start(action) {
+                if !start(action) {
                     // The other hotkey (or the mic button) owns capture. Roll
                     // back every optimistic latch so this combo cannot become a
                     // phantom recording/toggle session.
@@ -520,6 +675,8 @@ mod state_machine {
                     return false;
                 }
 
+                report("start");
+
                 return true; // swallow
             } else if locked {
                 // Toggle-off
@@ -527,7 +684,10 @@ mod state_machine {
                 hk.toggle_locked.store(false, Ordering::Relaxed);
                 hk.last_activate_ms.store(0, Ordering::Relaxed);
                 hk.swallowed_down.fetch_or(bit, Ordering::Relaxed);
-                fire_stop(action);
+                stop(action);
+                // Same leak, worse timed: this is the chord immediately before
+                // the transcript is pasted.
+                report("stop");
 
                 return true; // swallow
             }
@@ -565,7 +725,7 @@ mod state_machine {
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         {
-            fire_stop(action);
+            stop(action);
         }
 
         // ── Swallow the release of any combo key whose activating press we
@@ -590,6 +750,8 @@ mod state_machine {
 
     #[cfg(test)]
     mod tests {
+        use std::cell::RefCell;
+
         use super::*;
 
         #[test]
@@ -602,6 +764,320 @@ mod state_machine {
             assert!(is_double_tap(500, 150));
             assert!(!is_double_tap(700, 150));
             assert!(is_double_tap(10, 20));
+        }
+
+        const CTRL: u16 = 0xA2;
+        const ALT: u16 = 0xA4;
+        const WIN: u16 = 0x5B;
+        const SHIFT: u16 = 0xA0;
+
+        /// What the injected effects saw, in order.
+        #[derive(Default)]
+        struct Rec {
+            /// `(vk, is_down, swallowed)` per event fed.
+            events: Vec<(u16, bool, bool)>,
+            starts: Vec<Action>,
+            stops: Vec<Action>,
+            fires: Vec<ChordFired>,
+        }
+
+        impl Rec {
+            /// The events that reached the foreground app.
+            fn delivered(&self) -> Vec<(u16, bool)> {
+                self.events
+                    .iter()
+                    .filter(|&&(_, _, swallowed)| !swallowed)
+                    .map(|&(vk, is_down, _)| (vk, is_down))
+                    .collect()
+            }
+
+            /// The mask keystrokes the state machine asked for, in order.
+            fn masks(&self) -> Vec<u16> {
+                self.fires.iter().filter_map(|f| f.mask_vk).collect()
+            }
+        }
+
+        /// An idle hotkey with `key1`+`key2` configured.
+        fn hk(key1: u16, key2: u16) -> Hk {
+            let hk = Hk::new();
+            hk.packed
+                .store((key2 as u32) << 16 | (key1 as u32), Ordering::Release);
+            hk
+        }
+
+        fn feed(hk: &Hk, rec: &RefCell<Rec>, vk: u16, is_down: bool, start_ok: bool) -> bool {
+            let swallowed = process_one_with(
+                hk,
+                Action::Dictation,
+                vk,
+                is_down,
+                !is_down,
+                |a| {
+                    rec.borrow_mut().starts.push(a);
+                    start_ok
+                },
+                |a| rec.borrow_mut().stops.push(a),
+                |f| rec.borrow_mut().fires.push(f),
+            );
+            rec.borrow_mut().events.push((vk, is_down, swallowed));
+            swallowed
+        }
+
+        /// One hold-mode chord: both keys down in `press` order, then up in
+        /// `release` order.  `last_activate_ms` is cleared first so back-to-back
+        /// cycles never read as a 400 ms double-tap (toggle mode).
+        fn chord(hk: &Hk, rec: &RefCell<Rec>, press: [u16; 2], release: [u16; 2]) {
+            hk.last_activate_ms.store(0, Ordering::Relaxed);
+            for vk in press {
+                feed(hk, rec, vk, true, true);
+            }
+            for vk in release {
+                feed(hk, rec, vk, false, true);
+            }
+        }
+
+        #[test]
+        fn ctrl_first_chord_delivers_no_alt_events_to_the_app() {
+            for release in [[CTRL, ALT], [ALT, CTRL]] {
+                let h = hk(CTRL, ALT);
+                let rec = RefCell::new(Rec::default());
+                chord(&h, &rec, [CTRL, ALT], release);
+                let r = rec.borrow();
+                // Alt completes the chord, so both its edges are swallowed and
+                // the app never sees a menu gesture — nothing to mask.
+                assert_eq!(r.delivered(), vec![(CTRL, true), (CTRL, false)]);
+                assert!(r.masks().is_empty(), "release={release:?}");
+                assert_eq!(r.starts, vec![Action::Dictation]);
+                assert_eq!(r.stops, vec![Action::Dictation]);
+            }
+        }
+
+        #[test]
+        fn alt_first_chord_emits_the_menu_mask_key() {
+            for release in [[ALT, CTRL], [CTRL, ALT]] {
+                let h = hk(CTRL, ALT);
+                let rec = RefCell::new(Rec::default());
+                chord(&h, &rec, [ALT, CTRL], release);
+                let r = rec.borrow();
+                // Alt's own edges pass through (its down was never swallowed),
+                // which is the bare menu gesture — mask it exactly once.
+                assert_eq!(r.delivered(), vec![(ALT, true), (ALT, false)]);
+                assert_eq!(r.masks(), vec![ALT], "release={release:?}");
+                assert_eq!(r.starts, vec![Action::Dictation]);
+                assert_eq!(r.stops, vec![Action::Dictation]);
+            }
+        }
+
+        #[test]
+        fn alt_first_toggle_off_emits_the_menu_mask_key() {
+            let h = hk(CTRL, ALT);
+            let rec = RefCell::new(Rec::default());
+            // Arm the double-tap window so the next chord locks toggle mode
+            // instead of recording hold-style.
+            h.last_activate_ms.store(now_ms().max(1), Ordering::Relaxed);
+            for (vk, is_down) in [(ALT, true), (CTRL, true), (ALT, false), (CTRL, false)] {
+                feed(&h, &rec, vk, is_down, true);
+            }
+            assert!(h.toggle_locked.load(Ordering::Relaxed), "should be locked");
+            assert!(h.recording.load(Ordering::Relaxed));
+            {
+                let r = rec.borrow();
+                assert_eq!(r.masks(), vec![ALT]);
+                assert_eq!(r.starts, vec![Action::Dictation]);
+                assert!(r.stops.is_empty(), "toggle mode outlives the release");
+            }
+
+            // The stopping chord leaks the same bare Alt tap — and this one
+            // lands immediately before the paste.
+            for (vk, is_down) in [(ALT, true), (CTRL, true), (ALT, false), (CTRL, false)] {
+                feed(&h, &rec, vk, is_down, true);
+            }
+            let r = rec.borrow();
+            assert_eq!(r.masks(), vec![ALT, ALT], "exactly one more mask");
+            assert_eq!(
+                r.fires.iter().map(|f| f.phase).collect::<Vec<_>>(),
+                vec!["start", "stop"]
+            );
+            assert_eq!(r.starts, vec![Action::Dictation]);
+            assert_eq!(r.stops, vec![Action::Dictation]);
+            drop(r);
+            assert!(!h.recording.load(Ordering::Relaxed));
+            assert!(!h.toggle_locked.load(Ordering::Relaxed));
+            assert_eq!(h.keys_down.load(Ordering::Relaxed), 0);
+            assert_eq!(h.swallowed_down.load(Ordering::Relaxed), 0);
+        }
+
+        /// `recording`, `toggle_locked`, `keys_down`, `swallowed_down`.
+        fn latches(hk: &Hk) -> (bool, bool, u8, u8) {
+            (
+                hk.recording.load(Ordering::Relaxed),
+                hk.toggle_locked.load(Ordering::Relaxed),
+                hk.keys_down.load(Ordering::Relaxed),
+                hk.swallowed_down.load(Ordering::Relaxed),
+            )
+        }
+
+        /// `(starts, stops, fires)` call counts.
+        fn calls(rec: &RefCell<Rec>) -> (usize, usize, usize) {
+            let r = rec.borrow();
+            (r.starts.len(), r.stops.len(), r.fires.len())
+        }
+
+        /// Hold both chord keys (Alt first), optionally as a toggle-lock.
+        fn hold_chord(hk: &Hk, rec: &RefCell<Rec>, lock: bool) {
+            hk.last_activate_ms
+                .store(if lock { now_ms().max(1) } else { 0 }, Ordering::Relaxed);
+            feed(hk, rec, ALT, true, true);
+            feed(hk, rec, CTRL, true, true);
+            assert_eq!(hk.toggle_locked.load(Ordering::Relaxed), lock);
+        }
+
+        #[test]
+        fn injected_mask_key_cannot_drive_the_state_machine() {
+            // 0xE8 is what `send_menu_mask_key` injects.  The hook filters it
+            // out by `dwExtraInfo` before this point, but the state machine
+            // must be inert for it regardless: it arrives ~1 ms after the
+            // chord fired, while both combo keys are still held.
+            const MASK: u16 = 0xE8;
+            for lock in [true, false] {
+                let h = hk(CTRL, ALT);
+                let rec = RefCell::new(Rec::default());
+                hold_chord(&h, &rec, lock);
+                let (before, before_calls) = (latches(&h), calls(&rec));
+
+                assert!(
+                    !feed(&h, &rec, MASK, true, true),
+                    "mask down passes through"
+                );
+                assert!(!feed(&h, &rec, MASK, false, true), "mask up passes through");
+
+                assert_eq!(calls(&rec), before_calls, "lock={lock}");
+                assert_eq!(latches(&h), before, "lock={lock}");
+            }
+        }
+
+        #[test]
+        fn third_key_while_chord_held_passes_through() {
+            const KEY_A: u16 = 0x41;
+            let h = hk(CTRL, ALT);
+            let rec = RefCell::new(Rec::default());
+            hold_chord(&h, &rec, false);
+            let (before, before_calls) = (latches(&h), calls(&rec));
+
+            assert!(!feed(&h, &rec, KEY_A, true, true));
+            assert!(!feed(&h, &rec, KEY_A, false, true));
+
+            assert_eq!(calls(&rec), before_calls);
+            assert_eq!(latches(&h), before);
+        }
+
+        #[cfg(target_os = "windows")]
+        #[test]
+        fn mask_extra_info_signature_is_nonzero_and_stable() {
+            // The hook passes a keystroke through untouched when it carries
+            // this exact value, so it must never be 0 — ordinary keys carry 0.
+            assert_ne!(MASK_EXTRA_INFO, 0);
+            assert_eq!(MASK_EXTRA_INFO, 0x4F4D_4E49_5F4D_534B);
+        }
+
+        #[test]
+        fn win_first_chord_emits_the_menu_mask_key() {
+            let h = hk(CTRL, WIN);
+            let rec = RefCell::new(Rec::default());
+            chord(&h, &rec, [WIN, CTRL], [WIN, CTRL]);
+            assert_eq!(rec.borrow().masks(), vec![WIN]);
+        }
+
+        #[test]
+        fn shift_first_chord_emits_no_mask() {
+            let h = hk(CTRL, SHIFT);
+            let rec = RefCell::new(Rec::default());
+            chord(&h, &rec, [SHIFT, CTRL], [SHIFT, CTRL]);
+            assert!(rec.borrow().masks().is_empty());
+        }
+
+        #[test]
+        fn every_swallowed_down_has_exactly_one_swallowed_up() {
+            for press in [[CTRL, ALT], [ALT, CTRL]] {
+                for release in [[CTRL, ALT], [ALT, CTRL]] {
+                    let h = hk(CTRL, ALT);
+                    let rec = RefCell::new(Rec::default());
+                    chord(&h, &rec, press, release);
+                    let delivered = rec.borrow().delivered();
+                    for vk in [CTRL, ALT] {
+                        let downs = delivered.iter().filter(|&&e| e == (vk, true)).count();
+                        let ups = delivered.iter().filter(|&&e| e == (vk, false)).count();
+                        assert_eq!(
+                            downs, ups,
+                            "press={press:?} release={release:?} vk={vk:#06x}"
+                        );
+                    }
+                    assert_eq!(h.swallowed_down.load(Ordering::Relaxed), 0);
+                    assert_eq!(h.keys_down.load(Ordering::Relaxed), 0);
+                }
+            }
+        }
+
+        #[test]
+        fn state_is_clean_between_consecutive_dictations() {
+            let h = hk(CTRL, ALT);
+            let mut expected = None;
+            for _ in 0..5 {
+                let rec = RefCell::new(Rec::default());
+                chord(&h, &rec, [ALT, CTRL], [ALT, CTRL]);
+                let r = rec.borrow();
+                let this = (r.events.clone(), r.fires.clone());
+                let baseline = expected.get_or_insert_with(|| this.clone());
+                assert_eq!(*baseline, this);
+                assert_eq!(r.starts.len(), 1);
+                assert_eq!(r.stops.len(), 1);
+            }
+            assert_eq!(h.keys_down.load(Ordering::Relaxed), 0);
+            assert_eq!(h.swallowed_down.load(Ordering::Relaxed), 0);
+            assert!(!h.recording.load(Ordering::Relaxed));
+            assert!(!h.toggle_locked.load(Ordering::Relaxed));
+        }
+
+        #[test]
+        fn start_rejected_rolls_back_without_masking() {
+            let h = hk(CTRL, ALT);
+            let rec = RefCell::new(Rec::default());
+            assert!(!feed(&h, &rec, ALT, true, false));
+            // The chord fires but capture is owned elsewhere: the press passes
+            // through and nothing — including the mask — may be emitted.
+            assert!(!feed(&h, &rec, CTRL, true, false));
+            let r = rec.borrow();
+            assert_eq!(r.starts, vec![Action::Dictation]);
+            assert!(r.masks().is_empty());
+            assert!(r.stops.is_empty());
+            drop(r);
+            assert_eq!(h.swallowed_down.load(Ordering::Relaxed), 0);
+            assert!(!h.recording.load(Ordering::Relaxed));
+            assert!(!h.toggle_locked.load(Ordering::Relaxed));
+            assert_eq!(h.last_activate_ms.load(Ordering::Relaxed), 0);
+        }
+
+        #[test]
+        fn passed_through_menu_modifier_flags_only_leaked_menu_keys() {
+            // (key1, key2, completing_bit) → the key that leaked, if it pops a menu.
+            let cases = [
+                ((CTRL, ALT, 0x01), Some(ALT)), // Alt-first: Ctrl completed
+                ((CTRL, ALT, 0x02), None),      // Ctrl-first: Alt completed
+                ((ALT, CTRL, 0x02), Some(ALT)), // same chord, keys stored swapped
+                ((CTRL, WIN, 0x01), Some(WIN)),
+                ((CTRL, 0xA5, 0x01), Some(0xA5)), // RAlt
+                ((CTRL, 0x5C, 0x01), Some(0x5C)), // RWin
+                ((0x12, CTRL, 0x02), Some(0x12)), // unsided VK_MENU
+                ((CTRL, SHIFT, 0x01), None),      // Shift pops no menu
+                ((0xA3, 0, 0x01), None),          // single-key combo leaks nothing
+            ];
+            for ((key1, key2, bit), want) in cases {
+                assert_eq!(
+                    passed_through_menu_modifier(key1, key2, bit),
+                    want,
+                    "key1={key1:#06x} key2={key2:#06x} bit={bit:#04x}"
+                );
+            }
         }
     }
 }
@@ -623,6 +1099,16 @@ mod win {
     unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code >= 0 {
             let kb = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
+            // Our own menu-mask keystroke: pass it through without letting it
+            // touch the state machine.  It arrives while both chord keys are
+            // held, and the machine's "combo is all down" latches would read it
+            // as another press of the hotkey — toggling off the very capture it
+            // was sent to protect.  Only OUR injection is skipped: enigo's
+            // paste keystrokes carry no signature and keep flowing through the
+            // normal path (`LLKHF_INJECTED` is deliberately NOT consulted).
+            if kb.dwExtraInfo == state_machine::MASK_EXTRA_INFO {
+                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            }
             let vk = kb.vkCode as u16;
             let is_down = wparam == WM_KEYDOWN as usize || wparam == WM_SYSKEYDOWN as usize;
             let is_up = wparam == WM_KEYUP as usize || wparam == WM_SYSKEYUP as usize;

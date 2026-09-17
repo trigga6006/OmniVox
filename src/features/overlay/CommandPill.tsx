@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Loader2, Zap, Check, X } from "lucide-react";
-import { confirmCommand, cancelCommand } from "@/lib/tauri";
+import { confirmCommand, cancelCommand, setOverlayFocusable } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { useCommandStore } from "@/stores/commandStore";
 import { PillWaveform } from "./PillWaveform";
@@ -38,6 +38,15 @@ export function CommandPill({ showContent }: { showContent: boolean }) {
   useEffect(() => {
     setDraft(editableText ?? "");
   }, [editableText]);
+
+  // The draft textarea is the only pill surface that needs keyboard focus;
+  // the overlay window is otherwise non-activatable.
+  useEffect(() => {
+    setOverlayFocusable(isEditableConfirm).catch(() => {});
+    return () => {
+      if (isEditableConfirm) setOverlayFocusable(false).catch(() => {});
+    };
+  }, [isEditableConfirm]);
 
   // A valid confirm always carries an id; guard so we never fire the backend
   // command with a null id (which it rejects at deserialization anyway).

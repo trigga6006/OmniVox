@@ -290,6 +290,9 @@ pub async fn set_structured_panel_active(
     state
         .structured_panel_active
         .store(active, std::sync::atomic::Ordering::Release);
+    // The overlay is created non-activatable (see `setup_overlay_window`); the
+    // panel's editor is one of two surfaces that need real keyboard focus.
+    let _ = window.set_focusable(active);
     Ok(())
 }
 
@@ -584,6 +587,7 @@ fn load_and_activate_llm_emit(
                 if outcome.backend.fell_back_from_gpu() {
                     let _ = app.emit("llm-gpu-fallback", outcome);
                 }
+                crate::gpu_env::maybe_warn_integrated_only(app);
                 let _ = app.emit("llm-status", "ready");
             }
             Ok(None) => {
@@ -872,6 +876,12 @@ fn load_and_activate_llm_outcome(
         outcome.backend.label(),
         outcome.duration_ms
     ));
+    if matches!(
+        outcome.backend,
+        LlmBackendOutcome::GpuFull | LlmBackendOutcome::GpuPartial { .. }
+    ) {
+        crate::gpu_env::note_gpu_load("llm");
+    }
     Ok(Some(outcome))
 }
 
